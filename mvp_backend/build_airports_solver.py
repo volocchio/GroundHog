@@ -4,101 +4,119 @@ import csv
 import os
 from typing import Dict
 
-from mvp_backend.nasr_fuel import iter_fuel_info
+from mvp_backend.nasr_fuel import iter_fuel_info, OFF_ICAO, LEN_ICAO
 
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-TAMARACK_DIR = os.path.join(ROOT, "Tamarack_Mission_Analysis")
 FAA_DIR = os.path.join(ROOT, "faa_nasr", "extract")
-
-AIRPORTS_FULL = os.path.join(TAMARACK_DIR, "airports_full.csv")
 APT_TXT = os.path.join(FAA_DIR, "APT.txt")
 
 OUT = os.path.join(ROOT, "mvp_backend", "airports_solver.csv")
 
+# Offsets from apt_rf.txt (1-indexed -> 0-index)
+OFF_NAME_A2 = 134 - 1
+LEN_NAME_A2 = 50
+OFF_TYPE = 15 - 1
+LEN_TYPE = 13
+OFF_LAT_SEC = 539 - 1
+LEN_LAT_SEC = 12
+OFF_LON_SEC = 566 - 1
+LEN_LON_SEC = 12
+OFF_ELEV_A21 = 579 - 1
+LEN_ELEV_A21 = 7
+
+
+def _sec_to_deg(sec_str: str) -> float:
+    s = sec_str.strip().upper()
+    if not s:
+        return float("nan")
+    hemi = s[-1]
+    val = float(s[:-1])
+    deg = val / 3600.0
+    if hemi in ("S", "W"):
+        deg = -deg
+    return deg
+
 
 def main():
-    # Load fuel info keyed by ICAO
+    # Write directly from FAA APT.txt (authoritative for ICAO + public-use + fuel)
+    out_fields = [
+        "icao",
+        "name",
+        "type",
+        "lat",
+        "lon",
+        "elevation_ft",
+        "facility_use",
+        "fuel_100ll",
+        "fuel_jeta",
+    ]
+
+    n = n_public = 0
+
+    with open(OUT, "w", newline="", encoding="utf-8") as f_out:
+        w = csv.DictWriter(f_out, fieldnames=out_fields)
+        w.writeheader()
+
+    # Build fuel lookup
     fuel_by_icao: Dict[str, dict] = {}
     for fi in iter_fuel_info(APT_TXT):
-        if not fi.icao:
-            continue
         fuel_by_icao[fi.icao] = {
             "facility_use": fi.facility_use,
             "fuel_100ll": int(fi.fuel_100ll),
             "fuel_jeta": int(fi.fuel_jeta),
-            "raw_fuel": fi.raw_fuel,
         }
 
-    # Read airports_full and join by icao_code
-    with open(AIRPORTS_FULL, "r", newline="", encoding="utf-8", errors="ignore") as f_in:
-        reader = csv.DictReader(f_in)
-        fieldnames = list(reader.fieldnames or [])
+    with open(OUT, "w", newline="", encoding="utf-8") as f_out:
+        w = csv.DictWriter(f_out, fieldnames=out_fields)
+        w.writeheader()
 
-        # Output schema
-        out_fields = [
-            "icao",
-            "name",
-            "type",
-            "lat",
-            "lon",
-            "elevation_ft",
-            "municipality",
-            "iso_country",
-            "facility_use",
-            "fuel_100ll",
-            "fuel_jeta",
-        ]
-
-        with open(OUT, "w", newline="", encoding="utf-8") as f_out:
-            w = csv.DictWriter(f_out, fieldnames=out_fields)
-            w.writeheader()
-
-            n = 0
-            n_join = 0
-            n_public = 0
-            for row in reader:
-                n += 1
-                icao = (row.get("icao_code") or "").strip().upper()
-                if not icao:
-                    # fallback: for many US airports, ident is the ICAO (e.g. KSZT)
-                    icao = (row.get("ident") or "").strip().upper()
-                if not icao:
+        with open(APT_TXT, "r", encoding="latin-1", errors="ignore") as f:
+            for line in f:
+                if not line.startswith("APT"):
                     continue
-
-                lat = row.get("latitude_deg")
-                lon = row.get("longitude_deg")
-                if not lat or not lon:
+                icao = line[OFF_ICAO:OFF_ICAO + LEN_ICAO].strip().upper()
+                if not icao:
                     continue
 
                 fuel = fuel_by_icao.get(icao)
                 if not fuel:
-                    # no fuel data; still output with zeros
-                    fuel = {"facility_use": "", "fuel_100ll": 0, "fuel_jeta": 0}
-                else:
-                    n_join += 1
+                    continue
 
-                facility_use = fuel.get("facility_use", "")
-                if facility_use == "PU":
-                    n_public += 1
+                facility_use = (fuel.get("facility_use") or "").strip().upper()
+                if facility_use != "PU":
+                    continue  # public-use only in solver DB
+
+                name = line[OFF_NAME_A2:OFF_NAME_A2 + LEN_NAME_A2].strip()
+                typ = line[OFF_TYPE:OFF_TYPE + LEN_TYPE].strip()
+
+                lat = _sec_to_deg(line[OFF_LAT_SEC:OFF_LAT_SEC + LEN_LAT_SEC])
+                lon = _sec_to_deg(line[OFF_LON_SEC:OFF_LON_SEC + LEN_LON_SEC])
+                if lat != lat or lon != lon:
+                    continue
+
+                elev_raw = line[OFF_ELEV_A21:OFF_ELEV_A21 + LEN_ELEV_A21].strip()
+                try:
+                    elev_ft = int(round(float(elev_raw))) if elev_raw else 0
+                except ValueError:
+                    elev_ft = 0
 
                 w.writerow({
                     "icao": icao,
-                    "name": (row.get("name") or "").strip(),
-                    "type": (row.get("type") or "").strip(),
-                    "lat": float(lat),
-                    "lon": float(lon),
-                    "elevation_ft": int(float(row.get("elevation_ft") or 0)),
-                    "municipality": (row.get("municipality") or "").strip(),
-                    "iso_country": (row.get("iso_country") or "").strip(),
+                    "name": name,
+                    "type": typ,
+                    "lat": lat,
+                    "lon": lon,
+                    "elevation_ft": elev_ft,
                     "facility_use": facility_use,
                     "fuel_100ll": int(fuel.get("fuel_100ll", 0)),
                     "fuel_jeta": int(fuel.get("fuel_jeta", 0)),
                 })
+                n += 1
+                n_public += 1
 
     print(f"Wrote {OUT}")
-    print(f"Joined fuel rows: {n_join}")
-    print(f"Public-use rows (joined): {n_public}")
+    print(f"Public-use airports written: {n_public}")
 
 
 if __name__ == "__main__":
