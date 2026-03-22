@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-from mvp_backend.grid_astar import GridSpec, astar_path, path_nm
+from mvp_backend.grid_astar import GridSpec, astar_path, astar_path_streaming, path_nm
 from mvp_backend.terrain_provider import meters_to_feet
 from mvp_backend.srtm_local import SRTMProvider
 
@@ -326,3 +326,82 @@ def plan_route_multi_stop(
         "total_dist_nm": total_dist,
         "stops": stops,
     }
+
+
+def terrain_avoid_leg_streaming(
+    a: Airport,
+    b: Airport,
+    max_msl_ft: float,
+    min_agl_ft: float,
+    max_detour_factor: float,
+    cell_km: float = 1.0,
+    initial_margin_km: float = 40.0,
+    margin_step_km: float = 40.0,
+    max_margin_km: float = 400.0,
+):
+    """Generator that yields A* exploration events for one leg.
+
+    Yields dicts:
+      {"type": "grid", "bounds": [sw_lat, sw_lon, ne_lat, ne_lon]}
+      {"type": "explore", "cells": [[lat, lon], ...]}
+      {"type": "path", "coords": [[lat, lon], ...], "dist_nm": float}
+      {"type": "no_path"}
+    """
+    from mvp_backend.grid_astar import astar_path_streaming
+
+    provider = SRTMProvider(cache_dir=os.path.join(ROOT, "mvp_backend", "srtm_cache"))
+
+    direct_nm = _direct_nm(a, b)
+    detour_limit_nm = max_detour_factor * direct_nm
+    ceiling_ft = max_msl_ft - min_agl_ft
+
+    mid_lat = 0.5 * (a.lat + b.lat)
+    dlat = cell_km * _deg_per_km_lat()
+    dlon = cell_km * _deg_per_km_lon(mid_lat)
+
+    margin_km = initial_margin_km
+    while margin_km <= max_margin_km:
+        min_lat = min(a.lat, b.lat) - margin_km * _deg_per_km_lat()
+        max_lat = max(a.lat, b.lat) + margin_km * _deg_per_km_lat()
+        min_lon = min(a.lon, b.lon) - margin_km * _deg_per_km_lon(mid_lat)
+        max_lon = max(a.lon, b.lon) + margin_km * _deg_per_km_lon(mid_lat)
+
+        n_lat = int(math.ceil((max_lat - min_lat) / dlat)) + 1
+        n_lon = int(math.ceil((max_lon - min_lon) / dlon)) + 1
+
+        if n_lat * n_lon > 250_000:
+            margin_km += margin_step_km
+            continue
+
+        grid = GridSpec(lat0=min_lat, lon0=min_lon, n_lat=n_lat, n_lon=n_lon, dlat=dlat, dlon=dlon)
+
+        yield {"type": "grid", "bounds": [min_lat, min_lon, max_lat, max_lon]}
+
+        points = [grid.idx_to_latlon(i, j) for i in range(n_lat) for j in range(n_lon)]
+        elev_m = provider.get_many_m(points)
+        elev_ft = [meters_to_feet(m) if m == m else float("inf") for m in elev_m]
+
+        passable: List[List[bool]] = [[True] * n_lon for _ in range(n_lat)]
+        k = 0
+        for i in range(n_lat):
+            row = passable[i]
+            for j in range(n_lon):
+                row[j] = elev_ft[k] <= ceiling_ft
+                k += 1
+
+        start = grid.latlon_to_idx(a.lat, a.lon)
+        goal = grid.latlon_to_idx(b.lat, b.lon)
+        if not passable[start[0]][start[1]] or not passable[goal[0]][goal[1]]:
+            margin_km += margin_step_km
+            continue
+
+        for event in astar_path_streaming(grid, passable, start, goal, yield_every=30):
+            if event["type"] == "path" and event["dist_nm"] > detour_limit_nm:
+                break  # too long, try wider margin
+            yield event
+            if event["type"] in ("path", "no_path"):
+                return
+
+        margin_km += margin_step_km
+
+    yield {"type": "no_path"}

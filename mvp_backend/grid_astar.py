@@ -3,7 +3,7 @@ from __future__ import annotations
 import heapq
 import math
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Generator, List, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -101,3 +101,85 @@ def path_nm(grid: GridSpec, path: List[tuple[int, int]]) -> float:
         lat2, lon2 = grid.idx_to_latlon(i2, j2)
         total += _haversine_nm(lat1, lon1, lat2, lon2)
     return total
+
+
+def astar_path_streaming(
+    grid: GridSpec,
+    passable: List[List[bool]],
+    start: tuple[int, int],
+    goal: tuple[int, int],
+    yield_every: int = 20,
+) -> Generator[dict, None, None]:
+    """A* that yields progress dicts as it explores.
+
+    Yields:
+      {"type": "explore", "cells": [[lat, lon], ...]}   – batch of explored cells
+      {"type": "path", "coords": [[lat, lon], ...], "dist_nm": float}  – final path
+      {"type": "no_path"}  – search failed
+    """
+
+    def h(a: tuple[int, int], b: tuple[int, int]) -> float:
+        lat1, lon1 = grid.idx_to_latlon(*a)
+        lat2, lon2 = grid.idx_to_latlon(*b)
+        return _haversine_nm(lat1, lon1, lat2, lon2)
+
+    open_heap: list[tuple[float, float, tuple[int, int]]] = []
+    heapq.heappush(open_heap, (h(start, goal), 0.0, start))
+
+    came_from: Dict[tuple[int, int], tuple[int, int]] = {}
+    gscore: Dict[tuple[int, int], float] = {start: 0.0}
+
+    neighbors = [
+        (-1, -1), (-1, 0), (-1, 1),
+        (0, -1),           (0, 1),
+        (1, -1),  (1, 0),  (1, 1),
+    ]
+
+    batch: list[list[float]] = []
+    found = False
+
+    while open_heap:
+        f, g, cur = heapq.heappop(open_heap)
+        if cur == goal:
+            # flush remaining batch
+            if batch:
+                yield {"type": "explore", "cells": batch}
+            # reconstruct path
+            path_idx = [cur]
+            c = cur
+            while c in came_from:
+                c = came_from[c]
+                path_idx.append(c)
+            path_idx.reverse()
+            coords = [list(grid.idx_to_latlon(i, j)) for i, j in path_idx]
+            yield {"type": "path", "coords": coords, "dist_nm": path_nm(grid, path_idx)}
+            found = True
+            return
+
+        lat, lon = grid.idx_to_latlon(*cur)
+        batch.append([lat, lon])
+        if len(batch) >= yield_every:
+            yield {"type": "explore", "cells": batch}
+            batch = []
+
+        ci, cj = cur
+        for di, dj in neighbors:
+            ni, nj = ci + di, cj + dj
+            if ni < 0 or nj < 0 or ni >= grid.n_lat or nj >= grid.n_lon:
+                continue
+            if not passable[ni][nj]:
+                continue
+            lat1, lon1 = grid.idx_to_latlon(ci, cj)
+            lat2, lon2 = grid.idx_to_latlon(ni, nj)
+            step = _haversine_nm(lat1, lon1, lat2, lon2)
+            ng = gscore[cur] + step
+            nxt = (ni, nj)
+            if ng < gscore.get(nxt, float("inf")):
+                came_from[nxt] = cur
+                gscore[nxt] = ng
+                heapq.heappush(open_heap, (ng + h(nxt, goal), ng, nxt))
+
+    if batch:
+        yield {"type": "explore", "cells": batch}
+    if not found:
+        yield {"type": "no_path"}

@@ -16,7 +16,15 @@
     input, select { width:100%; padding: 8px; font-size: 14px; border:1px solid #d1d5db; border-radius: 8px; }
     button { width:100%; padding: 10px; border-radius: 10px; border:0; background:#2563eb; color:#fff; font-size: 14px; margin-top: 12px; cursor:pointer; }
     button:disabled { background:#93c5fd; cursor: not-allowed; }
-    #map { height: calc(100vh - 90px); border-radius: 10px; }
+    #abortBtn { background:#dc2626; display:none; }
+    #abortBtn:hover { background:#b91c1c; }
+    .watch-row { display:flex; align-items:center; gap:8px; margin-top:10px; font-size:13px; color:#374151; }
+    .watch-row input[type=checkbox] { width:auto; }
+    #map { height: calc(100vh - 290px); min-height: 300px; border-radius: 10px; }
+    #profileWrap { margin-top: 8px; display: none; }
+    #profileWrap.visible { display: block; }
+    #profileCanvas { width: 100%; height: 180px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fafafa; }
+    .profile-title { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
     table { width:100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
     th, td { border-bottom: 1px solid #e5e7eb; padding: 6px 4px; text-align:left; }
     .muted { color:#6b7280; font-size: 12px; }
@@ -74,6 +82,11 @@
       </details>
 
       <button id="goBtn">Plan route</button>
+      <button id="abortBtn">Abort Planning</button>
+      <div class="watch-row">
+        <input type="checkbox" id="watchSearch" checked />
+        <label for="watchSearch" style="margin:0; display:inline">Watch A* search on map</label>
+      </div>
       <div id="status" class="muted" style="margin-top:10px"></div>
       <div id="error" class="err" style="margin-top:8px"></div>
 
@@ -82,6 +95,10 @@
 
     <div class="card">
       <div id="map"></div>
+      <div id="profileWrap">
+        <div class="profile-title">Elevation Profile (side view)</div>
+        <canvas id="profileCanvas"></canvas>
+      </div>
     </div>
   </div>
 
@@ -100,10 +117,158 @@
       attribution: '&copy; OpenStreetMap'
     }).addTo(map);
 
+    let exploreGroup = L.layerGroup().addTo(map);
     let layerGroup = L.layerGroup().addTo(map);
+    let airportGroup = L.layerGroup().addTo(map);
+    let abortController = null;
+    let airportsLoaded = false;
 
     function clearMap() {
       layerGroup.clearLayers();
+      exploreGroup.clearLayers();
+      document.getElementById('profileWrap').classList.remove('visible');
+    }
+
+    async function loadAirports() {
+      if (airportsLoaded) return;
+      try {
+        const res = await fetch('/airports');
+        if (!res.ok) return;
+        const list = await res.json();
+        airportsLoaded = true;
+        for (const ap of list) {
+          const hasFuel = ap.fuel_100ll || ap.fuel_jeta;
+          const color = hasFuel ? '#16a34a' : '#6b7280';
+          const fuelStr = [ap.fuel_100ll ? '100LL' : '', ap.fuel_jeta ? 'Jet-A' : ''].filter(Boolean).join(', ') || 'None';
+          L.circleMarker([ap.lat, ap.lon], {
+            radius: 4, color, fillColor: color,
+            fillOpacity: 0.7, weight: 1, opacity: 0.8,
+          }).bindTooltip(`<b>${ap.icao}</b><br>${ap.name}<br>Elev: ${Math.round(ap.elev)} ft<br>Fuel: ${fuelStr}`, {
+            direction: 'top', offset: [0, -6],
+          }).addTo(airportGroup);
+        }
+      } catch (e) { /* silent */ }
+    }
+
+    // Load airports on startup
+    loadAirports();
+
+    async function fetchAndDrawProfile(path, maxMsl, minAgl, depLabel, arrLabel) {
+      try {
+        const res = await fetch('/elevation-profile', {
+          method: 'POST',
+          headers: {'content-type': 'application/json'},
+          body: JSON.stringify({ path, max_msl_ft: maxMsl, min_agl_ft: minAgl }),
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        drawProfile(data, depLabel, arrLabel);
+      } catch (e) { /* silent */ }
+    }
+
+    function drawProfile(data, depLabel, arrLabel) {
+      const wrap = document.getElementById('profileWrap');
+      const canvas = document.getElementById('profileCanvas');
+      wrap.classList.add('visible');
+
+      // Hi-DPI support
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      const ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+      const W = rect.width, H = rect.height;
+
+      const pad = { top: 20, right: 20, bottom: 30, left: 55 };
+      const pw = W - pad.left - pad.right;
+      const ph = H - pad.top - pad.bottom;
+
+      const dist = data.dist_nm;
+      const ground = data.ground_ft;
+      const maxMsl = data.max_msl_ft;
+      const minAgl = data.min_agl_ft;
+
+      const maxDist = dist[dist.length - 1] || 1;
+      const maxElev = Math.max(maxMsl, ...ground) * 1.1;
+
+      function x(d) { return pad.left + (d / maxDist) * pw; }
+      function y(e) { return pad.top + ph - (e / maxElev) * ph; }
+
+      ctx.clearRect(0, 0, W, H);
+
+      // Grid lines
+      ctx.strokeStyle = '#e5e7eb';
+      ctx.lineWidth = 0.5;
+      const elevTicks = 5;
+      for (let i = 0; i <= elevTicks; i++) {
+        const ev = (maxElev / elevTicks) * i;
+        ctx.beginPath(); ctx.moveTo(pad.left, y(ev)); ctx.lineTo(W - pad.right, y(ev)); ctx.stroke();
+        ctx.fillStyle = '#6b7280'; ctx.font = '10px system-ui';
+        ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+        ctx.fillText(Math.round(ev).toLocaleString() + ' ft', pad.left - 4, y(ev));
+      }
+
+      // Distance labels
+      const distTicks = 5;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      for (let i = 0; i <= distTicks; i++) {
+        const d = (maxDist / distTicks) * i;
+        const xp = x(d);
+        ctx.beginPath(); ctx.moveTo(xp, pad.top); ctx.lineTo(xp, H - pad.bottom); ctx.stroke();
+        ctx.fillStyle = '#6b7280'; ctx.font = '10px system-ui';
+        ctx.fillText(Math.round(d) + ' NM', xp, H - pad.bottom + 4);
+      }
+
+      // Max MSL ceiling line
+      ctx.strokeStyle = '#dc2626';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath(); ctx.moveTo(pad.left, y(maxMsl)); ctx.lineTo(W - pad.right, y(maxMsl)); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#dc2626'; ctx.font = '10px system-ui'; ctx.textAlign = 'left';
+      ctx.fillText('Max MSL ' + maxMsl.toLocaleString() + ' ft', pad.left + 4, y(maxMsl) - 12);
+
+      // Min AGL band (terrain + minAgl)
+      ctx.fillStyle = 'rgba(239, 68, 68, 0.08)';
+      ctx.beginPath();
+      ctx.moveTo(x(dist[0]), y(ground[0] + minAgl));
+      for (let i = 1; i < dist.length; i++) ctx.lineTo(x(dist[i]), y(ground[i] + minAgl));
+      for (let i = dist.length - 1; i >= 0; i--) ctx.lineTo(x(dist[i]), y(ground[i]));
+      ctx.closePath(); ctx.fill();
+
+      // Terrain fill
+      ctx.fillStyle = 'rgba(180, 140, 100, 0.35)';
+      ctx.beginPath();
+      ctx.moveTo(x(dist[0]), y(0));
+      for (let i = 0; i < dist.length; i++) ctx.lineTo(x(dist[i]), y(ground[i]));
+      ctx.lineTo(x(dist[dist.length-1]), y(0));
+      ctx.closePath(); ctx.fill();
+
+      // Terrain line
+      ctx.strokeStyle = '#92400e';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(x(dist[0]), y(ground[0]));
+      for (let i = 1; i < dist.length; i++) ctx.lineTo(x(dist[i]), y(ground[i]));
+      ctx.stroke();
+
+      // Min AGL line above terrain
+      ctx.strokeStyle = 'rgba(239, 68, 68, 0.5)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(x(dist[0]), y(ground[0] + minAgl));
+      for (let i = 1; i < dist.length; i++) ctx.lineTo(x(dist[i]), y(ground[i] + minAgl));
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Dep / Arr labels
+      ctx.fillStyle = '#111827'; ctx.font = 'bold 11px system-ui';
+      ctx.textAlign = 'left';
+      ctx.fillText(depLabel, x(0) + 2, pad.top + 4);
+      ctx.textAlign = 'right';
+      ctx.fillText(arrLabel, x(maxDist) - 2, pad.top + 4);
     }
 
     function addPath(path, color) {
@@ -121,13 +286,24 @@
       return Number(n).toFixed(digits);
     }
 
-    async function plan() {
-      document.getElementById('error').textContent = '';
-      document.getElementById('results').innerHTML = '';
-      document.getElementById('status').textContent = 'Planning... (first run may download SRTM tiles)';
-      clearMap();
+    function setPlanning(active) {
+      document.getElementById('goBtn').disabled = active;
+      document.getElementById('abortBtn').style.display = active ? 'block' : 'none';
+    }
 
-      const payload = {
+    function abortPlanning() {
+      if (abortController) {
+        abortController.abort();
+        abortController = null;
+      }
+      setPlanning(false);
+      document.getElementById('status').textContent = 'Aborted.';
+    }
+
+    document.getElementById('abortBtn').addEventListener('click', abortPlanning);
+
+    function getPayload() {
+      return {
         dep_icao: document.getElementById('dep').value.trim().toUpperCase(),
         arr_icao: document.getElementById('arr').value.trim().toUpperCase(),
         cruise_speed_kt: Number(document.getElementById('speedKt').value),
@@ -139,15 +315,119 @@
         required_fuel: document.getElementById('fuelType').value,
         max_detour_factor: Number(document.getElementById('detour').value)
       };
+    }
 
-      const btn = document.getElementById('goBtn');
-      btn.disabled = true;
+    async function planStreaming(payload) {
+      abortController = new AbortController();
+      setPlanning(true);
+      document.getElementById('status').textContent = 'Downloading elevation tiles & searching...';
+      clearMap();
+
+      // add dep/arr markers immediately
+      addMarker(0, 0, '').remove(); // no-op; we'll add real ones when path arrives
+
+      let exploredCount = 0;
+
+      try {
+        const res = await fetch('/route/stream', {
+          method: 'POST',
+          headers: {'content-type': 'application/json'},
+          body: JSON.stringify(payload),
+          signal: abortController.signal,
+        });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => null);
+          throw new Error(errData?.detail || `HTTP ${res.status}`);
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const {done, value} = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, {stream: true});
+
+          const lines = buffer.split('\n');
+          buffer = lines.pop(); // keep incomplete line
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const event = JSON.parse(line.slice(6));
+
+            if (event.type === 'grid') {
+              const b = event.bounds;
+              map.fitBounds([[b[0], b[1]], [b[2], b[3]]],  {padding: [30, 30]});
+            }
+
+            if (event.type === 'explore') {
+              exploredCount += event.cells.length;
+              document.getElementById('status').textContent =
+                `Searching... ${exploredCount.toLocaleString()} cells explored`;
+              for (const [lat, lon] of event.cells) {
+                L.circleMarker([lat, lon], {
+                  radius: 1, color: '#f59e0b', fillColor: '#f59e0b',
+                  fillOpacity: 0.15, weight: 0, opacity: 0.15
+                }).addTo(exploreGroup);
+              }
+            }
+
+            if (event.type === 'path') {
+              // Clear exploration dots so the final route is clean
+              exploreGroup.clearLayers();
+
+              // draw final route in bold
+              const poly = addPath(event.coords, '#2563eb');
+              map.fitBounds(poly.getBounds().pad(0.15));
+
+              // add endpoint markers
+              if (event.coords.length) {
+                addMarker(event.coords[0][0], event.coords[0][1], payload.dep_icao);
+                addMarker(event.coords[event.coords.length-1][0], event.coords[event.coords.length-1][1], payload.arr_icao);
+              }
+
+              document.getElementById('status').textContent =
+                `Route found! ${exploredCount.toLocaleString()} cells explored, ${fmt(event.dist_nm, 1)} NM`;
+
+              // Fetch and draw elevation profile
+              fetchAndDrawProfile(event.coords, payload.max_msl_ft, payload.min_agl_ft, payload.dep_icao, payload.arr_icao);
+            }
+
+            if (event.type === 'no_path') {
+              document.getElementById('status').textContent = '';
+              document.getElementById('error').textContent = 'No terrain-avoiding path found.';
+            }
+
+            if (event.type === 'done') {
+              if (!document.getElementById('status').textContent.startsWith('Route'))
+                document.getElementById('status').textContent = 'Done.';
+            }
+          }
+        }
+      } catch (e) {
+        if (e.name === 'AbortError') return; // user aborted
+        document.getElementById('status').textContent = '';
+        document.getElementById('error').textContent = String(e);
+      } finally {
+        abortController = null;
+        setPlanning(false);
+      }
+    }
+
+    async function planNormal(payload) {
+      setPlanning(true);
+      abortController = new AbortController();
+      document.getElementById('status').textContent = 'Planning... (first run may download SRTM tiles)';
+      clearMap();
 
       try {
         const res = await fetch('/route', {
           method: 'POST',
           headers: {'content-type': 'application/json'},
-          body: JSON.stringify(payload)
+          body: JSON.stringify(payload),
+          signal: abortController.signal,
         });
         const data = await res.json();
         if (!res.ok) {
@@ -182,7 +462,6 @@
           }
         });
 
-        // add markers at endpoints using first/last points
         if (data.legs && data.legs.length) {
           const firstPath = data.legs[0].path || [];
           const lastPath = data.legs[data.legs.length - 1].path || [];
@@ -192,11 +471,31 @@
 
         if (bounds) map.fitBounds(bounds.pad(0.15));
 
+        // Fetch and draw elevation profile for all legs combined
+        const allCoords = data.legs.flatMap(l => l.path || []);
+        if (allCoords.length >= 2) {
+          fetchAndDrawProfile(allCoords, payload.max_msl_ft, payload.min_agl_ft, payload.dep_icao, payload.arr_icao);
+        }
+
       } catch (e) {
+        if (e.name === 'AbortError') return;
         document.getElementById('status').textContent = '';
         document.getElementById('error').textContent = String(e);
       } finally {
-        btn.disabled = false;
+        abortController = null;
+        setPlanning(false);
+      }
+    }
+
+    async function plan() {
+      document.getElementById('error').textContent = '';
+      document.getElementById('results').innerHTML = '';
+      const payload = getPayload();
+      const watch = document.getElementById('watchSearch').checked;
+      if (watch) {
+        await planStreaming(payload);
+      } else {
+        await planNormal(payload);
       }
     }
 
