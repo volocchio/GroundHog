@@ -1,0 +1,206 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Terrain + Fuel Route Planner (MVP)</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+        crossorigin=""/>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; }
+    header { padding: 12px 16px; background: #111827; color: #fff; }
+    .wrap { display: grid; grid-template-columns: 380px 1fr; gap: 12px; padding: 12px; }
+    .card { border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; }
+    label { display:block; font-size: 12px; color:#374151; margin-top:10px; }
+    input, select { width:100%; padding: 8px; font-size: 14px; border:1px solid #d1d5db; border-radius: 8px; }
+    button { width:100%; padding: 10px; border-radius: 10px; border:0; background:#2563eb; color:#fff; font-size: 14px; margin-top: 12px; cursor:pointer; }
+    button:disabled { background:#93c5fd; cursor: not-allowed; }
+    #map { height: calc(100vh - 90px); border-radius: 10px; }
+    table { width:100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+    th, td { border-bottom: 1px solid #e5e7eb; padding: 6px 4px; text-align:left; }
+    .muted { color:#6b7280; font-size: 12px; }
+    .err { color:#b91c1c; white-space: pre-wrap; }
+    details { margin-top: 10px; }
+    @media (max-width: 980px) { .wrap { grid-template-columns: 1fr; } #map { height: 50vh; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div style="font-weight:600">Terrain + Fuel Route Planner (MVP)</div>
+    <div class="muted">S300C defaults prefilled • Fuel stops: public-use only • Fuel type: 100LL/Jet-A • Terrain avoidance via SRTM grid A*</div>
+  </header>
+
+  <div class="wrap">
+    <div class="card">
+      <div style="font-weight:600">Inputs</div>
+
+      <label>Departure ICAO</label>
+      <input id="dep" value="KSZT" />
+
+      <label>Arrival ICAO</label>
+      <input id="arr" value="E60" />
+
+      <label>Fuel type required (for stops)</label>
+      <select id="fuelType">
+        <option value="100LL" selected>100LL</option>
+        <option value="JETA">Jet-A</option>
+      </select>
+
+      <label>Reserve (minutes)</label>
+      <input id="reserveMin" type="number" value="30" min="0" step="1" />
+
+      <label>Cruise speed (kt)</label>
+      <input id="speedKt" type="number" value="75" min="1" step="1" />
+
+      <label>Usable fuel (gal)</label>
+      <input id="usableFuel" type="number" value="48" min="0" step="0.1" />
+
+      <label>Fuel burn (gph)</label>
+      <input id="burnGph" type="number" value="13" min="0" step="0.1" />
+
+      <label>Max altitude (ft MSL)</label>
+      <input id="maxMsl" type="number" value="7000" min="0" step="50" />
+
+      <label>Min altitude (ft AGL)</label>
+      <input id="minAgl" type="number" value="200" min="0" step="50" />
+
+      <label>Max detour factor: <span id="detourVal">1.8</span>x</label>
+      <input id="detour" type="range" min="1" max="5" value="1.8" step="0.1" />
+
+      <details>
+        <summary>Advanced (hidden for MVP)</summary>
+        <div class="muted">Grid is fixed at ~1 km; corridor expansion is automatic.</div>
+      </details>
+
+      <button id="goBtn">Plan route</button>
+      <div id="status" class="muted" style="margin-top:10px"></div>
+      <div id="error" class="err" style="margin-top:8px"></div>
+
+      <div id="results"></div>
+    </div>
+
+    <div class="card">
+      <div id="map"></div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+          crossorigin=""></script>
+
+  <script>
+    const detour = document.getElementById('detour');
+    const detourVal = document.getElementById('detourVal');
+    detour.addEventListener('input', () => detourVal.textContent = detour.value);
+
+    const map = L.map('map').setView([39.0, -105.5], 5);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 12,
+      attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+
+    let layerGroup = L.layerGroup().addTo(map);
+
+    function clearMap() {
+      layerGroup.clearLayers();
+    }
+
+    function addPath(path, color) {
+      const poly = L.polyline(path, {color, weight: 4, opacity: 0.85});
+      poly.addTo(layerGroup);
+      return poly;
+    }
+
+    function addMarker(lat, lon, label) {
+      return L.marker([lat, lon]).bindPopup(label).addTo(layerGroup);
+    }
+
+    function fmt(n, digits=2) {
+      if (n === null || n === undefined) return '';
+      return Number(n).toFixed(digits);
+    }
+
+    async function plan() {
+      document.getElementById('error').textContent = '';
+      document.getElementById('results').innerHTML = '';
+      document.getElementById('status').textContent = 'Planning... (first run may download SRTM tiles)';
+      clearMap();
+
+      const payload = {
+        dep_icao: document.getElementById('dep').value.trim().toUpperCase(),
+        arr_icao: document.getElementById('arr').value.trim().toUpperCase(),
+        cruise_speed_kt: Number(document.getElementById('speedKt').value),
+        usable_fuel_gal: Number(document.getElementById('usableFuel').value),
+        fuel_burn_gph: Number(document.getElementById('burnGph').value),
+        reserve_min: Number(document.getElementById('reserveMin').value),
+        min_agl_ft: Number(document.getElementById('minAgl').value),
+        max_msl_ft: Number(document.getElementById('maxMsl').value),
+        required_fuel: document.getElementById('fuelType').value,
+        max_detour_factor: Number(document.getElementById('detour').value)
+      };
+
+      const btn = document.getElementById('goBtn');
+      btn.disabled = true;
+
+      try {
+        const res = await fetch('/route', {
+          method: 'POST',
+          headers: {'content-type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error((data && data.detail) ? data.detail : ('HTTP ' + res.status));
+        }
+
+        if (data.type === 'no_route') {
+          document.getElementById('status').textContent = '';
+          document.getElementById('error').textContent = data.message + "\n\nSuggestions:\n- " + (data.suggestions || []).join('\n- ');
+          return;
+        }
+
+        // render table
+        let html = `<div style="font-weight:600; margin-top: 10px">Result: ${data.type}</div>`;
+        html += `<div class="muted">Total time: ${fmt(data.total_time_hr,2)} hr • Total dist: ${fmt(data.total_dist_nm,1)} NM • Stops: ${(data.stops||[]).join(', ') || 'none'}</div>`;
+        html += '<table><thead><tr><th>Leg</th><th>Dist (NM)</th><th>Time (hr)</th><th>Fuel (gal)</th></tr></thead><tbody>';
+        for (const leg of data.legs) {
+          html += `<tr><td>${leg.from} → ${leg.to}</td><td>${fmt(leg.dist_nm,1)}</td><td>${fmt(leg.time_hr,2)}</td><td>${fmt(leg.fuel_gal,1)}</td></tr>`;
+        }
+        html += '</tbody></table>';
+        document.getElementById('results').innerHTML = html;
+        document.getElementById('status').textContent = '';
+
+        // map
+        const colors = ['#2563eb', '#16a34a'];
+        let bounds = null;
+        data.legs.forEach((leg, idx) => {
+          const path = (leg.path || []).map(p => [p[0], p[1]]);
+          if (path.length) {
+            const poly = addPath(path, colors[idx % colors.length]);
+            if (!bounds) bounds = poly.getBounds(); else bounds.extend(poly.getBounds());
+          }
+        });
+
+        // add markers at endpoints using first/last points
+        if (data.legs && data.legs.length) {
+          const firstPath = data.legs[0].path || [];
+          const lastPath = data.legs[data.legs.length - 1].path || [];
+          if (firstPath.length) addMarker(firstPath[0][0], firstPath[0][1], payload.dep_icao);
+          if (lastPath.length) addMarker(lastPath[lastPath.length-1][0], lastPath[lastPath.length-1][1], payload.arr_icao);
+        }
+
+        if (bounds) map.fitBounds(bounds.pad(0.15));
+
+      } catch (e) {
+        document.getElementById('status').textContent = '';
+        document.getElementById('error').textContent = String(e);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    document.getElementById('goBtn').addEventListener('click', plan);
+  </script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite
+mvp_backend/elev_cache.sqlite
+mvp_backend/srtm_cache/
+# large downloads
+faa_nasr/28DaySubscription_*.zip
+faa_nasr/extract/
+# local data outputs
+mvp_backend/airports_solver.csv
