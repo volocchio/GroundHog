@@ -4,7 +4,7 @@ import csv
 import os
 from typing import Dict
 
-from mvp_backend.nasr_fuel import iter_fuel_info, OFF_ICAO, LEN_ICAO
+from mvp_backend.nasr_fuel import iter_fuel_info, OFF_ICAO, LEN_ICAO, OFF_LID, LEN_LID
 
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -42,6 +42,7 @@ def main():
     # Write directly from FAA APT.txt (authoritative for ICAO + public-use + fuel)
     out_fields = [
         "icao",
+        "lid",
         "name",
         "type",
         "lat",
@@ -58,10 +59,13 @@ def main():
         w = csv.DictWriter(f_out, fieldnames=out_fields)
         w.writeheader()
 
-    # Build fuel lookup
-    fuel_by_icao: Dict[str, dict] = {}
+    # Build fuel lookup keyed by LID (present on all airports)
+    fuel_by_lid: Dict[str, dict] = {}
     for fi in iter_fuel_info(APT_TXT):
-        fuel_by_icao[fi.icao] = {
+        key = fi.lid or fi.icao
+        if not key:
+            continue
+        fuel_by_lid[key] = {
             "facility_use": fi.facility_use,
             "fuel_100ll": int(fi.fuel_100ll),
             "fuel_jeta": int(fi.fuel_jeta),
@@ -75,11 +79,12 @@ def main():
             for line in f:
                 if not line.startswith("APT"):
                     continue
+                lid = line[OFF_LID:OFF_LID + LEN_LID].strip().upper()
                 icao = line[OFF_ICAO:OFF_ICAO + LEN_ICAO].strip().upper()
-                if not icao:
+                if not lid and not icao:
                     continue
 
-                fuel = fuel_by_icao.get(icao)
+                fuel = fuel_by_lid.get(lid) or fuel_by_lid.get(icao)
                 if not fuel:
                     continue
 
@@ -101,8 +106,10 @@ def main():
                 except ValueError:
                     elev_ft = 0
 
+                # Use ICAO if available, otherwise LID
                 w.writerow({
-                    "icao": icao,
+                    "icao": icao or lid,
+                    "lid": lid,
                     "name": name,
                     "type": typ,
                     "lat": lat,

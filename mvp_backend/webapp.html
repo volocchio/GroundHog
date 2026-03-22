@@ -286,6 +286,31 @@
       return Number(n).toFixed(digits);
     }
 
+    function haversineNm(lat1, lon1, lat2, lon2) {
+      const R = 3440.065;
+      const toRad = d => d * Math.PI / 180;
+      const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+      const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2)**2;
+      return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    function renderTripStats({groundDistNm, straightNm, timeHr, fuelGal, fuelRemainingGal, reserveMin, burnGph, depLabel, arrLabel, stops}) {
+      const reserveGal = (reserveMin / 60) * burnGph;
+      const resultsDiv = document.getElementById('results');
+      let html = `<div style="font-weight:600; margin-top:10px">Trip Summary</div>`;
+      html += '<table><tbody>';
+      html += `<tr><td>Route</td><td>${depLabel} → ${stops && stops.length ? stops.join(' → ') + ' → ' : ''}${arrLabel}</td></tr>`;
+      html += `<tr><td>Straight-line distance</td><td>${fmt(straightNm, 1)} NM</td></tr>`;
+      html += `<tr><td>Ground distance (terrain-avoidance)</td><td>${fmt(groundDistNm, 1)} NM</td></tr>`;
+      html += `<tr><td>Detour</td><td>${fmt(groundDistNm - straightNm, 1)} NM (+${fmt(((groundDistNm / Math.max(straightNm, 0.1)) - 1) * 100, 1)}%)</td></tr>`;
+      html += `<tr><td>Estimated time</td><td>${fmt(timeHr, 2)} hr (${Math.floor(timeHr * 60)} min)</td></tr>`;
+      html += `<tr><td>Fuel used</td><td>${fmt(fuelGal, 1)} gal</td></tr>`;
+      html += `<tr><td>Reserve (${fmt(reserveMin, 0)} min)</td><td>${fmt(reserveGal, 1)} gal</td></tr>`;
+      html += `<tr><td>Fuel remaining</td><td style="color:${fuelRemainingGal < 0 ? '#dc2626' : '#16a34a'}">${fmt(fuelRemainingGal, 1)} gal</td></tr>`;
+      html += '</tbody></table>';
+      resultsDiv.innerHTML = html;
+    }
+
     function setPlanning(active) {
       document.getElementById('goBtn').disabled = active;
       document.getElementById('abortBtn').style.display = active ? 'block' : 'none';
@@ -320,13 +345,18 @@
     async function planStreaming(payload) {
       abortController = new AbortController();
       setPlanning(true);
-      document.getElementById('status').textContent = 'Downloading elevation tiles & searching...';
+      document.getElementById('status').textContent = 'Planning route (checking fuel)...';
       clearMap();
 
-      // add dep/arr markers immediately
-      addMarker(0, 0, '').remove(); // no-op; we'll add real ones when path arrives
-
       let exploredCount = 0;
+      const legColors = ['#2563eb', '#16a34a', '#dc2626', '#9333ea', '#ea580c'];
+      let totalDistNm = 0, totalTimeHr = 0, totalFuelGal = 0;
+      let lastLegFuelGal = 0;
+      let allCoords = [];
+      let stops = [];
+      let currentLeg = 0;
+      let numLegs = 1;
+      let overallBounds = null;
 
       try {
         const res = await fetch('/route/stream', {
@@ -351,21 +381,42 @@
           buffer += decoder.decode(value, {stream: true});
 
           const lines = buffer.split('\n');
-          buffer = lines.pop(); // keep incomplete line
+          buffer = lines.pop();
 
           for (const line of lines) {
             if (!line.startsWith('data: ')) continue;
             const event = JSON.parse(line.slice(6));
 
+            if (event.type === 'route_plan') {
+              stops = event.stops || [];
+              numLegs = event.num_legs || 1;
+              document.getElementById('status').textContent =
+                numLegs > 1
+                  ? `Route requires ${numLegs} legs (${stops.length} fuel stop${stops.length !== 1 ? 's' : ''}). Streaming leg 1...`
+                  : 'Downloading elevation tiles & searching...';
+            }
+
+            if (event.type === 'leg_start') {
+              currentLeg = event.leg_index || 0;
+              if (numLegs > 1) {
+                document.getElementById('status').textContent =
+                  `Streaming leg ${currentLeg + 1} of ${numLegs}: ${event.from} → ${event.to}...`;
+              }
+            }
+
             if (event.type === 'grid') {
               const b = event.bounds;
-              map.fitBounds([[b[0], b[1]], [b[2], b[3]]],  {padding: [30, 30]});
+              const legBounds = L.latLngBounds([[b[0], b[1]], [b[2], b[3]]]);
+              overallBounds = overallBounds ? overallBounds.extend(legBounds) : legBounds;
+              map.fitBounds(legBounds, {padding: [30, 30]});
             }
 
             if (event.type === 'explore') {
               exploredCount += event.cells.length;
               document.getElementById('status').textContent =
-                `Searching... ${exploredCount.toLocaleString()} cells explored`;
+                numLegs > 1
+                  ? `Leg ${currentLeg + 1}/${numLegs} — ${exploredCount.toLocaleString()} cells explored`
+                  : `Searching... ${exploredCount.toLocaleString()} cells explored`;
               for (const [lat, lon] of event.cells) {
                 L.circleMarker([lat, lon], {
                   radius: 1, color: '#f59e0b', fillColor: '#f59e0b',
@@ -375,39 +426,79 @@
             }
 
             if (event.type === 'path') {
-              // Clear exploration dots so the final route is clean
               exploreGroup.clearLayers();
 
-              // draw final route in bold
-              const poly = addPath(event.coords, '#2563eb');
-              map.fitBounds(poly.getBounds().pad(0.15));
+              const color = legColors[currentLeg % legColors.length];
+              const poly = addPath(event.coords, color);
 
-              // add endpoint markers
+              // accumulate
+              totalDistNm += event.dist_nm;
+              const legTimeHr = event.dist_nm / payload.cruise_speed_kt;
+              const legFuelGal = legTimeHr * payload.fuel_burn_gph;
+              totalTimeHr += legTimeHr;
+              totalFuelGal += legFuelGal;
+              lastLegFuelGal = legFuelGal;
+              allCoords = allCoords.concat(event.coords);
+
+              // add markers for this leg endpoints
               if (event.coords.length) {
-                addMarker(event.coords[0][0], event.coords[0][1], payload.dep_icao);
-                addMarker(event.coords[event.coords.length-1][0], event.coords[event.coords.length-1][1], payload.arr_icao);
+                addMarker(event.coords[0][0], event.coords[0][1], event.from || payload.dep_icao);
+                addMarker(
+                  event.coords[event.coords.length-1][0],
+                  event.coords[event.coords.length-1][1],
+                  event.to || payload.arr_icao
+                );
               }
 
-              document.getElementById('status').textContent =
-                `Route found! ${exploredCount.toLocaleString()} cells explored, ${fmt(event.dist_nm, 1)} NM`;
-
-              // Fetch and draw elevation profile
-              fetchAndDrawProfile(event.coords, payload.max_msl_ft, payload.min_agl_ft, payload.dep_icao, payload.arr_icao);
+              // fit to overall bounds
+              if (overallBounds) {
+                overallBounds.extend(poly.getBounds());
+                map.fitBounds(overallBounds.pad(0.15));
+              } else {
+                map.fitBounds(poly.getBounds().pad(0.15));
+              }
             }
 
             if (event.type === 'no_path') {
               document.getElementById('status').textContent = '';
-              document.getElementById('error').textContent = 'No terrain-avoiding path found.';
+              document.getElementById('error').textContent =
+                event.message || 'No terrain-avoiding path found.';
             }
 
             if (event.type === 'done') {
-              if (!document.getElementById('status').textContent.startsWith('Route'))
-                document.getElementById('status').textContent = 'Done.';
+              if (totalDistNm > 0) {
+                const straightNm = allCoords.length >= 2
+                  ? haversineNm(allCoords[0][0], allCoords[0][1],
+                      allCoords[allCoords.length-1][0], allCoords[allCoords.length-1][1])
+                  : 0;
+
+                renderTripStats({
+                  groundDistNm: totalDistNm,
+                  straightNm,
+                  timeHr: totalTimeHr,
+                  fuelGal: totalFuelGal,
+                  fuelRemainingGal: payload.usable_fuel_gal - lastLegFuelGal,
+                  reserveMin: payload.reserve_min,
+                  burnGph: payload.fuel_burn_gph,
+                  depLabel: payload.dep_icao,
+                  arrLabel: payload.arr_icao,
+                  stops,
+                });
+
+                document.getElementById('status').textContent =
+                  `Route found! ${exploredCount.toLocaleString()} cells explored, ${fmt(totalDistNm, 1)} NM` +
+                  (stops.length ? ` (${stops.length} fuel stop${stops.length !== 1 ? 's' : ''})` : '');
+
+                fetchAndDrawProfile(allCoords, payload.max_msl_ft, payload.min_agl_ft, payload.dep_icao, payload.arr_icao);
+              } else {
+                if (!document.getElementById('error').textContent)
+                  document.getElementById('status').textContent = 'Done.';
+              }
             }
           }
         }
       } catch (e) {
-        if (e.name === 'AbortError') return; // user aborted
+        if (e.name === 'AbortError') return;
         document.getElementById('status').textContent = '';
         document.getElementById('error').textContent = String(e);
       } finally {
@@ -440,15 +531,34 @@
           return;
         }
 
-        // render table
-        let html = `<div style="font-weight:600; margin-top: 10px">Result: ${data.type}</div>`;
-        html += `<div class="muted">Total time: ${fmt(data.total_time_hr,2)} hr • Total dist: ${fmt(data.total_dist_nm,1)} NM • Stops: ${(data.stops||[]).join(', ') || 'none'}</div>`;
-        html += '<table><thead><tr><th>Leg</th><th>Dist (NM)</th><th>Time (hr)</th><th>Fuel (gal)</th></tr></thead><tbody>';
-        for (const leg of data.legs) {
-          html += `<tr><td>${leg.from} → ${leg.to}</td><td>${fmt(leg.dist_nm,1)}</td><td>${fmt(leg.time_hr,2)}</td><td>${fmt(leg.fuel_gal,1)}</td></tr>`;
+        // render trip stats table
+        const totalDist = data.total_dist_nm;
+        const totalTime = data.total_time_hr;
+        const totalFuel = data.legs.reduce((s, l) => s + (l.fuel_gal || 0), 0);
+        const lastLegFuel = (data.legs[data.legs.length - 1] || {}).fuel_gal || 0;
+        const firstPath = (data.legs[0] || {}).path || [];
+        const lastPath = (data.legs[data.legs.length - 1] || {}).path || [];
+        let straightNm = 0;
+        if (firstPath.length && lastPath.length) {
+          straightNm = haversineNm(
+            firstPath[0][0], firstPath[0][1],
+            lastPath[lastPath.length-1][0], lastPath[lastPath.length-1][1]
+          );
         }
-        html += '</tbody></table>';
-        document.getElementById('results').innerHTML = html;
+
+        renderTripStats({
+          groundDistNm: totalDist,
+          straightNm,
+          timeHr: totalTime,
+          fuelGal: totalFuel,
+          fuelRemainingGal: payload.usable_fuel_gal - lastLegFuel,
+          reserveMin: payload.reserve_min,
+          burnGph: payload.fuel_burn_gph,
+          depLabel: payload.dep_icao,
+          arrLabel: payload.arr_icao,
+          stops: data.stops || [],
+        });
+
         document.getElementById('status').textContent = '';
 
         // map

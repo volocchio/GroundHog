@@ -1,7 +1,8 @@
 """NASR (FAA 28-day subscription) APT.txt parser for fuel types.
 
 We extract:
-- ICAO identifier (field at offset 1211, len 7 in apt_rf layout)
+- FAA Location Identifier (LID) at offset 28, len 4 (e.g. E60, S75, SZT)
+- ICAO identifier (field at offset 1211, len 7) - empty for many US airports
 - Public-use indicator (field name "AIRPORT USE" in layout; we locate by offset once confirmed)
 - Fuel types (A70, offset 901 len 40)
 
@@ -23,6 +24,10 @@ LEN_FUEL_A70 = 40
 OFF_ICAO = 1211 - 1
 LEN_ICAO = 7
 
+# FAA Location Identifier (LID) - present on ALL airports (e.g. E60, S75, SZT)
+OFF_LID = 28 - 1
+LEN_LID = 4
+
 # Facility use (A18) at offset 186, len 2. Values: PU (public) / PR (private)
 OFF_FACILITY_USE_A18 = 186 - 1
 LEN_FACILITY_USE_A18 = 2
@@ -30,32 +35,28 @@ LEN_FACILITY_USE_A18 = 2
 
 @dataclass(frozen=True)
 class FuelInfo:
-    icao: str
-    facility_use: str  # PU/PR/etc
+    lid: str            # FAA Location Identifier (always present)
+    icao: str           # ICAO code (may be empty for non-ICAO airports)
+    facility_use: str   # PU/PR/etc
     fuel_100ll: bool
     fuel_jeta: bool
     raw_fuel: str
 
 
 def _parse_fuel_tokens(raw: str) -> set[str]:
-    # Raw contains up to 8 occurrences of 5 char fields, often jammed together.
-    # Example: "80___100__100LL115__" per layout.
-    s = raw.replace("_", " ")
-    # split on whitespace, but keep tokens like 'A++10'
-    toks = [t.strip() for t in s.split() if t.strip()]
-    # Also handle jammed fixed fields by chunking 5 chars if split yields nothing
-    if not toks:
-        toks = [raw[i:i+5].strip().replace("_", "") for i in range(0, len(raw), 5)]
-        toks = [t for t in toks if t]
-    return set(toks)
+    # NASR fuel field: up to 8 fixed-width 5-char codes (e.g. "100LLA    MOGAS...")
+    # Always chunk by 5 chars since tokens run together without separators
+    toks = [raw[i:i+5].strip().replace("_", "") for i in range(0, len(raw), 5)]
+    return {t for t in toks if t}
 
 
 def decode_fuel_info_from_apt_record(line: str) -> FuelInfo | None:
     if not line.startswith("APT"):
         return None
+    lid = line[OFF_LID:OFF_LID + LEN_LID].strip().upper()
     icao = line[OFF_ICAO:OFF_ICAO + LEN_ICAO].strip().upper()
-    # Some records are non-ICAO; skip if missing
-    if not icao:
+    # Need at least one identifier
+    if not lid and not icao:
         return None
 
     facility_use = line[OFF_FACILITY_USE_A18:OFF_FACILITY_USE_A18 + LEN_FACILITY_USE_A18].strip().upper()
@@ -69,6 +70,7 @@ def decode_fuel_info_from_apt_record(line: str) -> FuelInfo | None:
     fuel_jeta = any(t.startswith("A") for t in toks)
 
     return FuelInfo(
+        lid=lid,
         icao=icao,
         facility_use=facility_use,
         fuel_100ll=fuel_100ll,

@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from typing import List
 
-from mvp_backend.planner import load_airports_solver, plan_route_multi_stop, terrain_avoid_leg_streaming
+from mvp_backend.planner import load_airports_solver, plan_route_multi_stop, terrain_avoid_leg_streaming, leg_fuel_ok, plan_stop_sequence
 from mvp_backend.srtm_local import SRTMProvider
 from mvp_backend.grid_astar import _haversine_nm
 
@@ -106,16 +106,47 @@ def route_stream(req: RouteRequest):
     if not arr:
         raise HTTPException(404, f"Unknown arr_icao {req.arr_icao}")
 
+    # Quickly determine fuel stop sequence using straight-line distances (no SRTM)
+    sequence = plan_stop_sequence(
+        dep=dep, arr=arr, airports=airports,
+        cruise_speed_kt=req.cruise_speed_kt,
+        usable_fuel_gal=req.usable_fuel_gal,
+        burn_gph=req.fuel_burn_gph,
+        reserve_min=req.reserve_min,
+        required_fuel=req.required_fuel,
+        max_detour_factor=req.max_detour_factor,
+    )
+
     def generate():
-        # First run the streaming terrain leg for the direct pair
-        yield f"data: {json.dumps({'type': 'leg_start', 'from': dep.icao, 'to': arr.icao})}\n\n"
-        for event in terrain_avoid_leg_streaming(
-            dep, arr,
-            max_msl_ft=req.max_msl_ft,
-            min_agl_ft=req.min_agl_ft,
-            max_detour_factor=req.max_detour_factor,
-        ):
-            yield f"data: {json.dumps(event)}\n\n"
+        if sequence is None:
+            yield f"data: {json.dumps({'type': 'no_path', 'message': 'No fuel-feasible route found.'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+
+        num_legs = len(sequence) - 1
+        stops = [ap.icao for ap in sequence[1:-1]]
+
+        yield f"data: {json.dumps({'type': 'route_plan', 'stops': stops, 'num_legs': num_legs})}\n\n"
+
+        # Stream A* visualization for each leg
+        for i in range(num_legs):
+            from_ap = sequence[i]
+            to_ap = sequence[i + 1]
+
+            yield f"data: {json.dumps({'type': 'leg_start', 'from': from_ap.icao, 'to': to_ap.icao, 'leg_index': i})}\n\n"
+
+            for event in terrain_avoid_leg_streaming(
+                from_ap, to_ap,
+                max_msl_ft=req.max_msl_ft,
+                min_agl_ft=req.min_agl_ft,
+                max_detour_factor=req.max_detour_factor,
+            ):
+                if event.get("type") == "path":
+                    event["leg_index"] = i
+                    event["from"] = from_ap.icao
+                    event["to"] = to_ap.icao
+                yield f"data: {json.dumps(event)}\n\n"
+
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")

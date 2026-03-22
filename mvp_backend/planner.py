@@ -34,10 +34,11 @@ def load_airports_solver(path: str = DATA_AIRPORTS_SOLVER) -> Dict[str, Airport]
         r = csv.DictReader(f)
         for row in r:
             icao = (row.get("icao") or "").strip().upper()
-            if not icao:
+            lid = (row.get("lid") or "").strip().upper()
+            if not icao and not lid:
                 continue
-            out[icao] = Airport(
-                icao=icao,
+            ap = Airport(
+                icao=icao or lid,
                 name=row.get("name") or "",
                 lat=float(row.get("lat") or 0),
                 lon=float(row.get("lon") or 0),
@@ -46,6 +47,12 @@ def load_airports_solver(path: str = DATA_AIRPORTS_SOLVER) -> Dict[str, Airport]
                 fuel_100ll=int(row.get("fuel_100ll") or 0),
                 fuel_jeta=int(row.get("fuel_jeta") or 0),
             )
+            # Index by ICAO code
+            if icao:
+                out[icao] = ap
+            # Also index by LID so users can type either
+            if lid and lid not in out:
+                out[lid] = ap
     return out
 
 
@@ -156,6 +163,119 @@ def leg_fuel_ok(dist_nm: float, cruise_speed_kt: float, usable_fuel_gal: float, 
     reserve_gal = (reserve_min / 60.0) * burn_gph
     needed_gal = time_hr * burn_gph + reserve_gal
     return (needed_gal <= usable_fuel_gal, time_hr, needed_gal)
+
+
+def plan_stop_sequence(
+    dep: Airport,
+    arr: Airport,
+    airports: Dict[str, Airport],
+    cruise_speed_kt: float,
+    usable_fuel_gal: float,
+    burn_gph: float,
+    reserve_min: float,
+    required_fuel: str,
+    max_detour_factor: float,
+    max_expansions: int = 400,
+    max_neighbors: int = 60,
+) -> Optional[List[Airport]]:
+    """Quickly determine fuel stop sequence using straight-line distances.
+
+    Returns ordered list of airports [dep, stop1, ..., arr] or None if no route.
+    Uses only haversine distances (no SRTM/A*), so it's very fast.
+    """
+    import heapq
+
+    # Check if direct is fuel-feasible
+    direct_nm = _direct_nm(dep, arr)
+    ok, _, _ = leg_fuel_ok(direct_nm * max_detour_factor, cruise_speed_kt,
+                           usable_fuel_gal, burn_gph, reserve_min)
+    if ok:
+        return [dep, arr]
+
+    want_100ll = required_fuel.upper() == "100LL"
+
+    max_leg_time = (usable_fuel_gal / burn_gph) - (reserve_min / 60.0)
+    if max_leg_time <= 0:
+        return None
+    max_leg_nm = max_leg_time * cruise_speed_kt
+
+    # Build candidate fuel stops
+    stop_candidates: List[Airport] = []
+    for ap in airports.values():
+        if ap.facility_use != "PU":
+            continue
+        if want_100ll and ap.fuel_100ll != 1:
+            continue
+        if (not want_100ll) and ap.fuel_jeta != 1:
+            continue
+        stop_candidates.append(ap)
+
+    # Dijkstra over straight-line distances
+    best_time: Dict[str, float] = {dep.icao: 0.0}
+    prev: Dict[str, str] = {}
+    pq: list[tuple[float, str]] = [(0.0, dep.icao)]
+    expanded = 0
+    radius_nm = max_leg_nm * max_detour_factor
+
+    def get_airport(code: str) -> Airport:
+        if code == dep.icao:
+            return dep
+        if code == arr.icao:
+            return arr
+        return airports[code]
+
+    while pq and expanded < max_expansions:
+        cur_t, cur_code = heapq.heappop(pq)
+        if cur_t != best_time.get(cur_code, float("inf")):
+            continue
+        if cur_code == arr.icao:
+            break
+
+        expanded += 1
+        cur_ap = get_airport(cur_code)
+
+        neigh: List[tuple[float, Airport]] = []
+        d_to_arr = _direct_nm(cur_ap, arr)
+        if d_to_arr <= radius_nm:
+            neigh.append((d_to_arr, arr))
+
+        for ap in stop_candidates:
+            if ap.icao == cur_code:
+                continue
+            d = _direct_nm(cur_ap, ap)
+            if d <= radius_nm:
+                neigh.append((d, ap))
+
+        neigh.sort(key=lambda x: x[0])
+        neigh = neigh[:max_neighbors]
+
+        for d, nxt_ap in neigh:
+            # Use straight-line distance with detour factor for fuel check
+            ok, t_hr, _ = leg_fuel_ok(d * max_detour_factor, cruise_speed_kt,
+                                      usable_fuel_gal, burn_gph, reserve_min)
+            if not ok:
+                continue
+            new_t = cur_t + t_hr
+            if new_t < best_time.get(nxt_ap.icao, float("inf")):
+                best_time[nxt_ap.icao] = new_t
+                prev[nxt_ap.icao] = cur_code
+                heapq.heappush(pq, (new_t, nxt_ap.icao))
+
+    if arr.icao not in best_time:
+        return None
+
+    # Reconstruct stop sequence
+    sequence = []
+    cur = arr.icao
+    while cur != dep.icao:
+        sequence.append(get_airport(cur))
+        p = prev.get(cur)
+        if not p:
+            return None
+        cur = p
+    sequence.append(dep)
+    sequence.reverse()
+    return sequence
 
 
 def plan_route_multi_stop(
