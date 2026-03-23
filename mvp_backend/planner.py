@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Tuple
 from mvp_backend.grid_astar import GridSpec, astar_path, astar_path_streaming, path_nm
 from mvp_backend.terrain_provider import meters_to_feet
 from mvp_backend.srtm_local import SRTMProvider
+from mvp_backend import route_cache
 
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -86,11 +87,26 @@ def terrain_avoid_leg(
     initial_margin_km: float = 40.0,
     margin_step_km: float = 40.0,
     max_margin_km: float = 400.0,
+    max_climb_fpm: float = 0,
+    max_descent_fpm: float = 0,
+    cruise_speed_kt: float = 0,
+    climb_speed_kt: float = 0,
+    descent_speed_kt: float = 0,
 ) -> Optional[LegResult]:
     """Find terrain-avoiding path between airports using grid A*.
 
     Expands a bounding-box margin until a path is found with acceptable detour.
+    When max_climb_fpm/max_descent_fpm > 0, also enforces climb/descent rate
+    limits per grid edge (terrain-following constraint).
     """
+    # ── persistent cache lookup ──
+    cached = route_cache.get_leg(a.icao, b.icao, max_msl_ft, min_agl_ft, max_detour_factor,
+                                 max_climb_fpm, max_descent_fpm,
+                                 climb_speed_kt, descent_speed_kt)
+    if cached is not None:
+        if cached.dist_nm == float("inf"):
+            return None
+        return LegResult(dist_nm=cached.dist_nm, path_latlon=cached.path)
 
     provider = SRTMProvider(cache_dir=os.path.join(ROOT, "mvp_backend", "srtm_cache"))
 
@@ -128,11 +144,16 @@ def terrain_avoid_leg(
         elev_ft = [meters_to_feet(m) if m == m else float("inf") for m in elev_m]
 
         passable: List[List[bool]] = [[True] * n_lon for _ in range(n_lat)]
+        elev_ft_2d: Optional[List[List[float]]] = None
+        if max_climb_fpm > 0 or max_descent_fpm > 0:
+            elev_ft_2d = [[0.0] * n_lon for _ in range(n_lat)]
         k = 0
         for i in range(n_lat):
             row = passable[i]
             for j in range(n_lon):
                 row[j] = elev_ft[k] <= ceiling_ft
+                if elev_ft_2d is not None:
+                    elev_ft_2d[i][j] = elev_ft[k]
                 k += 1
 
         start = grid.latlon_to_idx(a.lat, a.lon)
@@ -142,7 +163,13 @@ def terrain_avoid_leg(
             margin_km += margin_step_km
             continue
 
-        path_idx = astar_path(grid, passable, start, goal)
+        path_idx = astar_path(grid, passable, start, goal,
+                              elev_ft=elev_ft_2d,
+                              max_climb_fpm=max_climb_fpm,
+                              max_descent_fpm=max_descent_fpm,
+                              cruise_kt=cruise_speed_kt,
+                              climb_speed_kt=climb_speed_kt,
+                              descent_speed_kt=descent_speed_kt)
         if not path_idx:
             margin_km += margin_step_km
             continue
@@ -150,11 +177,17 @@ def terrain_avoid_leg(
         dist_nm = path_nm(grid, path_idx)
         if dist_nm <= detour_limit_nm:
             path_latlon = [grid.idx_to_latlon(i, j) for i, j in path_idx]
+            route_cache.put_leg(a.icao, b.icao, max_msl_ft, min_agl_ft, max_detour_factor, dist_nm, path_latlon,
+                                max_climb_fpm, max_descent_fpm,
+                                climb_speed_kt, descent_speed_kt)
             return LegResult(dist_nm=dist_nm, path_latlon=path_latlon)
 
         # Found path but too long: expand margin (sometimes finds a shorter corridor)
         margin_km += margin_step_km
 
+    route_cache.put_leg(a.icao, b.icao, max_msl_ft, min_agl_ft, max_detour_factor, None, None,
+                        max_climb_fpm, max_descent_fpm,
+                        climb_speed_kt, descent_speed_kt)
     return None
 
 
@@ -177,19 +210,50 @@ def plan_stop_sequence(
     max_detour_factor: float,
     max_expansions: int = 400,
     max_neighbors: int = 60,
+    blocked_pairs: Optional[set] = None,
+    max_msl_ft: float = 0,
+    min_agl_ft: float = 0,
+    max_climb_fpm: float = 0,
+    max_descent_fpm: float = 0,
+    climb_speed_kt: float = 0,
+    descent_speed_kt: float = 0,
 ) -> Optional[List[Airport]]:
     """Quickly determine fuel stop sequence using straight-line distances.
 
     Returns ordered list of airports [dep, stop1, ..., arr] or None if no route.
     Uses only haversine distances (no SRTM/A*), so it's very fast.
+
+    blocked_pairs: set of (from_icao, to_icao) tuples known to be terrain-impassable.
+    max_msl_ft/min_agl_ft: if >0, also checks the route cache for known failures.
     """
     import heapq
 
-    # Check if direct is fuel-feasible
+    _blocked = blocked_pairs or set()
+
+    def _is_blocked(from_code: str, to_code: str) -> bool:
+        if (from_code, to_code) in _blocked:
+            return True
+        if max_msl_ft > 0 and route_cache.is_known_failure(
+                from_code, to_code, max_msl_ft, min_agl_ft, max_detour_factor,
+                max_climb_fpm, max_descent_fpm,
+                climb_speed_kt, descent_speed_kt):
+            return True
+        return False
+
+    # Terrain detours are typically 10-30%, not the full max_detour_factor
+    # (which is an *acceptance ceiling* for A*).  Use a realistic planning
+    # cushion so we don't force unnecessary fuel stops.
+    planning_detour = min(max_detour_factor, 1.25)
+
+    # Per-stop penalty: landing, taxi, refuel, takeoff ~ 0.5 hr equivalent.
+    # This makes Dijkstra prefer fewer, longer legs over many short hops.
+    stop_penalty_hr = 0.5
+
+    # Check if direct is fuel-feasible and not blocked
     direct_nm = _direct_nm(dep, arr)
-    ok, _, _ = leg_fuel_ok(direct_nm * max_detour_factor, cruise_speed_kt,
+    ok, _, _ = leg_fuel_ok(direct_nm * planning_detour, cruise_speed_kt,
                            usable_fuel_gal, burn_gph, reserve_min)
-    if ok:
+    if ok and not _is_blocked(dep.icao, arr.icao):
         return [dep, arr]
 
     want_100ll = required_fuel.upper() == "100LL"
@@ -210,12 +274,12 @@ def plan_stop_sequence(
             continue
         stop_candidates.append(ap)
 
-    # Dijkstra over straight-line distances
-    best_time: Dict[str, float] = {dep.icao: 0.0}
+    # Dijkstra over straight-line distances (cost = flight time + stop penalty)
+    best_cost: Dict[str, float] = {dep.icao: 0.0}
     prev: Dict[str, str] = {}
     pq: list[tuple[float, str]] = [(0.0, dep.icao)]
     expanded = 0
-    radius_nm = max_leg_nm * max_detour_factor
+    radius_nm = max_leg_nm  # straight-line range (no extra inflation)
 
     def get_airport(code: str) -> Airport:
         if code == dep.icao:
@@ -225,8 +289,8 @@ def plan_stop_sequence(
         return airports[code]
 
     while pq and expanded < max_expansions:
-        cur_t, cur_code = heapq.heappop(pq)
-        if cur_t != best_time.get(cur_code, float("inf")):
+        cur_cost, cur_code = heapq.heappop(pq)
+        if cur_cost != best_cost.get(cur_code, float("inf")):
             continue
         if cur_code == arr.icao:
             break
@@ -250,18 +314,23 @@ def plan_stop_sequence(
         neigh = neigh[:max_neighbors]
 
         for d, nxt_ap in neigh:
-            # Use straight-line distance with detour factor for fuel check
-            ok, t_hr, _ = leg_fuel_ok(d * max_detour_factor, cruise_speed_kt,
+            # Skip pairs known to be terrain-impassable at this altitude
+            if _is_blocked(cur_code, nxt_ap.icao):
+                continue
+            # Fuel check uses planning_detour (realistic terrain cushion)
+            ok, t_hr, _ = leg_fuel_ok(d * planning_detour, cruise_speed_kt,
                                       usable_fuel_gal, burn_gph, reserve_min)
             if not ok:
                 continue
-            new_t = cur_t + t_hr
-            if new_t < best_time.get(nxt_ap.icao, float("inf")):
-                best_time[nxt_ap.icao] = new_t
+            # Add stop penalty for intermediate stops (not for arrival)
+            penalty = 0.0 if nxt_ap.icao == arr.icao else stop_penalty_hr
+            new_cost = cur_cost + t_hr + penalty
+            if new_cost < best_cost.get(nxt_ap.icao, float("inf")):
+                best_cost[nxt_ap.icao] = new_cost
                 prev[nxt_ap.icao] = cur_code
-                heapq.heappush(pq, (new_t, nxt_ap.icao))
+                heapq.heappush(pq, (new_cost, nxt_ap.icao))
 
-    if arr.icao not in best_time:
+    if arr.icao not in best_cost:
         return None
 
     # Reconstruct stop sequence
@@ -292,6 +361,10 @@ def plan_route_multi_stop(
     max_detour_factor: float,
     max_expansions: int = 400,
     max_neighbors: int = 60,
+    max_climb_fpm: float = 0,
+    max_descent_fpm: float = 0,
+    climb_speed_kt: float = 0,
+    descent_speed_kt: float = 0,
 ) -> dict:
     """Multi-stop route planner (unbounded stops) minimizing total time.
 
@@ -361,8 +434,8 @@ def plan_route_multi_stop(
         cur_ap = get_airport(cur_code)
 
         # Candidate neighbors: fuel stops + destination
-        # Prune by straight-line range (allow some detour via factor)
-        radius_nm = max_leg_nm * max_detour_factor
+        # Prune by straight-line range (max_leg_nm is already the fuel range)
+        radius_nm = max_leg_nm
 
         neigh: List[tuple[float, Airport]] = []
         # destination
@@ -385,7 +458,11 @@ def plan_route_multi_stop(
             key = (cur_code, nxt_ap.icao)
             cached = leg_cache.get(key)
             if cached is None:
-                leg = terrain_avoid_leg(cur_ap, nxt_ap, max_msl_ft, min_agl_ft, max_detour_factor)
+                leg = terrain_avoid_leg(cur_ap, nxt_ap, max_msl_ft, min_agl_ft, max_detour_factor,
+                                        max_climb_fpm=max_climb_fpm, max_descent_fpm=max_descent_fpm,
+                                        cruise_speed_kt=cruise_speed_kt,
+                                        climb_speed_kt=climb_speed_kt,
+                                        descent_speed_kt=descent_speed_kt)
                 if not leg:
                     leg_cache[key] = (float("inf"), float("inf"), float("inf"), [])
                     continue
@@ -458,8 +535,16 @@ def terrain_avoid_leg_streaming(
     initial_margin_km: float = 40.0,
     margin_step_km: float = 40.0,
     max_margin_km: float = 400.0,
+    max_climb_fpm: float = 0,
+    max_descent_fpm: float = 0,
+    cruise_speed_kt: float = 0,
+    climb_speed_kt: float = 0,
+    descent_speed_kt: float = 0,
 ):
     """Generator that yields A* exploration events for one leg.
+
+    When max_climb_fpm/max_descent_fpm > 0, enforces climb/descent rate
+    limits per grid edge (terrain-following constraint).
 
     Yields dicts:
       {"type": "grid", "bounds": [sw_lat, sw_lon, ne_lat, ne_lon]}
@@ -467,6 +552,17 @@ def terrain_avoid_leg_streaming(
       {"type": "path", "coords": [[lat, lon], ...], "dist_nm": float}
       {"type": "no_path"}
     """
+    # ── persistent cache lookup (instant return, no animation) ──
+    cached = route_cache.get_leg(a.icao, b.icao, max_msl_ft, min_agl_ft, max_detour_factor,
+                                 max_climb_fpm, max_descent_fpm,
+                                 climb_speed_kt, descent_speed_kt)
+    if cached is not None:
+        if cached.dist_nm == float("inf"):
+            yield {"type": "no_path"}
+        else:
+            yield {"type": "path", "coords": cached.path, "dist_nm": cached.dist_nm, "cached": True}
+        return
+
     from mvp_backend.grid_astar import astar_path_streaming
 
     provider = SRTMProvider(cache_dir=os.path.join(ROOT, "mvp_backend", "srtm_cache"))
@@ -502,11 +598,16 @@ def terrain_avoid_leg_streaming(
         elev_ft = [meters_to_feet(m) if m == m else float("inf") for m in elev_m]
 
         passable: List[List[bool]] = [[True] * n_lon for _ in range(n_lat)]
+        elev_ft_2d: Optional[List[List[float]]] = None
+        if max_climb_fpm > 0 or max_descent_fpm > 0:
+            elev_ft_2d = [[0.0] * n_lon for _ in range(n_lat)]
         k = 0
         for i in range(n_lat):
             row = passable[i]
             for j in range(n_lon):
                 row[j] = elev_ft[k] <= ceiling_ft
+                if elev_ft_2d is not None:
+                    elev_ft_2d[i][j] = elev_ft[k]
                 k += 1
 
         start = grid.latlon_to_idx(a.lat, a.lon)
@@ -515,13 +616,27 @@ def terrain_avoid_leg_streaming(
             margin_km += margin_step_km
             continue
 
-        for event in astar_path_streaming(grid, passable, start, goal, yield_every=30):
+        for event in astar_path_streaming(grid, passable, start, goal, yield_every=30,
+                                           elev_ft=elev_ft_2d,
+                                           max_climb_fpm=max_climb_fpm,
+                                           max_descent_fpm=max_descent_fpm,
+                                           cruise_kt=cruise_speed_kt,
+                                           climb_speed_kt=climb_speed_kt,
+                                           descent_speed_kt=descent_speed_kt):
             if event["type"] == "path" and event["dist_nm"] > detour_limit_nm:
                 break  # too long, try wider margin
+            if event["type"] == "no_path":
+                break  # no path in this margin, try wider
             yield event
-            if event["type"] in ("path", "no_path"):
+            if event["type"] == "path":
+                route_cache.put_leg(a.icao, b.icao, max_msl_ft, min_agl_ft, max_detour_factor, event["dist_nm"], event["coords"],
+                                    max_climb_fpm, max_descent_fpm,
+                                    climb_speed_kt, descent_speed_kt)
                 return
 
         margin_km += margin_step_km
 
+    route_cache.put_leg(a.icao, b.icao, max_msl_ft, min_agl_ft, max_detour_factor, None, None,
+                        max_climb_fpm, max_descent_fpm,
+                        climb_speed_kt, descent_speed_kt)
     yield {"type": "no_path"}

@@ -40,8 +40,19 @@ def astar_path(
     passable: List[List[bool]],
     start: tuple[int, int],
     goal: tuple[int, int],
+    elev_ft: Optional[List[List[float]]] = None,
+    max_climb_fpm: float = 0,
+    max_descent_fpm: float = 0,
+    cruise_kt: float = 0,
+    climb_speed_kt: float = 0,
+    descent_speed_kt: float = 0,
 ) -> Optional[List[tuple[int, int]]]:
-    """8-connected A* over passable grid."""
+    """8-connected A* over passable grid.
+
+    When elev_ft + cruise_kt are provided, also enforces climb/descent rate
+    limits per edge (terrain-following model).  climb_speed_kt / descent_speed_kt
+    override cruise_kt for ascending / descending edges respectively.
+    """
 
     def h(a: tuple[int, int], b: tuple[int, int]) -> float:
         lat1, lon1 = grid.idx_to_latlon(*a)
@@ -82,6 +93,19 @@ def astar_path(
             lat1, lon1 = grid.idx_to_latlon(ci, cj)
             lat2, lon2 = grid.idx_to_latlon(ni, nj)
             step = _haversine_nm(lat1, lon1, lat2, lon2)
+            # climb/descent rate check (terrain-following model)
+            if elev_ft is not None and cruise_kt > 0 and step > 0:
+                d_elev = elev_ft[ni][nj] - elev_ft[ci][cj]
+                if d_elev > 0 and max_climb_fpm > 0:
+                    spd = climb_speed_kt if climb_speed_kt > 0 else cruise_kt
+                    time_min = (step / spd) * 60.0
+                    if d_elev / time_min > max_climb_fpm:
+                        continue
+                if d_elev < 0 and max_descent_fpm > 0:
+                    spd = descent_speed_kt if descent_speed_kt > 0 else cruise_kt
+                    time_min = (step / spd) * 60.0
+                    if (-d_elev) / time_min > max_descent_fpm:
+                        continue
             ng = gscore[cur] + step
             nxt = (ni, nj)
             if ng < gscore.get(nxt, float("inf")):
@@ -109,8 +133,17 @@ def astar_path_streaming(
     start: tuple[int, int],
     goal: tuple[int, int],
     yield_every: int = 20,
+    elev_ft: Optional[List[List[float]]] = None,
+    max_climb_fpm: float = 0,
+    max_descent_fpm: float = 0,
+    cruise_kt: float = 0,
+    climb_speed_kt: float = 0,
+    descent_speed_kt: float = 0,
 ) -> Generator[dict, None, None]:
     """A* that yields progress dicts as it explores.
+
+    When elev_ft + cruise_kt are provided, also enforces climb/descent rate
+    limits per edge (terrain-following model).
 
     Yields:
       {"type": "explore", "cells": [[lat, lon], ...]}   – batch of explored cells
@@ -172,6 +205,19 @@ def astar_path_streaming(
             lat1, lon1 = grid.idx_to_latlon(ci, cj)
             lat2, lon2 = grid.idx_to_latlon(ni, nj)
             step = _haversine_nm(lat1, lon1, lat2, lon2)
+            # climb/descent rate check (terrain-following model)
+            if elev_ft is not None and cruise_kt > 0 and step > 0:
+                d_elev = elev_ft[ni][nj] - elev_ft[ci][cj]
+                if d_elev > 0 and max_climb_fpm > 0:
+                    spd = climb_speed_kt if climb_speed_kt > 0 else cruise_kt
+                    time_min = (step / spd) * 60.0
+                    if d_elev / time_min > max_climb_fpm:
+                        continue
+                if d_elev < 0 and max_descent_fpm > 0:
+                    spd = descent_speed_kt if descent_speed_kt > 0 else cruise_kt
+                    time_min = (step / spd) * 60.0
+                    if (-d_elev) / time_min > max_descent_fpm:
+                        continue
             ng = gscore[cur] + step
             nxt = (ni, nj)
             if ng < gscore.get(nxt, float("inf")):

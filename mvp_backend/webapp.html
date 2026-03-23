@@ -20,6 +20,9 @@
     #abortBtn:hover { background:#b91c1c; }
     .watch-row { display:flex; align-items:center; gap:8px; margin-top:10px; font-size:13px; color:#374151; }
     .watch-row input[type=checkbox] { width:auto; }
+    .radio-group { display:flex; gap:12px; margin-top:6px; }
+    .radio-group label { display:inline-flex; align-items:center; gap:4px; margin:0; font-size:13px; cursor:pointer; }
+    .radio-group input[type=radio] { width:auto; margin:0; }
     #map { height: calc(100vh - 290px); min-height: 300px; border-radius: 10px; }
     #profileWrap { margin-top: 8px; display: none; }
     #profileWrap.visible { display: block; }
@@ -73,6 +76,26 @@
       <label>Min altitude (ft AGL)</label>
       <input id="minAgl" type="number" value="200" min="0" step="50" />
 
+      <label>Flight mode</label>
+      <div class="radio-group">
+        <label><input type="radio" name="flightMode" value="maxmsl" checked /> Fly at max MSL</label>
+        <label><input type="radio" name="flightMode" value="terrain" /> Terrain following</label>
+      </div>
+
+      <div id="terrainFollowOpts">
+      <label>Max climb rate (fpm) — 0 = unlimited</label>
+      <input id="maxClimb" type="number" value="0" min="0" step="50" placeholder="e.g. 700" />
+
+      <label>Climb speed (kt) — 0 = use cruise</label>
+      <input id="climbSpeedKt" type="number" value="0" min="0" step="1" placeholder="e.g. 65" />
+
+      <label>Max descent rate (fpm) — 0 = unlimited</label>
+      <input id="maxDescent" type="number" value="0" min="0" step="50" placeholder="e.g. 500" />
+
+      <label>Descent speed (kt) — 0 = use cruise</label>
+      <input id="descentSpeedKt" type="number" value="0" min="0" step="1" placeholder="e.g. 90" />
+      </div>
+
       <label>Max detour factor: <span id="detourVal">1.8</span>x</label>
       <input id="detour" type="range" min="1" max="5" value="1.8" step="0.1" />
 
@@ -89,8 +112,7 @@
       </div>
       <div id="status" class="muted" style="margin-top:10px"></div>
       <div id="error" class="err" style="margin-top:8px"></div>
-
-      <div id="results"></div>
+      <div id="cacheStats" class="muted" style="margin-top:12px; font-size:0.8em; border-top:1px solid #ddd; padding-top:6px"></div>
     </div>
 
     <div class="card">
@@ -99,6 +121,7 @@
         <div class="profile-title">Elevation Profile (side view)</div>
         <canvas id="profileCanvas"></canvas>
       </div>
+      <div id="results" style="margin-top:10px"></div>
     </div>
   </div>
 
@@ -153,7 +176,16 @@
     // Load airports on startup
     loadAirports();
 
-    async function fetchAndDrawProfile(path, maxMsl, minAgl, depLabel, arrLabel) {
+    // Toggle terrain-follow options visibility
+    const terrainOpts = document.getElementById('terrainFollowOpts');
+    document.querySelectorAll('input[name="flightMode"]').forEach(radio => {
+      radio.addEventListener('change', () => {
+        terrainOpts.style.display = radio.value === 'terrain' && radio.checked ? '' : 'none';
+      });
+    });
+    terrainOpts.style.display = 'none'; // hidden by default (Max MSL mode)
+
+    async function fetchAndDrawProfile(path, maxMsl, minAgl, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow) {
       try {
         const res = await fetch('/elevation-profile', {
           method: 'POST',
@@ -162,11 +194,11 @@
         });
         if (!res.ok) return;
         const data = await res.json();
-        drawProfile(data, depLabel, arrLabel);
+        drawProfile(data, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow);
       } catch (e) { /* silent */ }
     }
 
-    function drawProfile(data, depLabel, arrLabel) {
+    function drawProfile(data, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow) {
       const wrap = document.getElementById('profileWrap');
       const canvas = document.getElementById('profileCanvas');
       wrap.classList.add('visible');
@@ -269,6 +301,43 @@
       ctx.fillText(depLabel, x(0) + 2, pad.top + 4);
       ctx.textAlign = 'right';
       ctx.fillText(arrLabel, x(maxDist) - 2, pad.top + 4);
+
+      // Flight altitude trace
+      if (terrainFollow && cruiseKt > 0 && (maxClimbFpm > 0 || maxDescentFpm > 0)) {
+        // Terrain following: hug min AGL, limited by ROC/ROD
+        const climbKt = climbSpeedKt > 0 ? climbSpeedKt : cruiseKt;
+        const descentKt = descentSpeedKt > 0 ? descentSpeedKt : cruiseKt;
+        const fa = [Math.min(Math.max(ground[0] + minAgl, ground[0]), maxMsl)];
+        for (let i = 1; i < dist.length; i++) {
+          const segDist = dist[i] - dist[i - 1];
+          const prev = fa[i - 1];
+          const required = ground[i] + minAgl;
+          const dtClimb = (segDist / climbKt) * 60;
+          const dtDescent = (segDist / descentKt) * 60;
+          const ceiling = maxClimbFpm > 0 ? Math.min(prev + maxClimbFpm * dtClimb, maxMsl) : maxMsl;
+          const floor = maxDescentFpm > 0 ? Math.max(prev - maxDescentFpm * dtDescent, required) : required;
+          fa.push(Math.min(ceiling, Math.max(required, floor)));
+        }
+        ctx.strokeStyle = '#2563eb';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(x(dist[0]), y(fa[0]));
+        for (let i = 1; i < fa.length; i++) ctx.lineTo(x(dist[i]), y(fa[i]));
+        ctx.stroke();
+        ctx.fillStyle = '#2563eb'; ctx.font = '10px system-ui'; ctx.textAlign = 'left';
+        ctx.fillText('Terrain-follow alt (est.)', pad.left + 4, y(fa[Math.min(5, fa.length - 1)]) - 8);
+      } else {
+        // Max MSL mode: flat cruise line at max MSL
+        ctx.strokeStyle = '#2563eb';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 3]);
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y(maxMsl));
+        ctx.lineTo(W - pad.right, y(maxMsl));
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
     }
 
     function addPath(path, color) {
@@ -294,19 +363,79 @@
       return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
-    function renderTripStats({groundDistNm, straightNm, timeHr, fuelGal, fuelRemainingGal, reserveMin, burnGph, depLabel, arrLabel, stops}) {
+    function renderNavLog({legs, usableFuelGal, reserveMin, burnGph, depLabel, arrLabel, stops, failedLeg}) {
       const reserveGal = (reserveMin / 60) * burnGph;
       const resultsDiv = document.getElementById('results');
-      let html = `<div style="font-weight:600; margin-top:10px">Trip Summary</div>`;
-      html += '<table><tbody>';
-      html += `<tr><td>Route</td><td>${depLabel} → ${stops && stops.length ? stops.join(' → ') + ' → ' : ''}${arrLabel}</td></tr>`;
-      html += `<tr><td>Straight-line distance</td><td>${fmt(straightNm, 1)} NM</td></tr>`;
-      html += `<tr><td>Ground distance (terrain-avoidance)</td><td>${fmt(groundDistNm, 1)} NM</td></tr>`;
-      html += `<tr><td>Detour</td><td>${fmt(groundDistNm - straightNm, 1)} NM (+${fmt(((groundDistNm / Math.max(straightNm, 0.1)) - 1) * 100, 1)}%)</td></tr>`;
-      html += `<tr><td>Estimated time</td><td>${fmt(timeHr, 2)} hr (${Math.floor(timeHr * 60)} min)</td></tr>`;
-      html += `<tr><td>Fuel used</td><td>${fmt(fuelGal, 1)} gal</td></tr>`;
-      html += `<tr><td>Reserve (${fmt(reserveMin, 0)} min)</td><td>${fmt(reserveGal, 1)} gal</td></tr>`;
-      html += `<tr><td>Fuel remaining</td><td style="color:${fuelRemainingGal < 0 ? '#dc2626' : '#16a34a'}">${fmt(fuelRemainingGal, 1)} gal</td></tr>`;
+      const route = depLabel + (stops && stops.length ? ' → ' + stops.join(' → ') : '') + ' → ' + arrLabel;
+
+      let html = `<div style="font-weight:600; margin-top:10px">Navigation Log</div>`;
+      html += `<div style="margin:4px 0; font-size:0.9em">${route}</div>`;
+      html += '<table style="font-size:0.85em; border-collapse:collapse; width:100%">';
+      html += '<thead><tr style="border-bottom:2px solid #888">';
+      html += '<th style="text-align:left;padding:2px 6px">#</th>';
+      html += '<th style="text-align:left;padding:2px 6px">From</th>';
+      html += '<th style="text-align:left;padding:2px 6px">To</th>';
+      html += '<th style="text-align:right;padding:2px 6px">Dist<br>NM</th>';
+      html += '<th style="text-align:right;padding:2px 6px">Time</th>';
+      html += '<th style="text-align:right;padding:2px 6px">Fuel<br>Burn</th>';
+      html += '<th style="text-align:right;padding:2px 6px">Fuel<br>Rem</th>';
+      html += '<th style="text-align:right;padding:2px 6px;border-left:2px solid #888">Trip<br>Dist</th>';
+      html += '<th style="text-align:right;padding:2px 6px">Trip<br>Time</th>';
+      html += '<th style="text-align:right;padding:2px 6px">Trip<br>Fuel</th>';
+      html += '</tr></thead><tbody>';
+
+      let tripDist = 0, tripTime = 0, tripFuel = 0;
+      legs.forEach((leg, i) => {
+        tripDist += leg.distNm;
+        tripTime += leg.timeHr;
+        tripFuel += leg.fuelGal;
+        const fuelRem = usableFuelGal - leg.fuelGal;
+        const legMin = Math.round(leg.timeHr * 60);
+        const tripMin = Math.round(tripTime * 60);
+
+        html += '<tr style="border-bottom:1px solid #ddd">';
+        html += `<td style="padding:2px 6px">${i + 1}${leg.cached ? ' \u26A1' : ''}</td>`;
+        html += `<td style="padding:2px 6px">${leg.from}</td>`;
+        html += `<td style="padding:2px 6px">${leg.to}</td>`;
+        html += `<td style="text-align:right;padding:2px 6px">${fmt(leg.distNm, 1)}</td>`;
+        html += `<td style="text-align:right;padding:2px 6px">${legMin} min</td>`;
+        html += `<td style="text-align:right;padding:2px 6px">${fmt(leg.fuelGal, 1)} gal</td>`;
+        html += `<td style="text-align:right;padding:2px 6px;color:${fuelRem < reserveGal ? '#dc2626' : '#16a34a'}">${fmt(fuelRem, 1)} gal</td>`;
+        html += `<td style="text-align:right;padding:2px 6px;border-left:2px solid #888">${fmt(tripDist, 1)}</td>`;
+        html += `<td style="text-align:right;padding:2px 6px">${tripMin} min</td>`;
+        html += `<td style="text-align:right;padding:2px 6px">${fmt(tripFuel, 1)} gal</td>`;
+        html += '</tr>';
+      });
+
+      // failed leg row (if route aborted mid-way)
+      if (failedLeg) {
+        html += '<tr style="border-bottom:1px solid #ddd; background:#fef2f2; color:#dc2626">';
+        html += `<td style="padding:2px 6px">${legs.length + 1} \u2716</td>`;
+        html += `<td style="padding:2px 6px">${failedLeg.from || '?'}</td>`;
+        html += `<td style="padding:2px 6px">${failedLeg.to || '?'}</td>`;
+        html += '<td colspan="4" style="padding:2px 6px">NO PATH FOUND</td>';
+        html += '<td colspan="3" style="border-left:2px solid #888"></td>';
+        html += '</tr>';
+      }
+
+      // totals row
+      const lastFuelRem = legs.length ? usableFuelGal - legs[legs.length - 1].fuelGal : usableFuelGal;
+      html += '<tr style="border-top:2px solid #888; font-weight:600">';
+      html += `<td colspan="3" style="padding:2px 6px">Total</td>`;
+      html += `<td style="text-align:right;padding:2px 6px">${fmt(tripDist, 1)}</td>`;
+      html += `<td style="text-align:right;padding:2px 6px">${Math.round(tripTime * 60)} min</td>`;
+      html += `<td style="text-align:right;padding:2px 6px">${fmt(tripFuel, 1)} gal</td>`;
+      html += `<td style="text-align:right;padding:2px 6px;color:${lastFuelRem < reserveGal ? '#dc2626' : '#16a34a'}">${fmt(lastFuelRem, 1)} gal</td>`;
+      html += '<td colspan="3" style="border-left:2px solid #888"></td>';
+      html += '</tr>';
+
+      // reserve row
+      html += '<tr style="font-size:0.9em; color:#666">';
+      html += `<td colspan="5" style="padding:2px 6px">Reserve (${fmt(reserveMin, 0)} min)</td>`;
+      html += `<td colspan="2" style="text-align:right;padding:2px 6px">${fmt(reserveGal, 1)} gal</td>`;
+      html += '<td colspan="3" style="border-left:2px solid #888"></td>';
+      html += '</tr>';
+
       html += '</tbody></table>';
       resultsDiv.innerHTML = html;
     }
@@ -338,7 +467,12 @@
         min_agl_ft: Number(document.getElementById('minAgl').value),
         max_msl_ft: Number(document.getElementById('maxMsl').value),
         required_fuel: document.getElementById('fuelType').value,
-        max_detour_factor: Number(document.getElementById('detour').value)
+        max_detour_factor: Number(document.getElementById('detour').value),
+        max_climb_fpm: Number(document.getElementById('maxClimb').value) || 0,
+        max_descent_fpm: Number(document.getElementById('maxDescent').value) || 0,
+        climb_speed_kt: Number(document.getElementById('climbSpeedKt').value) || 0,
+        descent_speed_kt: Number(document.getElementById('descentSpeedKt').value) || 0,
+        terrain_follow: document.querySelector('input[name="flightMode"]:checked').value === 'terrain',
       };
     }
 
@@ -353,6 +487,7 @@
       let totalDistNm = 0, totalTimeHr = 0, totalFuelGal = 0;
       let lastLegFuelGal = 0;
       let allCoords = [];
+      let legsList = [];
       let stops = [];
       let currentLeg = 0;
       let numLegs = 1;
@@ -386,6 +521,18 @@
           for (const line of lines) {
             if (!line.startsWith('data: ')) continue;
             const event = JSON.parse(line.slice(6));
+
+            if (event.type === 'reroute') {
+              // Terrain blocked a leg — server is replanning with new stops
+              exploreGroup.clearLayers();
+              layerGroup.clearLayers();
+              allCoords = [];
+              legsList = [];
+              totalDistNm = 0; totalTimeHr = 0; totalFuelGal = 0;
+              exploredCount = 0; currentLeg = 0;
+              overallBounds = null;
+              document.getElementById('status').textContent = event.message || 'Replanning route…';
+            }
 
             if (event.type === 'route_plan') {
               stops = event.stops || [];
@@ -439,6 +586,14 @@
               totalFuelGal += legFuelGal;
               lastLegFuelGal = legFuelGal;
               allCoords = allCoords.concat(event.coords);
+              legsList.push({
+                from: event.from || payload.dep_icao,
+                to: event.to || payload.arr_icao,
+                distNm: event.dist_nm,
+                timeHr: legTimeHr,
+                fuelGal: legFuelGal,
+                cached: !!event.cached,
+              });
 
               // add markers for this leg endpoints
               if (event.coords.length) {
@@ -460,24 +615,34 @@
             }
 
             if (event.type === 'no_path') {
+              // render partial nav log with completed legs + failed leg
+              if (legsList.length > 0) {
+                renderNavLog({
+                  legs: legsList,
+                  usableFuelGal: payload.usable_fuel_gal,
+                  reserveMin: payload.reserve_min,
+                  burnGph: payload.fuel_burn_gph,
+                  depLabel: payload.dep_icao,
+                  arrLabel: payload.arr_icao,
+                  stops,
+                  failedLeg: { from: event.from, to: event.to },
+                });
+                if (allCoords.length >= 2) {
+                  fetchAndDrawProfile(allCoords, payload.max_msl_ft, payload.min_agl_ft, payload.dep_icao, payload.arr_icao,
+                    payload.cruise_speed_kt, payload.max_climb_fpm, payload.max_descent_fpm,
+                    payload.climb_speed_kt, payload.descent_speed_kt, payload.terrain_follow);
+                }
+              }
               document.getElementById('status').textContent = '';
               document.getElementById('error').textContent =
                 event.message || 'No terrain-avoiding path found.';
             }
 
             if (event.type === 'done') {
-              if (totalDistNm > 0) {
-                const straightNm = allCoords.length >= 2
-                  ? haversineNm(allCoords[0][0], allCoords[0][1],
-                      allCoords[allCoords.length-1][0], allCoords[allCoords.length-1][1])
-                  : 0;
-
-                renderTripStats({
-                  groundDistNm: totalDistNm,
-                  straightNm,
-                  timeHr: totalTimeHr,
-                  fuelGal: totalFuelGal,
-                  fuelRemainingGal: payload.usable_fuel_gal - lastLegFuelGal,
+              if (legsList.length > 0) {
+                renderNavLog({
+                  legs: legsList,
+                  usableFuelGal: payload.usable_fuel_gal,
                   reserveMin: payload.reserve_min,
                   burnGph: payload.fuel_burn_gph,
                   depLabel: payload.dep_icao,
@@ -485,11 +650,21 @@
                   stops,
                 });
 
-                document.getElementById('status').textContent =
-                  `Route found! ${exploredCount.toLocaleString()} cells explored, ${fmt(totalDistNm, 1)} NM` +
-                  (stops.length ? ` (${stops.length} fuel stop${stops.length !== 1 ? 's' : ''})` : '');
+                const cachedCount = legsList.filter(l => l.cached).length;
+                let statusMsg = `Route found! ${fmt(totalDistNm, 1)} NM`;
+                if (cachedCount === legsList.length) {
+                  statusMsg += ' (all legs from cache \u26A1)';
+                } else if (cachedCount > 0) {
+                  statusMsg += ` (${cachedCount}/${legsList.length} legs cached \u26A1, ${exploredCount.toLocaleString()} cells explored)`;
+                } else {
+                  statusMsg += `, ${exploredCount.toLocaleString()} cells explored`;
+                }
+                if (stops.length) statusMsg += ` | ${stops.length} fuel stop${stops.length !== 1 ? 's' : ''}`;
+                document.getElementById('status').textContent = statusMsg;
 
-                fetchAndDrawProfile(allCoords, payload.max_msl_ft, payload.min_agl_ft, payload.dep_icao, payload.arr_icao);
+                fetchAndDrawProfile(allCoords, payload.max_msl_ft, payload.min_agl_ft, payload.dep_icao, payload.arr_icao,
+                  payload.cruise_speed_kt, payload.max_climb_fpm, payload.max_descent_fpm,
+                  payload.climb_speed_kt, payload.descent_speed_kt, payload.terrain_follow);
               } else {
                 if (!document.getElementById('error').textContent)
                   document.getElementById('status').textContent = 'Done.';
@@ -504,6 +679,7 @@
       } finally {
         abortController = null;
         setPlanning(false);
+        refreshCacheStats();
       }
     }
 
@@ -531,27 +707,14 @@
           return;
         }
 
-        // render trip stats table
-        const totalDist = data.total_dist_nm;
-        const totalTime = data.total_time_hr;
-        const totalFuel = data.legs.reduce((s, l) => s + (l.fuel_gal || 0), 0);
-        const lastLegFuel = (data.legs[data.legs.length - 1] || {}).fuel_gal || 0;
-        const firstPath = (data.legs[0] || {}).path || [];
-        const lastPath = (data.legs[data.legs.length - 1] || {}).path || [];
-        let straightNm = 0;
-        if (firstPath.length && lastPath.length) {
-          straightNm = haversineNm(
-            firstPath[0][0], firstPath[0][1],
-            lastPath[lastPath.length-1][0], lastPath[lastPath.length-1][1]
-          );
-        }
+        // render nav log
+        const navLegs = data.legs.map(l => ({
+          from: l.from, to: l.to, distNm: l.dist_nm, timeHr: l.time_hr, fuelGal: l.fuel_gal
+        }));
 
-        renderTripStats({
-          groundDistNm: totalDist,
-          straightNm,
-          timeHr: totalTime,
-          fuelGal: totalFuel,
-          fuelRemainingGal: payload.usable_fuel_gal - lastLegFuel,
+        renderNavLog({
+          legs: navLegs,
+          usableFuelGal: payload.usable_fuel_gal,
           reserveMin: payload.reserve_min,
           burnGph: payload.fuel_burn_gph,
           depLabel: payload.dep_icao,
@@ -584,7 +747,9 @@
         // Fetch and draw elevation profile for all legs combined
         const allCoords = data.legs.flatMap(l => l.path || []);
         if (allCoords.length >= 2) {
-          fetchAndDrawProfile(allCoords, payload.max_msl_ft, payload.min_agl_ft, payload.dep_icao, payload.arr_icao);
+          fetchAndDrawProfile(allCoords, payload.max_msl_ft, payload.min_agl_ft, payload.dep_icao, payload.arr_icao,
+            payload.cruise_speed_kt, payload.max_climb_fpm, payload.max_descent_fpm,
+            payload.climb_speed_kt, payload.descent_speed_kt, payload.terrain_follow);
         }
 
       } catch (e) {
@@ -594,6 +759,7 @@
       } finally {
         abortController = null;
         setPlanning(false);
+        refreshCacheStats();
       }
     }
 
@@ -610,6 +776,18 @@
     }
 
     document.getElementById('goBtn').addEventListener('click', plan);
+
+    // cache stats
+    async function refreshCacheStats() {
+      try {
+        const r = await fetch('/cache/stats');
+        if (!r.ok) return;
+        const s = await r.json();
+        document.getElementById('cacheStats').innerHTML =
+          `Route cache: ${s.cached_legs} legs cached, ${s.total_hits} hits | ${s.routes_logged} routes logged`;
+      } catch {}
+    }
+    refreshCacheStats();
   </script>
 </body>
 </html>
