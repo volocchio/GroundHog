@@ -99,6 +99,30 @@
       <input id="descentSpeedKt" type="number" value="0" min="0" step="1" placeholder="e.g. 90" />
       </div>
 
+      <label style="margin-top:10px; font-weight:600">Obstacle avoidance</label>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:4px 12px; font-size:0.85em; margin-top:4px">
+        <label style="margin:0">Radius (NM)</label>
+        <label style="margin:0">Clearance (ft above)</label>
+        <input id="obsRadius" type="number" value="0.5" min="0" max="5" step="0.1" />
+        <input id="obsClearance" type="number" value="500" min="0" max="2000" step="100" />
+      </div>
+
+      <label style="margin-top:10px; font-weight:600">Airspace avoidance</label>
+      <div style="display:flex; align-items:center; gap:6px; margin:4px 0 6px">
+        <input type="checkbox" id="adsbOut" checked style="width:auto" />
+        <label for="adsbOut" style="margin:0; display:inline; font-size:13px">ADS-B Out equipped</label>
+      </div>
+      <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:2px 0; font-size:0.82em" id="avoidChecks">
+        <label style="margin:0; display:flex; align-items:center; gap:3px"><input type="checkbox" value="P" checked disabled style="width:auto" /> Prohibited</label>
+        <label style="margin:0; display:flex; align-items:center; gap:3px"><input type="checkbox" value="R" checked style="width:auto" /> Restricted</label>
+        <label style="margin:0; display:flex; align-items:center; gap:3px"><input type="checkbox" value="MOA" style="width:auto" /> MOA</label>
+        <label style="margin:0; display:flex; align-items:center; gap:3px"><input type="checkbox" value="W" style="width:auto" /> Warning</label>
+        <label style="margin:0; display:flex; align-items:center; gap:3px"><input type="checkbox" value="A" style="width:auto" /> Alert</label>
+        <label style="margin:0; display:flex; align-items:center; gap:3px"><input type="checkbox" value="B" class="adsb-gate" style="width:auto" /> Class B</label>
+        <label style="margin:0; display:flex; align-items:center; gap:3px"><input type="checkbox" value="C" class="adsb-gate" style="width:auto" /> Class C</label>
+        <label style="margin:0; display:flex; align-items:center; gap:3px"><input type="checkbox" value="D" style="width:auto" /> Class D</label>
+      </div>
+
       <label>Max detour factor: <span id="detourVal">1.8</span>x</label>
       <input id="detour" type="range" min="1" max="5" value="1.8" step="0.1" />
 
@@ -146,6 +170,21 @@
     const detourVal = document.getElementById('detourVal');
     detour.addEventListener('input', () => detourVal.textContent = detour.value);
 
+    // ADS-B Out logic: when unchecked, force-check B & C avoidance
+    const adsbOut = document.getElementById('adsbOut');
+    const gateBoxes = document.querySelectorAll('#avoidChecks input.adsb-gate');
+    adsbOut.addEventListener('change', () => {
+      gateBoxes.forEach(cb => {
+        if (!adsbOut.checked) {
+          cb.checked = true;
+          cb.disabled = true;
+        } else {
+          cb.disabled = false;
+        }
+      });
+    });
+    adsbOut.dispatchEvent(new Event('change'));  // apply initial state
+
     const map = L.map('map').setView([39.0, -105.5], 5);
 
     const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -169,6 +208,7 @@
     });
 
     const obstacleGroup = L.layerGroup().addTo(map);
+    const airspaceGroup = L.layerGroup().addTo(map);
 
     usgsTopo.addTo(map);  // default to USGS Topo
 
@@ -178,6 +218,7 @@
       'Satellite + Labels': esriImagery,
       'Street Map': osmLayer,
     }, {
+      'Airspace (B/C/D/R/P/MOA)': airspaceGroup,
       'Obstacles (FAA DOF)': obstacleGroup,
     }, { position: 'topright' }).addTo(map);
 
@@ -239,6 +280,66 @@
     map.on('moveend', loadObstacles);
     map.on('zoomend', loadObstacles);
 
+    /* ── Airspace layer ─────────────────────────────────────────── */
+    const AIRSPACE_MIN_ZOOM = 7;
+    const AIRSPACE_STYLE = {
+      B:   { color: '#2060cc', fill: 0.06, dash: null,  label: 'Class B' },
+      C:   { color: '#cc00cc', fill: 0.06, dash: null,  label: 'Class C' },
+      D:   { color: '#2060cc', fill: 0.05, dash: '6 4', label: 'Class D' },
+      R:   { color: '#cc0000', fill: 0.10, dash: null,  label: 'Restricted' },
+      P:   { color: '#cc0000', fill: 0.15, dash: null,  label: 'Prohibited' },
+      W:   { color: '#cc8800', fill: 0.08, dash: '8 4', label: 'Warning' },
+      MOA: { color: '#886600', fill: 0.06, dash: '6 6', label: 'MOA' },
+      A:   { color: '#cc8800', fill: 0.06, dash: '4 4', label: 'Alert' },
+      DA:  { color: '#cc0000', fill: 0.08, dash: '8 4', label: 'Danger' },
+    };
+    let _asFetchController = null;
+
+    async function loadAirspace() {
+      const z = map.getZoom();
+      airspaceGroup.clearLayers();
+      if (z < AIRSPACE_MIN_ZOOM) return;
+
+      const b = map.getBounds();
+      const params = new URLSearchParams({
+        south: b.getSouth().toFixed(4),
+        north: b.getNorth().toFixed(4),
+        west: b.getWest().toFixed(4),
+        east: b.getEast().toFixed(4),
+        classes: 'B,C,D,R,P,W,MOA,A',
+      });
+
+      if (_asFetchController) _asFetchController.abort();
+      _asFetchController = new AbortController();
+
+      try {
+        const resp = await fetch('/airspace?' + params, { signal: _asFetchController.signal });
+        const data = await resp.json();
+        for (const a of data) {
+          const cls = a.class;
+          const st = AIRSPACE_STYLE[cls] || { color: '#888', fill: 0.05, dash: null, label: cls };
+          const coords = a.geometry.coordinates;
+          const latLngs = coords.map(ring => ring.map(pt => [pt[1], pt[0]]));
+          const poly = L.polygon(latLngs, {
+            color: st.color, weight: 2, opacity: 0.8,
+            fillColor: st.color, fillOpacity: st.fill,
+            dashArray: st.dash,
+          });
+          const lowerStr = a.lower_code === 'SFC' ? 'SFC' : `${a.lower_alt}' ${a.lower_code}`;
+          const upperStr = `${a.upper_alt}' ${a.upper_code}`;
+          let popup = `<b>${st.label}</b> — ${a.name || a.ident}<br>${lowerStr} → ${upperStr}`;
+          if (a.times_of_use) popup += `<br><i>${a.times_of_use}</i>`;
+          poly.bindPopup(popup);
+          poly.addTo(airspaceGroup);
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') console.warn('Airspace load error:', e);
+      }
+    }
+
+    map.on('moveend', loadAirspace);
+    map.on('zoomend', loadAirspace);
+
     function apLabel(icao) {
       const ap = airportLookup[icao];
       return ap ? `${icao} (${Math.round(ap.elev)}')` : icao;
@@ -259,13 +360,16 @@
         airportsLoaded = true;
         for (const ap of list) {
           airportLookup[ap.icao] = ap;
+          const isPrivate = ap.facility_use && ap.facility_use !== 'PU';
           const hasFuel = ap.fuel_100ll || ap.fuel_jeta;
-          const color = hasFuel ? '#16a34a' : '#6b7280';
+          const color = isPrivate ? '#b45309' : (hasFuel ? '#16a34a' : '#6b7280');
+          const radius = isPrivate ? 3 : 4;
           const fuelStr = [ap.fuel_100ll ? '100LL' : '', ap.fuel_jeta ? 'Jet-A' : ''].filter(Boolean).join(', ') || 'None';
+          const pvtStr = isPrivate ? ' (Private)' : '';
           L.circleMarker([ap.lat, ap.lon], {
-            radius: 4, color, fillColor: color,
-            fillOpacity: 0.7, weight: 1, opacity: 0.8,
-          }).bindTooltip(`<b>${ap.icao}</b><br>${ap.name}<br>Elev: ${Math.round(ap.elev)} ft<br>Fuel: ${fuelStr}`, {
+            radius, color, fillColor: color,
+            fillOpacity: isPrivate ? 0.5 : 0.7, weight: 1, opacity: isPrivate ? 0.6 : 0.8,
+          }).bindTooltip(`<b>${ap.icao}</b>${pvtStr}<br>${ap.name}<br>Elev: ${Math.round(ap.elev)} ft<br>Fuel: ${fuelStr}`, {
             direction: 'top', offset: [0, -6],
           }).addTo(airportGroup);
         }
@@ -284,12 +388,14 @@
     });
     terrainOpts.style.display = 'none'; // hidden by default (Max MSL mode)
 
-    async function fetchAndDrawProfile(path, maxMsl, minAgl, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow) {
+    async function fetchAndDrawProfile(path, maxMsl, minAgl, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, avoidAirspace) {
       try {
+        const body = { path, max_msl_ft: maxMsl, min_agl_ft: minAgl };
+        if (avoidAirspace && avoidAirspace.length) body.avoid_airspace = avoidAirspace;
         const res = await fetch('/elevation-profile', {
           method: 'POST',
           headers: {'content-type': 'application/json'},
-          body: JSON.stringify({ path, max_msl_ft: maxMsl, min_agl_ft: minAgl }),
+          body: JSON.stringify(body),
         });
         if (!res.ok) return;
         const data = await res.json();
@@ -321,7 +427,12 @@
       const minAgl = data.min_agl_ft;
 
       const maxDist = dist[dist.length - 1] || 1;
-      const maxElev = Math.max(maxMsl, ...ground) * 1.1;
+      // Include airspace ceilings in Y-axis range so bands are fully visible
+      let peakAlt = Math.max(maxMsl, ...ground);
+      for (const z of (data.airspace_zones || [])) {
+        for (const c of z.ceiling_msl) peakAlt = Math.max(peakAlt, c);
+      }
+      const maxElev = peakAlt * 1.1;
 
       function x(d) { return pad.left + (d / maxDist) * pw; }
       function y(e) { return pad.top + ph - (e / maxElev) * ph; }
@@ -401,22 +512,138 @@
       ctx.textAlign = 'right';
       ctx.fillText(arrLabel, x(maxDist) - 2, pad.top + 4);
 
-      // Flight altitude trace
+      // ── Airspace zones: draw bands and build per-sample constraints ──
+      const BUF = 100; // vertical buffer feet
+      const zones = data.airspace_zones || [];
+      // Per-sample: lowest ceiling we must stay under, highest floor we must stay over
+      // null means no airspace constraint at that sample
+      const asFloor = new Array(dist.length).fill(null);  // airspace floor MSL
+      const asCeil  = new Array(dist.length).fill(null);  // airspace ceiling MSL
+
+      const zoneColors = {
+        B: 'rgba(59,130,246,0.15)', C: 'rgba(139,92,246,0.15)',
+        D: 'rgba(16,185,129,0.15)', R: 'rgba(239,68,68,0.20)',
+        P: 'rgba(239,68,68,0.25)', MOA: 'rgba(234,179,8,0.15)',
+        A: 'rgba(107,114,128,0.15)',
+      };
+      const zoneBorderColors = {
+        B: 'rgba(59,130,246,0.6)', C: 'rgba(139,92,246,0.6)',
+        D: 'rgba(16,185,129,0.6)', R: 'rgba(239,68,68,0.6)',
+        P: 'rgba(239,68,68,0.7)', MOA: 'rgba(234,179,8,0.6)',
+        A: 'rgba(107,114,128,0.6)',
+      };
+
+      for (const z of zones) {
+        const s = z.start_idx, e = z.end_idx;
+        const fl = z.floor_msl, cl = z.ceiling_msl;
+        const fill = zoneColors[z.cls] || 'rgba(107,114,128,0.12)';
+        const border = zoneBorderColors[z.cls] || 'rgba(107,114,128,0.5)';
+
+        // Draw shaded band for this airspace zone
+        ctx.fillStyle = fill;
+        ctx.beginPath();
+        ctx.moveTo(x(dist[s]), y(cl[0]));
+        for (let i = s; i <= e; i++) ctx.lineTo(x(dist[i]), y(cl[i - s]));
+        for (let i = e; i >= s; i--) ctx.lineTo(x(dist[i]), y(fl[i - s]));
+        ctx.closePath();
+        ctx.fill();
+
+        // Top and bottom border lines
+        ctx.strokeStyle = border;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.moveTo(x(dist[s]), y(cl[0]));
+        for (let i = s + 1; i <= e; i++) ctx.lineTo(x(dist[i]), y(cl[i - s]));
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(x(dist[s]), y(fl[0]));
+        for (let i = s + 1; i <= e; i++) ctx.lineTo(x(dist[i]), y(fl[i - s]));
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Label
+        const midIdx = Math.floor((s + e) / 2);
+        const midCeil = cl[midIdx - s];
+        ctx.fillStyle = border;
+        ctx.font = '9px system-ui';
+        ctx.textAlign = 'center';
+        ctx.fillText(z.name + ' (' + z.cls + ')', x(dist[midIdx]), y(midCeil) - 3);
+
+        // Store constraints for flight altitude
+        for (let i = s; i <= e; i++) {
+          const f = fl[i - s];
+          const c = cl[i - s];
+          if (asFloor[i] === null || f < asFloor[i]) asFloor[i] = f;
+          if (asCeil[i] === null || c < asCeil[i]) asCeil[i] = c;
+        }
+      }
+
+      // ── Flight altitude trace (airspace-aware) ──
       if (terrainFollow && cruiseKt > 0 && (maxClimbFpm > 0 || maxDescentFpm > 0)) {
-        // Terrain following: hug min AGL, limited by ROC/ROD
         const climbKt = climbSpeedKt > 0 ? climbSpeedKt : cruiseKt;
         const descentKt = descentSpeedKt > 0 ? descentSpeedKt : cruiseKt;
-        const fa = [Math.min(Math.max(ground[0] + minAgl, ground[0]), maxMsl)];
+
+        // Compute target altitude at each sample considering airspace
+        const target = new Array(dist.length);
+        for (let i = 0; i < dist.length; i++) {
+          const terrainMin = ground[i] + minAgl;
+          let alt = terrainMin; // default: terrain following
+          if (asFloor[i] !== null) {
+            // Airspace present — decide: go under or over?
+            const underAlt = asFloor[i] - BUF;  // fly 100ft below floor
+            const overAlt = asCeil[i] + BUF;    // fly 100ft above ceiling
+            const canGoUnder = underAlt >= terrainMin;
+            const canGoOver = overAlt <= maxMsl;
+            if (canGoUnder) {
+              alt = underAlt; // prefer going under (less altitude change typically)
+            } else if (canGoOver) {
+              alt = overAlt;
+            } else {
+              alt = terrainMin; // can't avoid — fly at minimum safe alt
+            }
+          }
+          target[i] = Math.min(Math.max(alt, ground[i] + minAgl), maxMsl);
+        }
+
+        // Backward pass first: compute the latest altitude needed at each point
+        // so the aircraft can reach every future target in time.
+        const ba = new Array(dist.length);
+        ba[dist.length - 1] = target[dist.length - 1];
+        for (let i = dist.length - 2; i >= 0; i--) {
+          const segDist = dist[i + 1] - dist[i];
+          const next = ba[i + 1];
+          const terrainMin = ground[i] + minAgl;
+          // If next point is lower, we must start descending: max alt here = next + descent capacity
+          const dtDescent = (segDist / descentKt) * 60;
+          const maxAltForDescent = maxDescentFpm > 0 ? next + maxDescentFpm * dtDescent : Infinity;
+          // If next point is higher, we must start climbing: min alt here = next - climb capacity
+          const dtClimb = (segDist / climbKt) * 60;
+          const minAltForClimb = maxClimbFpm > 0 ? next - maxClimbFpm * dtClimb : -Infinity;
+          // ba[i] = target adjusted by what we need to reach ba[i+1]
+          let alt = target[i];
+          // Can't be higher than what descent to next point allows
+          alt = Math.min(alt, maxAltForDescent);
+          // Can't be lower than what climb to next point requires
+          alt = Math.max(alt, minAltForClimb);
+          // Always respect terrain floor and MSL ceiling
+          ba[i] = Math.min(Math.max(alt, terrainMin), maxMsl);
+        }
+
+        // Forward pass: rate-limited from start, pulled toward backward-pass altitudes
+        const fa = [Math.min(Math.max(ba[0], ground[0] + minAgl), maxMsl)];
         for (let i = 1; i < dist.length; i++) {
           const segDist = dist[i] - dist[i - 1];
           const prev = fa[i - 1];
-          const required = ground[i] + minAgl;
+          const terrainMin = ground[i] + minAgl;
           const dtClimb = (segDist / climbKt) * 60;
           const dtDescent = (segDist / descentKt) * 60;
           const ceiling = maxClimbFpm > 0 ? Math.min(prev + maxClimbFpm * dtClimb, maxMsl) : maxMsl;
-          const floor = maxDescentFpm > 0 ? Math.max(prev - maxDescentFpm * dtDescent, required) : required;
-          fa.push(Math.min(ceiling, Math.max(required, floor)));
+          const floor = maxDescentFpm > 0 ? Math.max(prev - maxDescentFpm * dtDescent, terrainMin) : terrainMin;
+          // Pull toward backward-pass target (which anticipates future constraints)
+          fa.push(Math.min(ceiling, Math.max(ba[i], floor)));
         }
+
         ctx.strokeStyle = '#2563eb';
         ctx.lineWidth = 2;
         ctx.setLineDash([]);
@@ -425,7 +652,7 @@
         for (let i = 1; i < fa.length; i++) ctx.lineTo(x(dist[i]), y(fa[i]));
         ctx.stroke();
         ctx.fillStyle = '#2563eb'; ctx.font = '10px system-ui'; ctx.textAlign = 'left';
-        ctx.fillText('Terrain-follow alt (est.)', pad.left + 4, y(fa[Math.min(5, fa.length - 1)]) - 8);
+        ctx.fillText(zones.length ? 'Flight alt (airspace-aware)' : 'Terrain-follow alt (est.)', pad.left + 4, y(fa[Math.min(5, fa.length - 1)]) - 8);
       } else {
         // Max MSL mode: flat cruise line at max MSL
         ctx.strokeStyle = '#2563eb';
@@ -467,8 +694,18 @@
       const resultsDiv = document.getElementById('results');
       const route = apLabel(depLabel) + (stops && stops.length ? ' → ' + stops.map(s => apLabel(s)).join(' → ') : '') + ' → ' + apLabel(arrLabel);
 
+      // Great circle distance between dep and arr
+      const depAp = airportLookup[depLabel], arrAp = airportLookup[arrLabel];
+      let gcInfo = '';
+      if (depAp && arrAp && legs.length) {
+        const gcNm = haversineNm(depAp.lat, depAp.lon, arrAp.lat, arrAp.lon);
+        const routeNm = legs.reduce((s, l) => s + l.distNm, 0);
+        const pctOver = ((routeNm / gcNm - 1) * 100);
+        gcInfo = ` &nbsp;|&nbsp; GC ${fmt(gcNm,1)} NM` + (pctOver > 0.5 ? ` &nbsp;(+${fmt(pctOver,1)}%)` : '');
+      }
+
       let html = `<div style="font-weight:600; margin-top:10px">Navigation Log</div>`;
-      html += `<div style="margin:4px 0; font-size:0.9em">${route}</div>`;
+      html += `<div style="margin:4px 0; font-size:0.9em">${route}${gcInfo}</div>`;
       html += '<table style="font-size:0.85em; border-collapse:collapse; width:100%">';
       html += '<thead><tr style="border-bottom:2px solid #888">';
       html += '<th style="text-align:left;padding:2px 6px">#</th>';
@@ -572,6 +809,10 @@
         climb_speed_kt: Number(document.getElementById('climbSpeedKt').value) || 0,
         descent_speed_kt: Number(document.getElementById('descentSpeedKt').value) || 0,
         terrain_follow: document.querySelector('input[name="flightMode"]:checked').value === 'terrain',
+        obstacle_radius_nm: Number(document.getElementById('obsRadius').value) || 0,
+        obstacle_clearance_ft: Number(document.getElementById('obsClearance').value) || 500,
+        adsb_out: document.getElementById('adsbOut').checked,
+        avoid_airspace: [...document.querySelectorAll('#avoidChecks input:checked')].map(cb => cb.value),
         waypoints: document.getElementById('waypoints').value.split(/[\s,]+/).map(s => s.trim().toUpperCase()).filter(Boolean),  // may contain -NF suffix
       };
     }
@@ -622,6 +863,12 @@
           for (const line of lines) {
             if (!line.startsWith('data: ')) continue;
             const event = JSON.parse(line.slice(6));
+
+            if (event.type === 'adsb_warning') {
+              const names = event.airports.map(a => `${a.icao} (Class ${a.airspace_class} — ${a.airspace_name})`);
+              const warnDiv = document.getElementById('error');
+              warnDiv.innerHTML = `<span style="color:#b45309">⚠️ ADS-B Out not equipped — the following airports are inside ADS-B required airspace:<br>${names.join('<br>')}</span>`;
+            }
 
             if (event.type === 'reroute') {
               // Terrain blocked a leg — server is replanning this segment
@@ -743,7 +990,7 @@
                 if (allCoords.length >= 2) {
                   fetchAndDrawProfile(allCoords, payload.max_msl_ft, payload.min_agl_ft, payload.dep_icao, payload.arr_icao,
                     payload.cruise_speed_kt, payload.max_climb_fpm, payload.max_descent_fpm,
-                    payload.climb_speed_kt, payload.descent_speed_kt, payload.terrain_follow);
+                    payload.climb_speed_kt, payload.descent_speed_kt, payload.terrain_follow, payload.avoid_airspace);
                 }
               }
               document.getElementById('status').textContent = '';
@@ -777,7 +1024,7 @@
 
                 fetchAndDrawProfile(allCoords, payload.max_msl_ft, payload.min_agl_ft, payload.dep_icao, payload.arr_icao,
                   payload.cruise_speed_kt, payload.max_climb_fpm, payload.max_descent_fpm,
-                  payload.climb_speed_kt, payload.descent_speed_kt, payload.terrain_follow);
+                  payload.climb_speed_kt, payload.descent_speed_kt, payload.terrain_follow, payload.avoid_airspace);
               } else {
                 if (!document.getElementById('error').textContent)
                   document.getElementById('status').textContent = 'Done.';
@@ -788,7 +1035,10 @@
       } catch (e) {
         if (e.name === 'AbortError') return;
         document.getElementById('status').textContent = '';
-        document.getElementById('error').textContent = String(e);
+        const msg = (e instanceof TypeError && /network|fetch|failed/i.test(e.message))
+          ? 'Cannot reach server \u2014 is it running?'
+          : String(e);
+        document.getElementById('error').textContent = msg;
       } finally {
         abortController = null;
         setPlanning(false);
@@ -862,13 +1112,16 @@
         if (allCoords.length >= 2) {
           fetchAndDrawProfile(allCoords, payload.max_msl_ft, payload.min_agl_ft, payload.dep_icao, payload.arr_icao,
             payload.cruise_speed_kt, payload.max_climb_fpm, payload.max_descent_fpm,
-            payload.climb_speed_kt, payload.descent_speed_kt, payload.terrain_follow);
+            payload.climb_speed_kt, payload.descent_speed_kt, payload.terrain_follow, payload.avoid_airspace);
         }
 
       } catch (e) {
         if (e.name === 'AbortError') return;
         document.getElementById('status').textContent = '';
-        document.getElementById('error').textContent = String(e);
+        const msg = (e instanceof TypeError && /network|fetch|failed/i.test(e.message))
+          ? 'Cannot reach server \u2014 is it running?'
+          : String(e);
+        document.getElementById('error').textContent = msg;
       } finally {
         abortController = null;
         setPlanning(false);
@@ -905,6 +1158,9 @@
           return;
         }
       }
+
+      // Scroll so the map is visible
+      document.getElementById('map').scrollIntoView({ behavior: 'smooth', block: 'start' });
 
       const watch = document.getElementById('watchSearch').checked;
       if (watch) {
@@ -957,7 +1213,8 @@
       });
       const defaultName = payload.dep_icao +
         (wpDisplay.length ? ' \u2192 ' + wpDisplay.join(' \u2192 ') : '') +
-        ' \u2192 ' + payload.arr_icao;
+        ' \u2192 ' + payload.arr_icao +
+        ' (' + payload.max_msl_ft.toLocaleString() + 'ft MSL)';
       const name = prompt('Route name:', defaultName);
       if (!name) return;
       const routes = getSavedRoutes();
@@ -978,6 +1235,10 @@
         climb_speed_kt: payload.climb_speed_kt,
         descent_speed_kt: payload.descent_speed_kt,
         terrain_follow: payload.terrain_follow,
+        obstacle_radius_nm: payload.obstacle_radius_nm,
+        obstacle_clearance_ft: payload.obstacle_clearance_ft,
+        adsb_out: payload.adsb_out,
+        avoid_airspace: payload.avoid_airspace,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(routes));
       refreshSavedDropdown();
@@ -1021,6 +1282,17 @@
       const modeVal = r.terrain_follow ? 'terrain' : 'maxmsl';
       document.querySelector(`input[name="flightMode"][value="${modeVal}"]`).checked = true;
       document.querySelector('input[name="flightMode"]').dispatchEvent(new Event('change'));
+      // Obstacle avoidance
+      document.getElementById('obsRadius').value = r.obstacle_radius_nm != null ? r.obstacle_radius_nm : 0.5;
+      document.getElementById('obsClearance').value = r.obstacle_clearance_ft != null ? r.obstacle_clearance_ft : 500;
+      // ADS-B Out + airspace avoidance
+      document.getElementById('adsbOut').checked = r.adsb_out !== false;
+      document.getElementById('adsbOut').dispatchEvent(new Event('change'));
+      if (r.avoid_airspace) {
+        document.querySelectorAll('#avoidChecks input[type="checkbox"]:not(:disabled)').forEach(cb => {
+          cb.checked = r.avoid_airspace.includes(cb.value);
+        });
+      }
     });
 
     refreshSavedDropdown();

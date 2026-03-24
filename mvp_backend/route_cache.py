@@ -102,13 +102,16 @@ def _leg_key(from_icao: str, to_icao: str,
              max_climb_fpm: float = 0,
              max_descent_fpm: float = 0,
              climb_speed_kt: float = 0,
-             descent_speed_kt: float = 0) -> str:
+             descent_speed_kt: float = 0,
+             avoidance_tag: str = "") -> str:
     """Deterministic cache key for a single A* leg."""
     raw = f"{from_icao}|{to_icao}|{max_msl_ft:.0f}|{min_agl_ft:.0f}|{detour_fac:.2f}"
     if max_climb_fpm > 0 or max_descent_fpm > 0:
         raw += f"|C{max_climb_fpm:.0f}|D{max_descent_fpm:.0f}"
     if climb_speed_kt > 0 or descent_speed_kt > 0:
         raw += f"|Vc{climb_speed_kt:.0f}|Vd{descent_speed_kt:.0f}"
+    if avoidance_tag:
+        raw += f"|A{avoidance_tag}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -126,10 +129,12 @@ def get_leg(from_icao: str, to_icao: str,
             max_climb_fpm: float = 0,
             max_descent_fpm: float = 0,
             climb_speed_kt: float = 0,
-            descent_speed_kt: float = 0) -> Optional[CachedLeg]:
+            descent_speed_kt: float = 0,
+            avoidance_tag: str = "") -> Optional[CachedLeg]:
     """Return cached leg or None (also returns None for legs marked failed)."""
     key = _leg_key(from_icao, to_icao, max_msl_ft, min_agl_ft, detour_fac,
-                   max_climb_fpm, max_descent_fpm, climb_speed_kt, descent_speed_kt)
+                   max_climb_fpm, max_descent_fpm, climb_speed_kt, descent_speed_kt,
+                   avoidance_tag)
     c = _conn()
     row = c.execute(
         "SELECT dist_nm, path_json, failed FROM leg_cache WHERE cache_key = ?",
@@ -150,10 +155,12 @@ def is_known_failure(from_icao: str, to_icao: str,
                      max_climb_fpm: float = 0,
                      max_descent_fpm: float = 0,
                      climb_speed_kt: float = 0,
-                     descent_speed_kt: float = 0) -> bool:
+                     descent_speed_kt: float = 0,
+                     avoidance_tag: str = "") -> bool:
     """Quick check: is this leg known to be impossible? (No hit-count bump.)"""
     key = _leg_key(from_icao, to_icao, max_msl_ft, min_agl_ft, detour_fac,
-                   max_climb_fpm, max_descent_fpm, climb_speed_kt, descent_speed_kt)
+                   max_climb_fpm, max_descent_fpm, climb_speed_kt, descent_speed_kt,
+                   avoidance_tag)
     c = _conn()
     row = c.execute(
         "SELECT failed FROM leg_cache WHERE cache_key = ?", (key,)
@@ -169,10 +176,12 @@ def put_leg(from_icao: str, to_icao: str,
             max_climb_fpm: float = 0,
             max_descent_fpm: float = 0,
             climb_speed_kt: float = 0,
-            descent_speed_kt: float = 0) -> None:
+            descent_speed_kt: float = 0,
+            avoidance_tag: str = "") -> None:
     """Store a computed leg (or a failure marker when dist_nm is None)."""
     key = _leg_key(from_icao, to_icao, max_msl_ft, min_agl_ft, detour_fac,
-                   max_climb_fpm, max_descent_fpm, climb_speed_kt, descent_speed_kt)
+                   max_climb_fpm, max_descent_fpm, climb_speed_kt, descent_speed_kt,
+                   avoidance_tag)
     failed = 1 if dist_nm is None else 0
     c = _conn()
     c.execute("""

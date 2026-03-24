@@ -46,12 +46,15 @@ def astar_path(
     cruise_kt: float = 0,
     climb_speed_kt: float = 0,
     descent_speed_kt: float = 0,
+    airspace_cost: Optional[List[List[float]]] = None,
 ) -> Optional[List[tuple[int, int]]]:
     """8-connected A* over passable grid.
 
     When elev_ft + cruise_kt are provided, also enforces climb/descent rate
     limits per edge (terrain-following model).  climb_speed_kt / descent_speed_kt
     override cruise_kt for ascending / descending edges respectively.
+
+    airspace_cost: optional 2D grid of additive cost multipliers per cell.
     """
 
     def h(a: tuple[int, int], b: tuple[int, int]) -> float:
@@ -106,6 +109,9 @@ def astar_path(
                     time_min = (step / spd) * 60.0
                     if (-d_elev) / time_min > max_descent_fpm:
                         continue
+            # airspace avoidance penalty
+            if airspace_cost is not None:
+                step *= (1.0 + airspace_cost[ni][nj])
             ng = gscore[cur] + step
             nxt = (ni, nj)
             if ng < gscore.get(nxt, float("inf")):
@@ -139,11 +145,14 @@ def astar_path_streaming(
     cruise_kt: float = 0,
     climb_speed_kt: float = 0,
     descent_speed_kt: float = 0,
+    airspace_cost: Optional[List[List[float]]] = None,
 ) -> Generator[dict, None, None]:
     """A* that yields progress dicts as it explores.
 
     When elev_ft + cruise_kt are provided, also enforces climb/descent rate
     limits per edge (terrain-following model).
+
+    airspace_cost: optional 2D grid of additive cost multipliers per cell.
 
     Yields:
       {"type": "explore", "cells": [[lat, lon], ...]}   – batch of explored cells
@@ -218,6 +227,9 @@ def astar_path_streaming(
                     time_min = (step / spd) * 60.0
                     if (-d_elev) / time_min > max_descent_fpm:
                         continue
+            # airspace avoidance penalty
+            if airspace_cost is not None:
+                step *= (1.0 + airspace_cost[ni][nj])
             ng = gscore[cur] + step
             nxt = (ni, nj)
             if ng < gscore.get(nxt, float("inf")):

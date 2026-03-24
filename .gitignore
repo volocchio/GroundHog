@@ -13,3 +13,11 @@ Tamarack_Mission_Analysis/
 # local data outputs
 mvp_backend/airports_solver.csv
 mvp_backend/obstacle_data/
+mvp_backend/airspace_data/
+mvp_backend/*.sqlite-shm
+mvp_backend/*.sqlite-wal
+check_*.py
+debug_*.py
+fix_cache.py
+test_leg.py
+mvp_backend/_clear_cache_failures.py

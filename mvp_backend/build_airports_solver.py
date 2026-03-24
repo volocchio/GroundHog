@@ -89,8 +89,6 @@ def main():
                     continue
 
                 facility_use = (fuel.get("facility_use") or "").strip().upper()
-                if facility_use != "PU":
-                    continue  # public-use only in solver DB
 
                 name = line[OFF_NAME_A2:OFF_NAME_A2 + LEN_NAME_A2].strip()
                 typ = line[OFF_TYPE:OFF_TYPE + LEN_TYPE].strip()
@@ -120,10 +118,13 @@ def main():
                     "fuel_jeta": int(fuel.get("fuel_jeta", 0)),
                 })
                 n += 1
-                n_public += 1
+                if facility_use == "PU":
+                    n_public += 1
 
     print(f"Wrote {OUT}")
-    print(f"Public-use airports written: {n_public}")
+    print(f"Total airports written: {n}")
+    print(f"Public-use airports: {n_public}")
+    print(f"Private airports: {n - n_public}")
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from typing import List
 
-from mvp_backend.planner import load_airports_solver, plan_route_multi_stop, terrain_avoid_leg, terrain_avoid_leg_streaming, leg_fuel_ok, plan_stop_sequence
+from mvp_backend.planner import load_airports_solver, plan_route_multi_stop, terrain_avoid_leg, terrain_avoid_leg_streaming, leg_fuel_ok, plan_stop_sequence, plan_stop_sequences
 from mvp_backend.srtm_local import SRTMProvider
 from mvp_backend.grid_astar import _haversine_nm
 from mvp_backend import route_cache
@@ -49,6 +49,12 @@ class RouteRequest(BaseModel):
 
     terrain_follow: bool = Field(default=False)
 
+    obstacle_radius_nm: float = Field(default=0.5, ge=0, le=5.0)
+    obstacle_clearance_ft: float = Field(default=500, ge=0, le=2000)
+
+    adsb_out: bool = Field(default=True)
+    avoid_airspace: list[str] = Field(default_factory=lambda: ["P", "R"])
+
     waypoints: list[str] = Field(default_factory=list)
 
 
@@ -68,7 +74,7 @@ def health():
 
 @app.get("/airports")
 def airports_list():
-    """Return all public-use airports for map display."""
+    """Return all airports for map display."""
     airports = load_airports_solver()
     return [
         {
@@ -77,6 +83,7 @@ def airports_list():
             "lat": ap.lat,
             "lon": ap.lon,
             "elev": ap.elevation_ft,
+            "facility_use": ap.facility_use,
             "fuel_100ll": ap.fuel_100ll,
             "fuel_jeta": ap.fuel_jeta,
         }
@@ -160,6 +167,13 @@ def route_stream(req: RouteRequest):
                                  climb_speed_kt=req.climb_speed_kt, descent_speed_kt=req.descent_speed_kt)
 
     def generate():
+        # ── ADS-B compliance check ──
+        if not req.adsb_out:
+            all_aps = [dep] + waypoint_aps + [arr]
+            hits = _airports_in_airspace(all_aps, classes=("B", "C"))
+            if hits:
+                yield f"data: {json.dumps({'type': 'adsb_warning', 'airports': hits})}\n\n"
+
         # First pass: plan all segments to get total leg count and stops
         all_sequences = []
         blocked_pairs = set()
@@ -177,10 +191,16 @@ def route_stream(req: RouteRequest):
                 fuel_used = last_leg_time * req.fuel_burn_gph
                 start_fuel = max(0.0, req.usable_fuel_gal - fuel_used)
 
-            max_retries = 3
+            max_retries = 5
             segment_ok = False
             for attempt in range(max_retries + 1):
-                sequence = plan_stop_sequence(
+                # Escalate detour factor on retries (+0.15 per attempt)
+                eff_detour = req.max_detour_factor + attempt * 0.15
+                # Last-ditch: expand search budget
+                eff_expansions = 5000 if attempt >= max_retries else 2000
+
+                # Get up to 3 alternative stop sequences
+                sequences_pool = plan_stop_sequences(
                     dep=seg_dep, arr=seg_arr, airports=airports,
                     cruise_speed_kt=req.cruise_speed_kt,
                     usable_fuel_gal=req.usable_fuel_gal,
@@ -188,7 +208,7 @@ def route_stream(req: RouteRequest):
                     burn_gph=req.fuel_burn_gph,
                     reserve_min=req.reserve_min,
                     required_fuel=req.required_fuel,
-                    max_detour_factor=req.max_detour_factor,
+                    max_detour_factor=eff_detour,
                     blocked_pairs=blocked_pairs,
                     max_msl_ft=req.max_msl_ft,
                     min_agl_ft=req.min_agl_ft,
@@ -196,78 +216,106 @@ def route_stream(req: RouteRequest):
                     max_descent_fpm=req.max_descent_fpm,
                     climb_speed_kt=req.climb_speed_kt,
                     descent_speed_kt=req.descent_speed_kt,
+                    k=3,
+                    max_expansions=eff_expansions,
                 )
 
-                if sequence is None:
-                    yield f"data: {json.dumps({'type': 'no_path', 'message': f'No fuel-feasible route found for segment {seg_dep.icao} → {seg_arr.icao}.'})}\n\n"
+                if not sequences_pool:
+                    yield f"data: {json.dumps({'type': 'no_path', 'message': f'No fuel-feasible route found for segment {seg_dep.icao} → {seg_arr.icao} (detour {eff_detour:.1f}x, attempt {attempt+1}/{max_retries+1}).'})}\n\n"
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
                     return
 
-                # Stream legs for this segment
-                seg_num_legs = len(sequence) - 1
-                leg_offset = sum(len(s) - 1 for s in all_sequences)
+                # Try each candidate sequence until one succeeds all legs
+                seq_succeeded = False
+                for seq_idx, sequence in enumerate(sequences_pool):
+                    seg_num_legs = len(sequence) - 1
+                    leg_offset = sum(len(s) - 1 for s in all_sequences)
 
-                # Build flattened stops list for route_plan event
-                flat_stops = []
-                for prev_seq in all_sequences:
-                    flat_stops.extend(ap.icao for ap in prev_seq[1:])
-                flat_stops.extend(ap.icao for ap in sequence[1:-1])
-                # remaining segments aren't planned yet, but we know the waypoints
-                for fi in range(si + 1, len(segment_endpoints) - 1):
-                    flat_stops.append(segment_endpoints[fi + 1].icao if fi + 1 < len(segment_endpoints) - 1 else None)
-                flat_stops = [s for s in flat_stops if s and s != arr.icao]
+                    # Build flattened stops list for route_plan event
+                    flat_stops = []
+                    for prev_seq in all_sequences:
+                        flat_stops.extend(ap.icao for ap in prev_seq[1:])
+                    flat_stops.extend(ap.icao for ap in sequence[1:-1])
+                    for fi in range(si + 1, len(segment_endpoints) - 1):
+                        flat_stops.append(segment_endpoints[fi + 1].icao if fi + 1 < len(segment_endpoints) - 1 else None)
+                    flat_stops = [s for s in flat_stops if s and s != arr.icao]
 
-                total_legs_so_far = leg_offset + seg_num_legs
-                yield f"data: {json.dumps({'type': 'route_plan', 'stops': flat_stops, 'num_legs': total_legs_so_far})}\n\n"
+                    total_legs_so_far = leg_offset + seg_num_legs
+                    yield f"data: {json.dumps({'type': 'route_plan', 'stops': flat_stops, 'num_legs': total_legs_so_far})}\n\n"
 
-                leg_failed = False
-                for i in range(seg_num_legs):
-                    from_ap = sequence[i]
-                    to_ap = sequence[i + 1]
-                    global_leg = leg_offset + i
+                    leg_failed = False
+                    last_fail_event = None
+                    for i in range(seg_num_legs):
+                        from_ap = sequence[i]
+                        to_ap = sequence[i + 1]
+                        global_leg = leg_offset + i
 
-                    yield f"data: {json.dumps({'type': 'leg_start', 'from': from_ap.icao, 'to': to_ap.icao, 'leg_index': global_leg})}\n\n"
+                        prev_pt = None
+                        if i > 0:
+                            prev_pt = (sequence[i - 1].lat, sequence[i - 1].lon)
+                        elif si > 0:
+                            prev_seq = all_sequences[-1] if all_sequences else None
+                            if prev_seq and len(prev_seq) >= 2:
+                                prev_pt = (prev_seq[-2].lat, prev_seq[-2].lon)
 
-                    for event in terrain_avoid_leg_streaming(
-                        from_ap, to_ap,
-                        max_msl_ft=req.max_msl_ft,
-                        min_agl_ft=req.min_agl_ft,
-                        max_detour_factor=req.max_detour_factor,
-                        max_climb_fpm=req.max_climb_fpm,
-                        max_descent_fpm=req.max_descent_fpm,
-                        cruise_speed_kt=req.cruise_speed_kt,
-                        climb_speed_kt=req.climb_speed_kt,
-                        descent_speed_kt=req.descent_speed_kt,
-                    ):
-                        if event.get("type") == "path":
-                            event["leg_index"] = global_leg
-                            event["from"] = from_ap.icao
-                            event["to"] = to_ap.icao
-                            seg_last_leg_dist = event.get("dist_nm", 0.0)
-                        if event.get("type") == "no_path":
-                            blocked_pairs.add((from_ap.icao, to_ap.icao))
-                            leg_failed = True
-                            if attempt < max_retries:
-                                yield f"data: {json.dumps({'type': 'reroute', 'message': f'Leg {from_ap.icao} \u2192 {to_ap.icao} blocked \u2014 replanning segment...', 'blocked': list(blocked_pairs), 'keep_legs': leg_offset})}\n\n"
-                            else:
+                        yield f"data: {json.dumps({'type': 'leg_start', 'from': from_ap.icao, 'to': to_ap.icao, 'leg_index': global_leg})}\n\n"
+
+                        for event in terrain_avoid_leg_streaming(
+                            from_ap, to_ap,
+                            max_msl_ft=req.max_msl_ft,
+                            min_agl_ft=req.min_agl_ft,
+                            max_detour_factor=eff_detour,
+                            max_climb_fpm=req.max_climb_fpm,
+                            max_descent_fpm=req.max_descent_fpm,
+                            cruise_speed_kt=req.cruise_speed_kt,
+                            climb_speed_kt=req.climb_speed_kt,
+                            descent_speed_kt=req.descent_speed_kt,
+                            avoid_airspace=req.avoid_airspace or [],
+                            obstacle_radius_nm=req.obstacle_radius_nm,
+                            obstacle_clearance_ft=req.obstacle_clearance_ft,
+                            prev_point=prev_pt,
+                        ):
+                            if event.get("type") == "path":
                                 event["leg_index"] = global_leg
                                 event["from"] = from_ap.icao
                                 event["to"] = to_ap.icao
-                                event["message"] = f"No terrain-avoiding path for leg {global_leg+1}: {from_ap.icao} \u2192 {to_ap.icao} (retries exhausted)"
-                                yield f"data: {json.dumps(event)}\n\n"
-                                yield f"data: {json.dumps({'type': 'done'})}\n\n"
-                                return
+                                seg_last_leg_dist = event.get("dist_nm", 0.0)
+                            if event.get("type") == "no_path":
+                                blocked_pairs.add((from_ap.icao, to_ap.icao))
+                                leg_failed = True
+                                last_fail_event = event
+                                last_fail_event["from"] = from_ap.icao
+                                last_fail_event["to"] = to_ap.icao
+                                last_fail_event["leg_index"] = global_leg
+                                break
+                            yield f"data: {json.dumps(event)}\n\n"
+
+                        if leg_failed:
                             break
-                        yield f"data: {json.dumps(event)}\n\n"
 
-                    if leg_failed:
+                    if not leg_failed:
+                        all_sequences.append(sequence)
+                        segment_ok = True
+                        seq_succeeded = True
                         break
+                    # else: try next candidate sequence from the pool
 
-                if not leg_failed:
-                    all_sequences.append(sequence)
-                    segment_ok = True
-                    break
-                # else: retry this segment with updated blocked_pairs
+                if seq_succeeded:
+                    break  # segment done, move to next
+
+                # All candidate sequences failed for this attempt — reroute or give up
+                if attempt < max_retries:
+                    yield f"data: {json.dumps({'type': 'reroute', 'message': f'Attempt {attempt+1} failed — replanning segment with wider detour...', 'blocked': [list(p) for p in blocked_pairs], 'keep_legs': sum(len(s) - 1 for s in all_sequences)})}\n\n"
+                else:
+                    # Final failure — include diagnostic detail
+                    msg = f"No terrain-avoiding path for leg: {last_fail_event['from']} → {last_fail_event['to']} (all {max_retries+1} attempts exhausted)"
+                    detail = last_fail_event.get("detail", "")
+                    if detail:
+                        msg += f"\n{detail}"
+                    last_fail_event["message"] = msg
+                    yield f"data: {json.dumps(last_fail_event)}\n\n"
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    return
 
             if not segment_ok:
                 return  # already yielded no_path/done above
@@ -281,6 +329,118 @@ class ProfileRequest(BaseModel):
     path: List[List[float]]  # [[lat, lon], ...]
     max_msl_ft: float = Field(gt=0)
     min_agl_ft: float = Field(ge=0)
+    avoid_airspace: List[str] = []
+
+
+def _profile_airspace_zones(
+    coords: list, elev_ft: list, avoid_classes: list[str], min_agl_ft: float,
+) -> list[dict]:
+    """Return airspace zones that overlap the path, with MSL floor/ceiling per sample point."""
+    import json as _json
+    from mvp_backend.planner import _point_in_polygon
+
+    if not avoid_classes:
+        return []
+
+    db_path = os.path.join(ROOT, "mvp_backend", "airspace_data", "airspace.sqlite")
+    if not os.path.exists(db_path):
+        return []
+
+    lats = [c[0] for c in coords]
+    lons = [c[1] for c in coords]
+    bbox_min_lat, bbox_max_lat = min(lats), max(lats)
+    bbox_min_lon, bbox_max_lon = min(lons), max(lons)
+
+    ph = ",".join("?" for _ in avoid_classes)
+    sql = f"""
+        SELECT name, class, lower_alt, lower_code, upper_alt, upper_code, geometry
+        FROM airspace
+        WHERE class IN ({ph})
+          AND max_lat >= ? AND min_lat <= ?
+          AND max_lon >= ? AND min_lon <= ?
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            sql, avoid_classes + [bbox_min_lat, bbox_max_lat, bbox_min_lon, bbox_max_lon],
+        ).fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        return []
+
+    zones: list[dict] = []
+    for name, cls, lower_alt, lower_code, upper_alt, upper_code, geom_str in rows:
+        if lower_alt is None or upper_alt is None:
+            continue
+        geom = _json.loads(geom_str)
+        gtype = geom.get("type", "")
+        if gtype == "Polygon":
+            rings = [geom["coordinates"][0]]
+        elif gtype == "MultiPolygon":
+            rings = [poly[0] for poly in geom["coordinates"]]
+        else:
+            continue
+
+        # Test each sample point against this airspace polygon
+        inside = [False] * len(coords)
+        for ring in rings:
+            rlons = [c[0] for c in ring]
+            rlats = [c[1] for c in ring]
+            rmin_lat, rmax_lat = min(rlats), max(rlats)
+            rmin_lon, rmax_lon = min(rlons), max(rlons)
+            for idx, (lat, lon) in enumerate(coords):
+                if inside[idx]:
+                    continue
+                if lat < rmin_lat or lat > rmax_lat or lon < rmin_lon or lon > rmax_lon:
+                    continue
+                if _point_in_polygon(lon, lat, ring):
+                    inside[idx] = True
+
+        # Build contiguous index ranges where path is inside this airspace
+        i = 0
+        while i < len(inside):
+            if not inside[i]:
+                i += 1
+                continue
+            start = i
+            while i < len(inside) and inside[i]:
+                i += 1
+            end = i - 1  # inclusive
+
+            # Compute MSL floor/ceiling for each sample in [start, end]
+            floors = []
+            ceilings = []
+            for idx in range(start, end + 1):
+                terrain = elev_ft[idx]
+                lc = (lower_code or "").upper()
+                if lc == "SFC":
+                    f = terrain
+                elif lc == "AGL":
+                    f = terrain + lower_alt
+                else:
+                    f = lower_alt
+                uc = (upper_code or "").upper()
+                if uc == "FL":
+                    c = upper_alt * 100
+                elif uc == "AGL":
+                    c = terrain + upper_alt
+                else:
+                    c = upper_alt
+                floors.append(round(f))
+                ceilings.append(round(c))
+
+            zones.append({
+                "name": name or cls,
+                "cls": cls,
+                "start_idx": start,
+                "end_idx": end,
+                "floor_msl": floors,
+                "ceiling_msl": ceilings,
+            })
+
+    return zones
 
 
 @app.post("/elevation-profile")
@@ -310,11 +470,17 @@ def elevation_profile(req: ProfileRequest):
         d = _haversine_nm(coords[i-1][0], coords[i-1][1], coords[i][0], coords[i][1])
         dist_nm.append(dist_nm[-1] + d)
 
+    # Compute airspace zones along the path
+    airspace_zones = _profile_airspace_zones(
+        coords, elev_ft, req.avoid_airspace, req.min_agl_ft,
+    )
+
     return {
         "dist_nm": [round(d, 2) for d in dist_nm],
         "ground_ft": [round(e, 0) for e in elev_ft],
         "max_msl_ft": req.max_msl_ft,
         "min_agl_ft": req.min_agl_ft,
+        "airspace_zones": airspace_zones,
     }
 
 
@@ -349,6 +515,94 @@ def get_obstacles(
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# ── airspace endpoint ────────────────────────────────────────────────
+
+_AIRSPACE_DB = os.path.join(os.path.dirname(__file__), "airspace_data", "airspace.sqlite")
+
+
+def _airports_in_airspace(airports_list, classes=("B", "C")):
+    """Return list of {icao, airspace_class, airspace_name} for airports
+    that fall inside any of the given airspace classes."""
+    if not os.path.exists(_AIRSPACE_DB) or not airports_list:
+        return []
+    placeholders = ",".join("?" for _ in classes)
+    conn = sqlite3.connect(_AIRSPACE_DB)
+    results = []
+    for ap in airports_list:
+        rows = conn.execute(
+            f"SELECT class, name, geometry FROM airspace "
+            f"WHERE class IN ({placeholders}) "
+            f"AND min_lat <= ? AND max_lat >= ? AND min_lon <= ? AND max_lon >= ?",
+            list(classes) + [ap.lat, ap.lat, ap.lon, ap.lon]
+        ).fetchall()
+        for cls, name, geom_str in rows:
+            import json as _json
+            geom = _json.loads(geom_str)
+            gtype = geom.get("type", "")
+            if gtype == "Polygon":
+                rings = [geom["coordinates"][0]]
+            elif gtype == "MultiPolygon":
+                rings = [poly[0] for poly in geom["coordinates"]]
+            else:
+                continue
+            for ring in rings:
+                if _point_in_ring(ap.lon, ap.lat, ring):
+                    results.append({"icao": ap.icao, "airspace_class": cls, "airspace_name": name})
+                    break
+            else:
+                continue
+            break  # found one match for this airport, skip remaining polygons
+    conn.close()
+    return results
+
+
+def _point_in_ring(px, py, ring):
+    """Ray-casting point-in-polygon."""
+    n = len(ring)
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, yi = ring[i]
+        xj, yj = ring[j]
+        if ((yi > py) != (yj > py)) and (px < (xj - xi) * (py - yi) / (yj - yi) + xi):
+            inside = not inside
+        j = i
+    return inside
+
+@app.get("/airspace")
+def get_airspace(
+    south: float = Query(...), north: float = Query(...),
+    west: float = Query(...), east: float = Query(...),
+    classes: str = Query("B,C,D,R,P,W,MOA,A"),
+):
+    """Return airspace polygons that intersect a bounding box."""
+    if not os.path.exists(_AIRSPACE_DB):
+        return []
+    cls_list = [c.strip().upper() for c in classes.split(",") if c.strip()]
+    if not cls_list:
+        return []
+    conn = sqlite3.connect(_AIRSPACE_DB)
+    conn.row_factory = sqlite3.Row
+    placeholders = ",".join("?" for _ in cls_list)
+    rows = conn.execute(
+        f"SELECT ident, icao_id, name, class, local_type, "
+        f"lower_alt, lower_code, upper_alt, upper_code, times_of_use, geometry "
+        f"FROM airspace "
+        f"WHERE max_lat >= ? AND min_lat <= ? AND max_lon >= ? AND min_lon <= ? "
+        f"AND class IN ({placeholders}) "
+        f"LIMIT 2000",
+        (south, north, west, east, *cls_list),
+    ).fetchall()
+    conn.close()
+    import json as _json
+    result = []
+    for r in rows:
+        d = dict(r)
+        d["geometry"] = _json.loads(d["geometry"])
+        result.append(d)
+    return result
 
 
 # ── background precomputation ─────────────────────────────────────────
