@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import sqlite3
 import threading
 import time
 
@@ -323,6 +324,31 @@ def elevation_profile(req: ProfileRequest):
 def cache_stats():
     """Return cache and route history statistics."""
     return route_cache.cache_stats()
+
+
+# ── obstacles endpoint ───────────────────────────────────────────────
+
+_OBS_DB = os.path.join(os.path.dirname(__file__), "obstacle_data", "obstacles.sqlite")
+
+@app.get("/obstacles")
+def get_obstacles(
+    south: float = Query(...), north: float = Query(...),
+    west: float = Query(...), east: float = Query(...),
+    min_agl: int = Query(200),
+):
+    """Return obstacles within a bounding box, filtered by min AGL height."""
+    if not os.path.exists(_OBS_DB):
+        return []
+    conn = sqlite3.connect(_OBS_DB)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT lat, lon, agl, amsl, type, lit FROM obstacles "
+        "WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ? AND agl >= ? "
+        "LIMIT 5000",
+        (south, north, west, east, min_agl),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 # ── background precomputation ─────────────────────────────────────────

@@ -12,3 +12,4 @@ faa_nasr/
 Tamarack_Mission_Analysis/
 # local data outputs
 mvp_backend/airports_solver.csv
+mvp_backend/obstacle_data/

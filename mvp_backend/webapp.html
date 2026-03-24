@@ -147,10 +147,39 @@
     detour.addEventListener('input', () => detourVal.textContent = detour.value);
 
     const map = L.map('map').setView([39.0, -105.5], 5);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 12,
+
+    const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 18,
       attribution: '&copy; OpenStreetMap'
-    }).addTo(map);
+    });
+
+    const usgsTopo = L.tileLayer('https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 16,
+      attribution: 'USGS'
+    });
+
+    const openTopo = L.tileLayer('https://tile.opentopomap.org/{z}/{x}/{y}.png', {
+      maxZoom: 17,
+      attribution: '&copy; OpenTopoMap'
+    });
+
+    const esriImagery = L.tileLayer('https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryTopo/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 16,
+      attribution: 'USGS Imagery'
+    });
+
+    const obstacleGroup = L.layerGroup().addTo(map);
+
+    usgsTopo.addTo(map);  // default to USGS Topo
+
+    L.control.layers({
+      'USGS Topo': usgsTopo,
+      'OpenTopoMap': openTopo,
+      'Satellite + Labels': esriImagery,
+      'Street Map': osmLayer,
+    }, {
+      'Obstacles (FAA DOF)': obstacleGroup,
+    }, { position: 'topright' }).addTo(map);
 
     let exploreGroup = L.layerGroup().addTo(map);
     let layerGroup = L.layerGroup().addTo(map);
@@ -158,6 +187,57 @@
     let abortController = null;
     let airportsLoaded = false;
     let airportLookup = {};  // ICAO → {elev, name, ...}
+
+    // ── Obstacle layer: load on map move when zoomed in ──
+    let _obsFetchController = null;
+    const OBS_MIN_ZOOM = 8;
+
+    function obstacleIcon(agl, lit) {
+      const h = Math.min(agl, 2000);
+      // Red intensity by height: taller = more opaque/red
+      const t = Math.min(h / 1000, 1);
+      const r = Math.round(180 + 75 * t);
+      const color = lit ? `rgb(${r},0,0)` : `rgb(${r},80,0)`;
+      const size = Math.max(5, Math.min(10, 4 + h / 300));
+      return { color, size };
+    }
+
+    async function loadObstacles() {
+      const z = map.getZoom();
+      obstacleGroup.clearLayers();
+      if (z < OBS_MIN_ZOOM) return;
+
+      const b = map.getBounds();
+      const params = new URLSearchParams({
+        south: b.getSouth().toFixed(4),
+        north: b.getNorth().toFixed(4),
+        west: b.getWest().toFixed(4),
+        east: b.getEast().toFixed(4),
+        min_agl: '200',
+      });
+
+      if (_obsFetchController) _obsFetchController.abort();
+      _obsFetchController = new AbortController();
+
+      try {
+        const resp = await fetch('/obstacles?' + params, { signal: _obsFetchController.signal });
+        const data = await resp.json();
+        for (const o of data) {
+          const { color, size } = obstacleIcon(o.agl, o.lit);
+          L.circleMarker([o.lat, o.lon], {
+            radius: size, color, fillColor: color,
+            fillOpacity: 0.7, weight: 1, opacity: 0.9,
+          }).bindPopup(
+            `<b>${o.type}</b><br>${o.agl}' AGL / ${o.amsl}' MSL${o.lit ? '<br>Lighted' : ''}`
+          ).addTo(obstacleGroup);
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') console.warn('Obstacle load error:', e);
+      }
+    }
+
+    map.on('moveend', loadObstacles);
+    map.on('zoomend', loadObstacles);
 
     function apLabel(icao) {
       const ap = airportLookup[icao];
