@@ -217,6 +217,7 @@ def plan_stop_sequence(
     max_descent_fpm: float = 0,
     climb_speed_kt: float = 0,
     descent_speed_kt: float = 0,
+    start_fuel_gal: float = 0,
 ) -> Optional[List[Airport]]:
     """Quickly determine fuel stop sequence using straight-line distances.
 
@@ -249,10 +250,13 @@ def plan_stop_sequence(
     # This makes Dijkstra prefer fewer, longer legs over many short hops.
     stop_penalty_hr = 0.5
 
+    # Effective fuel at segment start (for non-fuel waypoints)
+    _start_fuel = start_fuel_gal if start_fuel_gal > 0 else usable_fuel_gal
+
     # Check if direct is fuel-feasible and not blocked
     direct_nm = _direct_nm(dep, arr)
     ok, _, _ = leg_fuel_ok(direct_nm * planning_detour, cruise_speed_kt,
-                           usable_fuel_gal, burn_gph, reserve_min)
+                           _start_fuel, burn_gph, reserve_min)
     if ok and not _is_blocked(dep.icao, arr.icao):
         return [dep, arr]
 
@@ -262,6 +266,10 @@ def plan_stop_sequence(
     if max_leg_time <= 0:
         return None
     max_leg_nm = max_leg_time * cruise_speed_kt
+
+    # First leg from dep may have less fuel if waypoint didn't refuel
+    start_leg_time = (_start_fuel / burn_gph) - (reserve_min / 60.0)
+    start_max_leg_nm = start_leg_time * cruise_speed_kt if start_leg_time > 0 else 0
 
     # Build candidate fuel stops
     stop_candidates: List[Airport] = []
@@ -298,16 +306,20 @@ def plan_stop_sequence(
         expanded += 1
         cur_ap = get_airport(cur_code)
 
+        # First leg from dep may have reduced range
+        cur_radius = start_max_leg_nm if cur_code == dep.icao else radius_nm
+        cur_fuel = _start_fuel if cur_code == dep.icao else usable_fuel_gal
+
         neigh: List[tuple[float, Airport]] = []
         d_to_arr = _direct_nm(cur_ap, arr)
-        if d_to_arr <= radius_nm:
+        if d_to_arr <= cur_radius:
             neigh.append((d_to_arr, arr))
 
         for ap in stop_candidates:
             if ap.icao == cur_code:
                 continue
             d = _direct_nm(cur_ap, ap)
-            if d <= radius_nm:
+            if d <= cur_radius:
                 neigh.append((d, ap))
 
         neigh.sort(key=lambda x: x[0])
@@ -319,7 +331,7 @@ def plan_stop_sequence(
                 continue
             # Fuel check uses planning_detour (realistic terrain cushion)
             ok, t_hr, _ = leg_fuel_ok(d * planning_detour, cruise_speed_kt,
-                                      usable_fuel_gal, burn_gph, reserve_min)
+                                      cur_fuel, burn_gph, reserve_min)
             if not ok:
                 continue
             # Add stop penalty for intermediate stops (not for arrival)

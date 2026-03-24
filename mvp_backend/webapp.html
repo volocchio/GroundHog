@@ -16,7 +16,7 @@
     input, select { width:100%; padding: 8px; font-size: 14px; border:1px solid #d1d5db; border-radius: 8px; }
     button { width:100%; padding: 10px; border-radius: 10px; border:0; background:#2563eb; color:#fff; font-size: 14px; margin-top: 12px; cursor:pointer; }
     button:disabled { background:#93c5fd; cursor: not-allowed; }
-    #abortBtn { background:#dc2626; display:none; }
+    #abortBtn { background:#dc2626; display:none; position:absolute; top:0; left:0; width:100%; height:100%; margin:0; }
     #abortBtn:hover { background:#b91c1c; }
     .watch-row { display:flex; align-items:center; gap:8px; margin-top:10px; font-size:13px; color:#374151; }
     .watch-row input[type=checkbox] { width:auto; }
@@ -51,6 +51,9 @@
 
       <label>Arrival ICAO</label>
       <input id="arr" value="E60" />
+
+      <label>Intermediate waypoints (space-sep; all refuel by default, append <code>-NF</code> to skip fuel)</label>
+      <input id="waypoints" placeholder="e.g. KBOI N86-NF KSLC" />
 
       <label>Fuel type required (for stops)</label>
       <select id="fuelType">
@@ -104,8 +107,17 @@
         <div class="muted">Grid is fixed at ~1 km; corridor expansion is automatic.</div>
       </details>
 
-      <button id="goBtn">Plan route</button>
-      <button id="abortBtn">Abort Planning</button>
+      <div style="position:relative; margin-top:12px">
+        <button id="goBtn" style="margin:0">Plan route</button>
+        <button id="abortBtn">Abort Planning</button>
+      </div>
+
+      <label>Saved routes</label>
+      <div style="display:flex; gap:6px; align-items:center; margin-top:4px">
+        <select id="savedRoutes" style="flex:1; margin:0"><option value="">&mdash; none &mdash;</option></select>
+        <button id="saveBtn" type="button" style="background:#16a34a; margin:0; padding:6px 12px; width:auto; font-size:12px; border-radius:6px" title="Save current inputs">Save</button>
+        <button id="deleteBtn" type="button" style="background:transparent; border:1px solid #d1d5db; color:#6b7280; margin:0; padding:5px 8px; width:auto; font-size:13px; border-radius:6px; cursor:pointer" title="Delete selected saved route">&times;</button>
+      </div>
       <div class="watch-row">
         <input type="checkbox" id="watchSearch" checked />
         <label for="watchSearch" style="margin:0; display:inline">Watch A* search on map</label>
@@ -145,6 +157,12 @@
     let airportGroup = L.layerGroup().addTo(map);
     let abortController = null;
     let airportsLoaded = false;
+    let airportLookup = {};  // ICAO → {elev, name, ...}
+
+    function apLabel(icao) {
+      const ap = airportLookup[icao];
+      return ap ? `${icao} (${Math.round(ap.elev)}')` : icao;
+    }
 
     function clearMap() {
       layerGroup.clearLayers();
@@ -160,6 +178,7 @@
         const list = await res.json();
         airportsLoaded = true;
         for (const ap of list) {
+          airportLookup[ap.icao] = ap;
           const hasFuel = ap.fuel_100ll || ap.fuel_jeta;
           const color = hasFuel ? '#16a34a' : '#6b7280';
           const fuelStr = [ap.fuel_100ll ? '100LL' : '', ap.fuel_jeta ? 'Jet-A' : ''].filter(Boolean).join(', ') || 'None';
@@ -347,7 +366,7 @@
     }
 
     function addMarker(lat, lon, label) {
-      return L.marker([lat, lon]).bindPopup(label).addTo(layerGroup);
+      return L.marker([lat, lon]).bindPopup(apLabel(label)).addTo(layerGroup);
     }
 
     function fmt(n, digits=2) {
@@ -366,7 +385,7 @@
     function renderNavLog({legs, usableFuelGal, reserveMin, burnGph, depLabel, arrLabel, stops, failedLeg}) {
       const reserveGal = (reserveMin / 60) * burnGph;
       const resultsDiv = document.getElementById('results');
-      const route = depLabel + (stops && stops.length ? ' → ' + stops.join(' → ') : '') + ' → ' + arrLabel;
+      const route = apLabel(depLabel) + (stops && stops.length ? ' → ' + stops.map(s => apLabel(s)).join(' → ') : '') + ' → ' + apLabel(arrLabel);
 
       let html = `<div style="font-weight:600; margin-top:10px">Navigation Log</div>`;
       html += `<div style="margin:4px 0; font-size:0.9em">${route}</div>`;
@@ -395,8 +414,8 @@
 
         html += '<tr style="border-bottom:1px solid #ddd">';
         html += `<td style="padding:2px 6px">${i + 1}${leg.cached ? ' \u26A1' : ''}</td>`;
-        html += `<td style="padding:2px 6px">${leg.from}</td>`;
-        html += `<td style="padding:2px 6px">${leg.to}</td>`;
+        html += `<td style="padding:2px 6px">${apLabel(leg.from)}</td>`;
+        html += `<td style="padding:2px 6px">${apLabel(leg.to)}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${fmt(leg.distNm, 1)}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${legMin} min</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${fmt(leg.fuelGal, 1)} gal</td>`;
@@ -411,8 +430,8 @@
       if (failedLeg) {
         html += '<tr style="border-bottom:1px solid #ddd; background:#fef2f2; color:#dc2626">';
         html += `<td style="padding:2px 6px">${legs.length + 1} \u2716</td>`;
-        html += `<td style="padding:2px 6px">${failedLeg.from || '?'}</td>`;
-        html += `<td style="padding:2px 6px">${failedLeg.to || '?'}</td>`;
+        html += `<td style="padding:2px 6px">${failedLeg.from ? apLabel(failedLeg.from) : '?'}</td>`;
+        html += `<td style="padding:2px 6px">${failedLeg.to ? apLabel(failedLeg.to) : '?'}</td>`;
         html += '<td colspan="4" style="padding:2px 6px">NO PATH FOUND</td>';
         html += '<td colspan="3" style="border-left:2px solid #888"></td>';
         html += '</tr>';
@@ -473,6 +492,7 @@
         climb_speed_kt: Number(document.getElementById('climbSpeedKt').value) || 0,
         descent_speed_kt: Number(document.getElementById('descentSpeedKt').value) || 0,
         terrain_follow: document.querySelector('input[name="flightMode"]:checked').value === 'terrain',
+        waypoints: document.getElementById('waypoints').value.split(/[\s,]+/).map(s => s.trim().toUpperCase()).filter(Boolean),  // may contain -NF suffix
       };
     }
 
@@ -488,6 +508,7 @@
       let lastLegFuelGal = 0;
       let allCoords = [];
       let legsList = [];
+      let legLayers = [];  // per-leg [polyline, marker1, marker2] for selective removal
       let stops = [];
       let currentLeg = 0;
       let numLegs = 1;
@@ -523,15 +544,27 @@
             const event = JSON.parse(line.slice(6));
 
             if (event.type === 'reroute') {
-              // Terrain blocked a leg — server is replanning with new stops
+              // Terrain blocked a leg — server is replanning this segment
+              const keep = event.keep_legs || 0;
               exploreGroup.clearLayers();
-              layerGroup.clearLayers();
+              // Remove only the current segment's map layers
+              for (let k = keep; k < legLayers.length; k++) {
+                for (const lyr of legLayers[k]) layerGroup.removeLayer(lyr);
+              }
+              legLayers = legLayers.slice(0, keep);
+              // Rollback stats to the kept legs
+              legsList = legsList.slice(0, keep);
               allCoords = [];
-              legsList = [];
               totalDistNm = 0; totalTimeHr = 0; totalFuelGal = 0;
-              exploredCount = 0; currentLeg = 0;
-              overallBounds = null;
-              document.getElementById('status').textContent = event.message || 'Replanning route…';
+              for (const leg of legsList) {
+                totalDistNm += leg.distNm;
+                totalTimeHr += leg.timeHr;
+                totalFuelGal += leg.fuelGal;
+                allCoords = allCoords.concat(leg._coords || []);
+              }
+              exploredCount = 0;
+              currentLeg = keep;
+              document.getElementById('status').textContent = event.message || 'Replanning segment\u2026';
             }
 
             if (event.type === 'route_plan') {
@@ -578,6 +611,15 @@
               const color = legColors[currentLeg % legColors.length];
               const poly = addPath(event.coords, color);
 
+              // Track per-leg map layers for selective removal on reroute
+              const m1 = event.coords.length ? addMarker(event.coords[0][0], event.coords[0][1], event.from || payload.dep_icao) : null;
+              const m2 = event.coords.length ? addMarker(
+                event.coords[event.coords.length-1][0],
+                event.coords[event.coords.length-1][1],
+                event.to || payload.arr_icao
+              ) : null;
+              legLayers.push([poly, m1, m2].filter(Boolean));
+
               // accumulate
               totalDistNm += event.dist_nm;
               const legTimeHr = event.dist_nm / payload.cruise_speed_kt;
@@ -593,17 +635,8 @@
                 timeHr: legTimeHr,
                 fuelGal: legFuelGal,
                 cached: !!event.cached,
+                _coords: event.coords,  // stash for reroute recovery
               });
-
-              // add markers for this leg endpoints
-              if (event.coords.length) {
-                addMarker(event.coords[0][0], event.coords[0][1], event.from || payload.dep_icao);
-                addMarker(
-                  event.coords[event.coords.length-1][0],
-                  event.coords[event.coords.length-1][1],
-                  event.to || payload.arr_icao
-                );
-              }
 
               // fit to overall bounds
               if (overallBounds) {
@@ -767,6 +800,32 @@
       document.getElementById('error').textContent = '';
       document.getElementById('results').innerHTML = '';
       const payload = getPayload();
+
+      // Pre-flight check: airport elevation vs max MSL ceiling
+      const depAp = airportLookup[payload.dep_icao];
+      const arrAp = airportLookup[payload.arr_icao];
+      if (depAp && depAp.elev > payload.max_msl_ft) {
+        document.getElementById('error').textContent =
+          `${payload.dep_icao} elevation (${Math.round(depAp.elev)}' MSL) is above your max altitude ceiling (${payload.max_msl_ft}' MSL). Increase Max MSL or pick a different airport.`;
+        return;
+      }
+      if (arrAp && arrAp.elev > payload.max_msl_ft) {
+        document.getElementById('error').textContent =
+          `${payload.arr_icao} elevation (${Math.round(arrAp.elev)}' MSL) is above your max altitude ceiling (${payload.max_msl_ft}' MSL). Increase Max MSL or pick a different airport.`;
+        return;
+      }
+
+      // Check waypoint elevations too (strip -NF suffix for lookup)
+      for (const wpRaw of payload.waypoints) {
+        const wpCode = wpRaw.replace(/-NF$/i, '');
+        const wpAp = airportLookup[wpCode];
+        if (wpAp && wpAp.elev > payload.max_msl_ft) {
+          document.getElementById('error').textContent =
+            `Waypoint ${wpCode} elevation (${Math.round(wpAp.elev)}' MSL) is above your max altitude ceiling (${payload.max_msl_ft}' MSL). Increase Max MSL or remove this waypoint.`;
+          return;
+        }
+      }
+
       const watch = document.getElementById('watchSearch').checked;
       if (watch) {
         await planStreaming(payload);
@@ -788,6 +847,103 @@
       } catch {}
     }
     refreshCacheStats();
+
+    // ── Save / Load routes (localStorage) ──
+    const STORAGE_KEY = 'groundhog_saved_routes';
+
+    function getSavedRoutes() {
+      try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}; }
+      catch { return {}; }
+    }
+
+    function refreshSavedDropdown() {
+      const sel = document.getElementById('savedRoutes');
+      const routes = getSavedRoutes();
+      sel.innerHTML = '<option value="">\u2014 none \u2014</option>';
+      for (const name of Object.keys(routes).sort()) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      }
+    }
+
+    document.getElementById('saveBtn').addEventListener('click', () => {
+      const payload = getPayload();
+      const wpDisplay = payload.waypoints.map(w => {
+        const nf = w.endsWith('-NF');
+        const code = nf ? w.slice(0, -3) : w;
+        return nf ? code : code + ' \u26FD';
+      });
+      const defaultName = payload.dep_icao +
+        (wpDisplay.length ? ' \u2192 ' + wpDisplay.join(' \u2192 ') : '') +
+        ' \u2192 ' + payload.arr_icao;
+      const name = prompt('Route name:', defaultName);
+      if (!name) return;
+      const routes = getSavedRoutes();
+      routes[name] = {
+        dep: payload.dep_icao,
+        arr: payload.arr_icao,
+        waypoints: document.getElementById('waypoints').value,
+        cruise_speed_kt: payload.cruise_speed_kt,
+        usable_fuel_gal: payload.usable_fuel_gal,
+        fuel_burn_gph: payload.fuel_burn_gph,
+        reserve_min: payload.reserve_min,
+        max_msl_ft: payload.max_msl_ft,
+        min_agl_ft: payload.min_agl_ft,
+        required_fuel: payload.required_fuel,
+        max_detour_factor: payload.max_detour_factor,
+        max_climb_fpm: payload.max_climb_fpm,
+        max_descent_fpm: payload.max_descent_fpm,
+        climb_speed_kt: payload.climb_speed_kt,
+        descent_speed_kt: payload.descent_speed_kt,
+        terrain_follow: payload.terrain_follow,
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(routes));
+      refreshSavedDropdown();
+      document.getElementById('savedRoutes').value = name;
+    });
+
+    document.getElementById('deleteBtn').addEventListener('click', () => {
+      const sel = document.getElementById('savedRoutes');
+      const name = sel.value;
+      if (!name) return;
+      if (!confirm(`Delete saved route "${name}"?`)) return;
+      const routes = getSavedRoutes();
+      delete routes[name];
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(routes));
+      refreshSavedDropdown();
+    });
+
+    document.getElementById('savedRoutes').addEventListener('change', (e) => {
+      const name = e.target.value;
+      if (!name) return;
+      const routes = getSavedRoutes();
+      const r = routes[name];
+      if (!r) return;
+      document.getElementById('dep').value = r.dep || '';
+      document.getElementById('arr').value = r.arr || '';
+      document.getElementById('waypoints').value = r.waypoints || '';
+      document.getElementById('speedKt').value = r.cruise_speed_kt || 75;
+      document.getElementById('usableFuel').value = r.usable_fuel_gal || 48;
+      document.getElementById('burnGph').value = r.fuel_burn_gph || 13;
+      document.getElementById('reserveMin').value = r.reserve_min || 30;
+      document.getElementById('maxMsl').value = r.max_msl_ft || 7000;
+      document.getElementById('minAgl').value = r.min_agl_ft || 200;
+      document.getElementById('fuelType').value = r.required_fuel || '100LL';
+      document.getElementById('detour').value = r.max_detour_factor || 1.8;
+      detourVal.textContent = r.max_detour_factor || 1.8;
+      document.getElementById('maxClimb').value = r.max_climb_fpm || 0;
+      document.getElementById('maxDescent').value = r.max_descent_fpm || 0;
+      document.getElementById('climbSpeedKt').value = r.climb_speed_kt || 0;
+      document.getElementById('descentSpeedKt').value = r.descent_speed_kt || 0;
+      // Set flight mode radio
+      const modeVal = r.terrain_follow ? 'terrain' : 'maxmsl';
+      document.querySelector(`input[name="flightMode"][value="${modeVal}"]`).checked = true;
+      document.querySelector('input[name="flightMode"]').dispatchEvent(new Event('change'));
+    });
+
+    refreshSavedDropdown();
   </script>
 </body>
 </html>

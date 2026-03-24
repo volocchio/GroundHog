@@ -48,6 +48,8 @@ class RouteRequest(BaseModel):
 
     terrain_follow: bool = Field(default=False)
 
+    waypoints: list[str] = Field(default_factory=list)
+
 
 @app.get("/", response_class=HTMLResponse)
 def index():
@@ -129,6 +131,26 @@ def route_stream(req: RouteRequest):
     if not arr:
         raise HTTPException(404, f"Unknown arr_icao {req.arr_icao}")
 
+    # Resolve waypoints into airport objects; -NF suffix = no fuel
+    waypoint_aps = []
+    waypoint_fuel = {}  # icao → True (refuel) / False (no fuel)
+    for wp_raw in (req.waypoints or []):
+        raw = wp_raw.strip().upper()
+        if raw.endswith('-NF'):
+            icao = raw[:-3].strip()
+            fuel = False
+        else:
+            icao = raw
+            fuel = True
+        wp = airports.get(icao)
+        if not wp:
+            raise HTTPException(404, f"Unknown waypoint airport: {icao}")
+        waypoint_aps.append(wp)
+        waypoint_fuel[icao] = fuel
+
+    # Segments: dep → wp1, wp1 → wp2, ..., wpN → arr
+    segment_endpoints = [dep] + waypoint_aps + [arr]
+
     route_cache.record_request(dep.icao, arr.icao, req.max_msl_ft, req.min_agl_ft, req.max_detour_factor,
                                  cruise_kt=req.cruise_speed_kt, fuel_gal=req.usable_fuel_gal,
                                  burn_gph=req.fuel_burn_gph, reserve_min=req.reserve_min,
@@ -137,82 +159,119 @@ def route_stream(req: RouteRequest):
                                  climb_speed_kt=req.climb_speed_kt, descent_speed_kt=req.descent_speed_kt)
 
     def generate():
+        # First pass: plan all segments to get total leg count and stops
+        all_sequences = []
         blocked_pairs = set()
-        max_retries = 3
+        seg_last_leg_dist = 0.0  # actual A* distance of last leg in prev segment
+        for si in range(len(segment_endpoints) - 1):
+            seg_dep = segment_endpoints[si]
+            seg_arr = segment_endpoints[si + 1]
 
-        for attempt in range(max_retries + 1):
-            sequence = plan_stop_sequence(
-                dep=dep, arr=arr, airports=airports,
-                cruise_speed_kt=req.cruise_speed_kt,
-                usable_fuel_gal=req.usable_fuel_gal,
-                burn_gph=req.fuel_burn_gph,
-                reserve_min=req.reserve_min,
-                required_fuel=req.required_fuel,
-                max_detour_factor=req.max_detour_factor,
-                blocked_pairs=blocked_pairs,
-                max_msl_ft=req.max_msl_ft,
-                min_agl_ft=req.min_agl_ft,
-                max_climb_fpm=req.max_climb_fpm,
-                max_descent_fpm=req.max_descent_fpm,
-                climb_speed_kt=req.climb_speed_kt,
-                descent_speed_kt=req.descent_speed_kt,
-            )
+            # Determine starting fuel: full if first segment or if we refuel here
+            if si == 0 or waypoint_fuel.get(seg_dep.icao, True):
+                start_fuel = req.usable_fuel_gal
+            else:
+                # No fuel at this waypoint — estimate remaining from last leg
+                last_leg_time = seg_last_leg_dist / req.cruise_speed_kt if req.cruise_speed_kt > 0 else 0
+                fuel_used = last_leg_time * req.fuel_burn_gph
+                start_fuel = max(0.0, req.usable_fuel_gal - fuel_used)
 
-            if sequence is None:
-                yield f"data: {json.dumps({'type': 'no_path', 'message': 'No fuel-feasible route found (all alternatives exhausted).'})}\n\n"
-                yield f"data: {json.dumps({'type': 'done'})}\n\n"
-                return
-
-            num_legs = len(sequence) - 1
-            stops = [ap.icao for ap in sequence[1:-1]]
-
-            yield f"data: {json.dumps({'type': 'route_plan', 'stops': stops, 'num_legs': num_legs})}\n\n"
-
-            leg_failed = False
-            for i in range(num_legs):
-                from_ap = sequence[i]
-                to_ap = sequence[i + 1]
-
-                yield f"data: {json.dumps({'type': 'leg_start', 'from': from_ap.icao, 'to': to_ap.icao, 'leg_index': i})}\n\n"
-
-                for event in terrain_avoid_leg_streaming(
-                    from_ap, to_ap,
+            max_retries = 3
+            segment_ok = False
+            for attempt in range(max_retries + 1):
+                sequence = plan_stop_sequence(
+                    dep=seg_dep, arr=seg_arr, airports=airports,
+                    cruise_speed_kt=req.cruise_speed_kt,
+                    usable_fuel_gal=req.usable_fuel_gal,
+                    start_fuel_gal=start_fuel,
+                    burn_gph=req.fuel_burn_gph,
+                    reserve_min=req.reserve_min,
+                    required_fuel=req.required_fuel,
+                    max_detour_factor=req.max_detour_factor,
+                    blocked_pairs=blocked_pairs,
                     max_msl_ft=req.max_msl_ft,
                     min_agl_ft=req.min_agl_ft,
-                    max_detour_factor=req.max_detour_factor,
                     max_climb_fpm=req.max_climb_fpm,
                     max_descent_fpm=req.max_descent_fpm,
-                    cruise_speed_kt=req.cruise_speed_kt,
                     climb_speed_kt=req.climb_speed_kt,
                     descent_speed_kt=req.descent_speed_kt,
-                ):
-                    if event.get("type") == "path":
-                        event["leg_index"] = i
-                        event["from"] = from_ap.icao
-                        event["to"] = to_ap.icao
-                    if event.get("type") == "no_path":
-                        # Block this pair and retry with a new stop sequence
-                        blocked_pairs.add((from_ap.icao, to_ap.icao))
-                        leg_failed = True
-                        if attempt < max_retries:
-                            yield f"data: {json.dumps({'type': 'reroute', 'message': f'Leg {from_ap.icao} → {to_ap.icao} blocked by terrain — replanning...', 'blocked': list(blocked_pairs)})}\n\n"
-                        else:
-                            event["leg_index"] = i
+                )
+
+                if sequence is None:
+                    yield f"data: {json.dumps({'type': 'no_path', 'message': f'No fuel-feasible route found for segment {seg_dep.icao} → {seg_arr.icao}.'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    return
+
+                # Stream legs for this segment
+                seg_num_legs = len(sequence) - 1
+                leg_offset = sum(len(s) - 1 for s in all_sequences)
+
+                # Build flattened stops list for route_plan event
+                flat_stops = []
+                for prev_seq in all_sequences:
+                    flat_stops.extend(ap.icao for ap in prev_seq[1:])
+                flat_stops.extend(ap.icao for ap in sequence[1:-1])
+                # remaining segments aren't planned yet, but we know the waypoints
+                for fi in range(si + 1, len(segment_endpoints) - 1):
+                    flat_stops.append(segment_endpoints[fi + 1].icao if fi + 1 < len(segment_endpoints) - 1 else None)
+                flat_stops = [s for s in flat_stops if s and s != arr.icao]
+
+                total_legs_so_far = leg_offset + seg_num_legs
+                yield f"data: {json.dumps({'type': 'route_plan', 'stops': flat_stops, 'num_legs': total_legs_so_far})}\n\n"
+
+                leg_failed = False
+                for i in range(seg_num_legs):
+                    from_ap = sequence[i]
+                    to_ap = sequence[i + 1]
+                    global_leg = leg_offset + i
+
+                    yield f"data: {json.dumps({'type': 'leg_start', 'from': from_ap.icao, 'to': to_ap.icao, 'leg_index': global_leg})}\n\n"
+
+                    for event in terrain_avoid_leg_streaming(
+                        from_ap, to_ap,
+                        max_msl_ft=req.max_msl_ft,
+                        min_agl_ft=req.min_agl_ft,
+                        max_detour_factor=req.max_detour_factor,
+                        max_climb_fpm=req.max_climb_fpm,
+                        max_descent_fpm=req.max_descent_fpm,
+                        cruise_speed_kt=req.cruise_speed_kt,
+                        climb_speed_kt=req.climb_speed_kt,
+                        descent_speed_kt=req.descent_speed_kt,
+                    ):
+                        if event.get("type") == "path":
+                            event["leg_index"] = global_leg
                             event["from"] = from_ap.icao
                             event["to"] = to_ap.icao
-                            event["message"] = f"No terrain-avoiding path found for leg {i+1}: {from_ap.icao} \u2192 {to_ap.icao} (retries exhausted)"
-                            yield f"data: {json.dumps(event)}\n\n"
-                            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-                            return
+                            seg_last_leg_dist = event.get("dist_nm", 0.0)
+                        if event.get("type") == "no_path":
+                            blocked_pairs.add((from_ap.icao, to_ap.icao))
+                            leg_failed = True
+                            if attempt < max_retries:
+                                yield f"data: {json.dumps({'type': 'reroute', 'message': f'Leg {from_ap.icao} \u2192 {to_ap.icao} blocked \u2014 replanning segment...', 'blocked': list(blocked_pairs), 'keep_legs': leg_offset})}\n\n"
+                            else:
+                                event["leg_index"] = global_leg
+                                event["from"] = from_ap.icao
+                                event["to"] = to_ap.icao
+                                event["message"] = f"No terrain-avoiding path for leg {global_leg+1}: {from_ap.icao} \u2192 {to_ap.icao} (retries exhausted)"
+                                yield f"data: {json.dumps(event)}\n\n"
+                                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                                return
+                            break
+                        yield f"data: {json.dumps(event)}\n\n"
+
+                    if leg_failed:
                         break
-                    yield f"data: {json.dumps(event)}\n\n"
 
-                if leg_failed:
+                if not leg_failed:
+                    all_sequences.append(sequence)
+                    segment_ok = True
                     break
+                # else: retry this segment with updated blocked_pairs
 
-            if not leg_failed:
-                yield f"data: {json.dumps({'type': 'done'})}\n\n"
-                return
+            if not segment_ok:
+                return  # already yielded no_path/done above
+
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
