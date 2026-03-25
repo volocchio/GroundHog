@@ -34,6 +34,48 @@
     .err { color:#b91c1c; white-space: pre-wrap; }
     details { margin-top: 10px; }
     @media (max-width: 980px) { .wrap { grid-template-columns: 1fr; } #map { height: 50vh; } }
+    /* Leaflet layer control styling */
+    .leaflet-control-layers {
+      border-radius: 10px !important;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.18) !important;
+      border: 1px solid #e5e7eb !important;
+      padding: 0 !important;
+      overflow: hidden;
+    }
+    .leaflet-control-layers-toggle {
+      width: 36px !important; height: 36px !important;
+      background-size: 20px 20px !important;
+    }
+    .leaflet-control-layers-expanded {
+      padding: 10px 14px 10px 10px !important;
+      min-width: 200px;
+    }
+    .leaflet-control-layers-list {
+      font-family: system-ui, -apple-system, sans-serif !important;
+      font-size: 13px !important;
+    }
+    .leaflet-control-layers-separator {
+      border-top: 1px solid #e5e7eb !important;
+      margin: 6px 0 !important;
+    }
+    .leaflet-control-layers label {
+      display: flex !important; align-items: center; gap: 6px;
+      margin: 3px 0 !important; padding: 3px 4px; border-radius: 5px;
+      cursor: pointer; font-size: 13px !important; color: #1f2937;
+      transition: background 0.15s;
+    }
+    .leaflet-control-layers label:hover { background: #f3f4f6; }
+    .leaflet-control-layers input[type="radio"],
+    .leaflet-control-layers input[type="checkbox"] {
+      margin: 0 !important; width: auto !important;
+      accent-color: #2563eb;
+    }
+    .leaflet-control-layers-base label { font-weight: 500; }
+    .leaflet-control-layers-overlays label { font-weight: 400; }
+    .layer-swatch {
+      display: inline-block; width: 12px; height: 12px; border-radius: 3px;
+      border: 1px solid rgba(0,0,0,0.2); flex-shrink: 0;
+    }
   </style>
 </head>
 <body>
@@ -213,14 +255,14 @@
     usgsTopo.addTo(map);  // default to USGS Topo
 
     L.control.layers({
-      'USGS Topo': usgsTopo,
-      'OpenTopoMap': openTopo,
-      'Satellite + Labels': esriImagery,
-      'Street Map': osmLayer,
+      '🗺️ USGS Topo': usgsTopo,
+      '🏔️ OpenTopoMap': openTopo,
+      '🛰️ Satellite + Labels': esriImagery,
+      '🛣️ Street Map': osmLayer,
     }, {
-      'Airspace (B/C/D/R/P/MOA)': airspaceGroup,
-      'Obstacles (FAA DOF)': obstacleGroup,
-    }, { position: 'topright' }).addTo(map);
+      '<span class="layer-swatch" style="background:#2060cc"></span> Airspace': airspaceGroup,
+      '<span class="layer-swatch" style="background:#cc3300"></span> Obstacles (FAA)': obstacleGroup,
+    }, { position: 'topright', collapsed: true }).addTo(map);
 
     let exploreGroup = L.layerGroup().addTo(map);
     let layerGroup = L.layerGroup().addTo(map);
@@ -584,26 +626,40 @@
         const climbKt = climbSpeedKt > 0 ? climbSpeedKt : cruiseKt;
         const descentKt = descentSpeedKt > 0 ? descentSpeedKt : cruiseKt;
 
-        // Compute target altitude at each sample considering airspace
+        // Compute target altitude at each sample considering airspace.
+        // Iterate per-zone so that unavoidable zones (SFC floor + ceiling
+        // above maxMsl, e.g. inner Class B shelves at the destination) are
+        // ignored while avoidable outer shelves are properly ducked under.
         const target = new Array(dist.length);
         for (let i = 0; i < dist.length; i++) {
           const terrainMin = ground[i] + minAgl;
           let alt = terrainMin; // default: terrain following
-          if (asFloor[i] !== null) {
-            // Airspace present — decide: go under or over?
-            const underAlt = asFloor[i] - BUF;  // fly 100ft below floor
-            const overAlt = asCeil[i] + BUF;    // fly 100ft above ceiling
-            const canGoUnder = underAlt >= terrainMin;
-            const canGoOver = overAlt <= maxMsl;
-            if (canGoUnder) {
-              alt = underAlt; // prefer going under (less altitude change typically)
-            } else if (canGoOver) {
-              alt = overAlt;
-            } else {
-              alt = terrainMin; // can't avoid — fly at minimum safe alt
+          let bestUnder = Infinity;   // lowest underAlt across avoidable zones
+          let bestOver  = -Infinity;  // highest overAlt across avoidable zones
+          let anyUnder = false, anyOver = false;
+
+          for (const z of zones) {
+            if (i < z.start_idx || i > z.end_idx) continue;
+            const zFloor = z.floor_msl[i - z.start_idx];
+            const zCeil  = z.ceiling_msl[i - z.start_idx];
+            const underAlt = zFloor - BUF;
+            const overAlt  = zCeil  + BUF;
+            if (underAlt >= terrainMin) {
+              anyUnder = true;
+              bestUnder = Math.min(bestUnder, underAlt);
+            } else if (overAlt <= maxMsl) {
+              anyOver = true;
+              bestOver = Math.max(bestOver, overAlt);
             }
+            // else: zone unavoidable vertically (SFC floor + ceiling > maxMsl) — skip
           }
-          target[i] = Math.min(Math.max(alt, ground[i] + minAgl), maxMsl);
+
+          if (anyUnder) {
+            alt = bestUnder;          // prefer ducking under
+          } else if (anyOver) {
+            alt = bestOver;           // climb over if can't go under
+          }
+          target[i] = Math.min(Math.max(alt, terrainMin), maxMsl);
         }
 
         // Backward pass first: compute the latest altitude needed at each point
@@ -654,15 +710,95 @@
         ctx.fillStyle = '#2563eb'; ctx.font = '10px system-ui'; ctx.textAlign = 'left';
         ctx.fillText(zones.length ? 'Flight alt (airspace-aware)' : 'Terrain-follow alt (est.)', pad.left + 4, y(fa[Math.min(5, fa.length - 1)]) - 8);
       } else {
-        // Max MSL mode: flat cruise line at max MSL
+        // Max MSL mode — cruise at maxMsl, but duck under airspace when needed
+        const fa = new Array(dist.length);
+        let hasConstraint = false;
+
+        for (let i = 0; i < dist.length; i++) {
+          const terrainMin = ground[i] + minAgl;
+          let alt = maxMsl; // default: cruise at max MSL
+
+          // Check each zone independently (same per-zone logic as terrain-follow)
+          let bestUnder = Infinity;
+          let anyUnder = false;
+
+          for (const z of zones) {
+            if (i < z.start_idx || i > z.end_idx) continue;
+            const zFloor = z.floor_msl[i - z.start_idx];
+            const zCeil  = z.ceiling_msl[i - z.start_idx];
+            // Does our cruise altitude (maxMsl) penetrate this zone?
+            if (maxMsl > zFloor && maxMsl <= zCeil + BUF) {
+              // We're inside this zone — can we duck under?
+              const underAlt = zFloor - BUF;
+              if (underAlt >= terrainMin) {
+                anyUnder = true;
+                bestUnder = Math.min(bestUnder, underAlt);
+              }
+              // else: zone is SFC-based or floor too low — unavoidable, skip
+            }
+          }
+
+          if (anyUnder) {
+            alt = bestUnder;
+            hasConstraint = true;
+          }
+          fa[i] = Math.max(alt, terrainMin);
+        }
+
+        // If there are airspace constraints, apply smoothing so the descent/climb
+        // looks realistic rather than instant altitude jumps.
+        // Use a simple rate-limited pass if cruise speed and descent rate are known.
+        const effCruise = cruiseKt > 0 ? cruiseKt : 120; // fallback 120kt
+        const effClimb = maxClimbFpm > 0 ? maxClimbFpm : 500;
+        const effDescent = maxDescentFpm > 0 ? maxDescentFpm : 500;
+        const effClimbKt = climbSpeedKt > 0 ? climbSpeedKt : effCruise;
+        const effDescentKt = descentSpeedKt > 0 ? descentSpeedKt : effCruise;
+
+        if (hasConstraint) {
+          // Backward pass: ensure we can descend in time for upcoming constraints
+          const ba = new Array(dist.length);
+          ba[dist.length - 1] = fa[dist.length - 1];
+          for (let i = dist.length - 2; i >= 0; i--) {
+            const segDist = dist[i + 1] - dist[i];
+            const next = ba[i + 1];
+            const terrainMin = ground[i] + minAgl;
+            const dtDesc = (segDist / effDescentKt) * 60;
+            const maxAltHere = next + effDescent * dtDesc;
+            const dtClimb = (segDist / effClimbKt) * 60;
+            const minAltHere = next - effClimb * dtClimb;
+            let alt = fa[i];
+            alt = Math.min(alt, maxAltHere);
+            alt = Math.max(alt, minAltHere);
+            ba[i] = Math.min(Math.max(alt, terrainMin), maxMsl);
+          }
+
+          // Forward pass: rate-limited, pulled toward backward targets
+          const smoothed = [Math.min(Math.max(ba[0], ground[0] + minAgl), maxMsl)];
+          for (let i = 1; i < dist.length; i++) {
+            const segDist = dist[i] - dist[i - 1];
+            const prev = smoothed[i - 1];
+            const terrainMin = ground[i] + minAgl;
+            const dtClimb = (segDist / effClimbKt) * 60;
+            const dtDesc = (segDist / effDescentKt) * 60;
+            const ceiling = Math.min(prev + effClimb * dtClimb, maxMsl);
+            const floor = Math.max(prev - effDescent * dtDesc, terrainMin);
+            smoothed.push(Math.min(ceiling, Math.max(ba[i], floor)));
+          }
+          for (let i = 0; i < dist.length; i++) fa[i] = smoothed[i];
+        }
+
         ctx.strokeStyle = '#2563eb';
         ctx.lineWidth = 2;
-        ctx.setLineDash([5, 3]);
+        ctx.setLineDash(hasConstraint ? [] : [5, 3]);
         ctx.beginPath();
-        ctx.moveTo(pad.left, y(maxMsl));
-        ctx.lineTo(W - pad.right, y(maxMsl));
+        ctx.moveTo(x(dist[0]), y(fa[0]));
+        for (let i = 1; i < fa.length; i++) ctx.lineTo(x(dist[i]), y(fa[i]));
         ctx.stroke();
         ctx.setLineDash([]);
+        if (hasConstraint) {
+          ctx.fillStyle = '#2563eb'; ctx.font = '10px system-ui'; ctx.textAlign = 'left';
+          ctx.fillText('Flight alt (airspace-aware)', pad.left + 4, y(fa[Math.min(5, fa.length - 1)]) - 8);
+        }
       }
     }
 
