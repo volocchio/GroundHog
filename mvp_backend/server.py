@@ -332,15 +332,19 @@ class ProfileRequest(BaseModel):
     avoid_airspace: List[str] = []
 
 
+_ALL_DISPLAY_CLASSES = ["B", "C", "D", "R", "P", "W", "MOA", "A", "DA"]
+
 def _profile_airspace_zones(
     coords: list, elev_ft: list, avoid_classes: list[str], min_agl_ft: float,
 ) -> list[dict]:
-    """Return airspace zones that overlap the path, with MSL floor/ceiling per sample point."""
-    import json as _json
-    from mvp_backend.planner import _point_in_polygon
+    """Return airspace zones that overlap the path, with MSL floor/ceiling per sample point.
 
-    if not avoid_classes:
-        return []
+    Always queries ALL airspace classes for situational awareness display.
+    """
+    import json as _json
+    from mvp_backend.planner import _point_in_polygon, _airspace_floor_msl, _airspace_ceiling_msl
+
+    display_classes = _ALL_DISPLAY_CLASSES
 
     db_path = os.path.join(ROOT, "mvp_backend", "airspace_data", "airspace.sqlite")
     if not os.path.exists(db_path):
@@ -351,7 +355,7 @@ def _profile_airspace_zones(
     bbox_min_lat, bbox_max_lat = min(lats), max(lats)
     bbox_min_lon, bbox_max_lon = min(lons), max(lons)
 
-    ph = ",".join("?" for _ in avoid_classes)
+    ph = ",".join("?" for _ in display_classes)
     sql = f"""
         SELECT name, class, lower_alt, lower_code, upper_alt, upper_code, geometry
         FROM airspace
@@ -362,7 +366,7 @@ def _profile_airspace_zones(
     conn = sqlite3.connect(db_path)
     try:
         rows = conn.execute(
-            sql, avoid_classes + [bbox_min_lat, bbox_max_lat, bbox_min_lon, bbox_max_lon],
+            sql, display_classes + [bbox_min_lat, bbox_max_lat, bbox_min_lon, bbox_max_lon],
         ).fetchall()
     finally:
         conn.close()
@@ -414,20 +418,8 @@ def _profile_airspace_zones(
             ceilings = []
             for idx in range(start, end + 1):
                 terrain = elev_ft[idx]
-                lc = (lower_code or "").upper()
-                if lc == "SFC":
-                    f = terrain
-                elif lc == "AGL":
-                    f = terrain + lower_alt
-                else:
-                    f = lower_alt
-                uc = (upper_code or "").upper()
-                if uc == "FL":
-                    c = upper_alt * 100
-                elif uc == "AGL":
-                    c = terrain + upper_alt
-                else:
-                    c = upper_alt
+                f = _airspace_floor_msl(lower_alt, lower_code, terrain)
+                c = _airspace_ceiling_msl(upper_alt, upper_code, terrain)
                 floors.append(round(f))
                 ceilings.append(round(c))
 

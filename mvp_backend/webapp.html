@@ -603,9 +603,9 @@
       // We need the original call params — re-trigger from the stored path
       const depLabel = args[1], arrLabel = args[2];
       const cruiseKt = args[3], maxClimbFpm = args[4], maxDescentFpm = args[5];
-      const climbSpeedKt = args[6], descentSpeedKt = args[7], terrainFollow = args[8], legsList = args[9];
+      const climbSpeedKt = args[6], descentSpeedKt = args[7], terrainFollow = args[8], legsList = args[9], avoidAs = args[10] || [];
       fetchAndDrawProfile(lastProfilePath, data.max_msl_ft, data.min_agl_ft || 200,
-        depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, [], legsList);
+        depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, avoidAs, legsList);
     });
 
     async function fetchAndDrawProfile(path, maxMsl, minAgl, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, avoidAirspace, legsList) {
@@ -676,12 +676,12 @@
         data._profileObstacles = profileObstacles;
         lastProfilePath = path;  // store for click-to-map
         profileState.zoom = 1; profileState.panX = 0;  // reset zoom on new route
-        drawProfile(data, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, legsList);
+        drawProfile(data, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, legsList, avoidAirspace);
       } catch (e) { /* silent */ }
     }
 
-    function drawProfile(data, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, legsList) {
-      lastProfileArgs = [data, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, legsList];
+    function drawProfile(data, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, legsList, avoidAirspace) {
+      lastProfileArgs = [data, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, legsList, avoidAirspace];
       const wrap = document.getElementById('profileWrap');
       const canvas = document.getElementById('profileCanvas');
       wrap.classList.add('visible');
@@ -938,6 +938,7 @@
 
           for (const z of zones) {
             if (i < z.start_idx || i > z.end_idx) continue;
+            if (avoidAirspace && avoidAirspace.length && !avoidAirspace.includes(z.cls)) continue;
             const zFloor = z.floor_msl[i - z.start_idx];
             const zCeil  = z.ceiling_msl[i - z.start_idx];
             const underAlt = zFloor - BUF;
@@ -1067,6 +1068,43 @@
           fa[i] = Math.max(alt, terrainMin);
         }
 
+        // Gap-fill pass: if two ducking regions are separated by a short gap
+        // (< 20 NM), stay at the lower altitude through the gap rather than
+        // climbing up and immediately descending again (anti-sawtooth).
+        {
+          let i = 0;
+          while (i < dist.length) {
+            // Find start of a ducking region (fa < maxMsl and not airport)
+            if (fa[i] >= maxMsl || apIndices.has(i)) { i++; continue; }
+            const duckStart = i;
+            const duckAlt = fa[i];
+            // Scan to end of this ducking region
+            while (i < dist.length && fa[i] < maxMsl && !apIndices.has(i)) i++;
+            const duckEnd = i - 1;
+            // Look ahead for the next ducking region within 20 NM
+            const gapStart = i;
+            while (i < dist.length && (fa[i] >= maxMsl || apIndices.has(i))) {
+              if (apIndices.has(i)) break; // don't bridge across airports
+              if (dist[i] - dist[duckEnd] > 20) break; // gap too wide
+              i++;
+            }
+            // If we found another duck within the gap
+            if (i < dist.length && fa[i] < maxMsl && !apIndices.has(i) && dist[i] - dist[duckEnd] <= 20) {
+              // Fill the gap: stay at the higher of the two duck altitudes
+              const nextDuckAlt = fa[i];
+              const bridgeAlt = Math.max(duckAlt, nextDuckAlt);
+              for (let g = gapStart; g < i; g++) {
+                if (!apIndices.has(g)) {
+                  fa[g] = Math.max(bridgeAlt, ground[g] + minAgl);
+                }
+              }
+              // Don't advance i — continue from the next duck region
+              continue;
+            }
+            // No nearby duck found — just continue
+          }
+        }
+
         // Always apply climb/descent smoothing (needed for airport departures/arrivals)
         const effCruise = cruiseKt > 0 ? cruiseKt : 120; // fallback 120kt
         const effClimb = maxClimbFpm > 0 ? maxClimbFpm : 500;
@@ -1107,29 +1145,6 @@
           const ceiling = Math.min(prev + effClimb * dtClimb, maxMsl);
           const floor = Math.max(prev - effDescent * dtDesc, terrainMin);
           smoothed.push(Math.min(ceiling, Math.max(ba[i], floor)));
-        }
-
-        // Anti-sawtooth pass: if a climb is immediately followed by a descent
-        // back to a similar altitude within a short distance, flatten the spike.
-        // This prevents pointless climb/duck oscillations between close airspace zones.
-        for (let i = 1; i < dist.length - 1; i++) {
-          if (apIndices.has(i)) continue;
-          const prev = smoothed[i - 1];
-          const cur = smoothed[i];
-          const next = smoothed[i + 1];
-          // Detect spike: current is higher than both neighbors
-          if (cur > prev + 50 && cur > next + 50) {
-            // Check if the surrounding region is a short spike (< 10 NM wide)
-            let spikeStart = i, spikeEnd = i;
-            while (spikeStart > 0 && smoothed[spikeStart] > Math.min(prev, next) + 50 && !apIndices.has(spikeStart)) spikeStart--;
-            while (spikeEnd < dist.length - 1 && smoothed[spikeEnd] > Math.min(prev, next) + 50 && !apIndices.has(spikeEnd)) spikeEnd++;
-            const spikeWidth = dist[spikeEnd] - dist[spikeStart];
-            if (spikeWidth < 15) {
-              // Flatten: set to the lower of the two surrounding altitudes (stay low)
-              const flatAlt = Math.max(Math.min(prev, next), ground[i] + minAgl);
-              smoothed[i] = flatAlt;
-            }
-          }
         }
 
         for (let i = 0; i < dist.length; i++) fa[i] = smoothed[i];

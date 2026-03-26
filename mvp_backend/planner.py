@@ -644,6 +644,30 @@ def plan_route_multi_stop(
 
 # ── airspace rasterization helpers ────────────────────────────────────
 
+def _airspace_floor_msl(lower_alt, lower_code, terrain_ft: float) -> float:
+    """Convert airspace floor to MSL feet."""
+    lc = (lower_code or "").upper()
+    if lc == "SFC":
+        return terrain_ft
+    if lc == "AGL":
+        return terrain_ft + lower_alt
+    if lc in ("STD", "FL"):
+        return lower_alt * 100  # Flight level
+    return lower_alt  # MSL default
+
+
+def _airspace_ceiling_msl(upper_alt, upper_code, terrain_ft: float) -> float:
+    """Convert airspace ceiling to MSL feet."""
+    uc = (upper_code or "").upper()
+    if uc in ("FL", "STD"):
+        return upper_alt * 100
+    if uc == "AGL":
+        return terrain_ft + upper_alt
+    if uc == "UNLTD" or upper_alt is None or upper_alt < 0:
+        return 99999  # Unlimited
+    return upper_alt  # MSL default
+
+
 def _point_in_polygon(px: float, py: float, ring: list) -> bool:
     """Ray-casting point-in-polygon test.  ring = [[x,y], ...]."""
     n = len(ring)
@@ -751,23 +775,8 @@ def _rasterize_airspace(grid: GridSpec, avoid_classes: list[str],
                         min_flight_alt = terrain_ft + min_agl_ft
                         max_flight_alt = max_msl_ft
 
-                        # Airspace floor MSL
-                        lc = (lower_code or "").upper()
-                        if lc == "SFC":
-                            floor_msl = terrain_ft
-                        elif lc == "AGL":
-                            floor_msl = terrain_ft + lower_alt
-                        else:  # MSL (default)
-                            floor_msl = lower_alt
-
-                        # Airspace ceiling MSL
-                        uc = (upper_code or "").upper()
-                        if uc == "FL":
-                            ceiling_msl = upper_alt * 100
-                        elif uc == "AGL":
-                            ceiling_msl = terrain_ft + upper_alt
-                        else:  # MSL (default)
-                            ceiling_msl = upper_alt
+                        floor_msl = _airspace_floor_msl(lower_alt, lower_code, terrain_ft)
+                        ceiling_msl = _airspace_ceiling_msl(upper_alt, upper_code, terrain_ft)
 
                         # Can fly 100 ft below the floor?
                         can_go_under = min_flight_alt <= floor_msl - buf
