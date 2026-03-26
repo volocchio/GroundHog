@@ -26,7 +26,11 @@
     #map { height: calc(100vh - 290px); min-height: 300px; border-radius: 10px; }
     #profileWrap { margin-top: 8px; display: none; }
     #profileWrap.visible { display: block; }
-    #profileCanvas { width: 100%; height: 180px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fafafa; }
+    #profileCanvas { width: 100%; height: 250px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fafafa; cursor: grab; }
+    #profileCanvas:active { cursor: grabbing; }
+    .profile-controls { display: inline-flex; gap: 6px; margin-left: 12px; }
+    .profile-controls button { font-size: 11px; padding: 1px 8px; border: 1px solid #d1d5db; border-radius: 4px; background: #fff; cursor: pointer; }
+    .profile-controls button:hover { background: #f3f4f6; }
     .profile-title { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
     table { width:100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
     th, td { border-bottom: 1px solid #e5e7eb; padding: 6px 4px; text-align:left; }
@@ -75,6 +79,13 @@
     .layer-swatch {
       display: inline-block; width: 12px; height: 12px; border-radius: 3px;
       border: 1px solid rgba(0,0,0,0.2); flex-shrink: 0;
+    }
+    .route-icao-label {
+      font-weight: 600; font-size: 11px;
+      background: rgba(255,255,255,0.9);
+      border: 1px solid #2563eb;
+      padding: 1px 4px; border-radius: 3px;
+      white-space: nowrap;
     }
   </style>
 </head>
@@ -196,7 +207,16 @@
     <div class="card">
       <div id="map"></div>
       <div id="profileWrap">
-        <div class="profile-title">Elevation Profile (side view)</div>
+        <div class="profile-title">Elevation Profile (side view)
+          <span class="profile-controls">
+            <label style="font-size:11px; font-weight:normal; margin:0 4px 0 0">Corridor:</label>
+            <input id="profileCorridorNm" type="number" value="2" min="0.5" max="10" step="0.5" style="width:50px; padding:2px 4px; font-size:11px; border:1px solid #ccc; border-radius:4px; margin-right:6px" title="Obstacle display corridor width (NM each side)" />
+            <span style="font-size:10px; color:#888; margin-right:8px">NM</span>
+            <button id="profileZoomIn" title="Zoom in">+</button>
+            <button id="profileZoomOut" title="Zoom out">&minus;</button>
+            <button id="profileReset" title="Reset zoom">Reset</button>
+          </span>
+        </div>
         <canvas id="profileCanvas"></canvas>
       </div>
       <div id="results" style="margin-top:10px"></div>
@@ -249,16 +269,28 @@
       attribution: 'USGS Imagery'
     });
 
+    const vfrSectional = L.tileLayer('https://tiles.arcgis.com/tiles/ssFJjBXIUyZDrSYZ/arcgis/rest/services/VFR_Sectional/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 12,
+      attribution: 'FAA VFR Sectional'
+    });
+
+    const vfrWorld = L.tileLayer('https://tiles.arcgis.com/tiles/ssFJjBXIUyZDrSYZ/arcgis/rest/services/World_Aeronautical_702583/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 10,
+      attribution: 'FAA World Aeronautical'
+    });
+
     const obstacleGroup = L.layerGroup().addTo(map);
     const airspaceGroup = L.layerGroup().addTo(map);
 
-    usgsTopo.addTo(map);  // default to USGS Topo
+    openTopo.addTo(map);  // default to OpenTopoMap
 
     L.control.layers({
       '🗺️ USGS Topo': usgsTopo,
       '🏔️ OpenTopoMap': openTopo,
       '🛰️ Satellite + Labels': esriImagery,
       '🛣️ Street Map': osmLayer,
+      '🛩️ VFR Sectional': vfrSectional,
+      '🌍 World Aeronautical': vfrWorld,
     }, {
       '<span class="layer-swatch" style="background:#2060cc"></span> Airspace': airspaceGroup,
       '<span class="layer-swatch" style="background:#cc3300"></span> Obstacles (FAA)': obstacleGroup,
@@ -266,7 +298,8 @@
 
     let exploreGroup = L.layerGroup().addTo(map);
     let layerGroup = L.layerGroup().addTo(map);
-    let airportGroup = L.layerGroup().addTo(map);
+    let airportFuelGroup = L.layerGroup().addTo(map);
+    let airportOtherGroup = L.layerGroup().addTo(map);
     let abortController = null;
     let airportsLoaded = false;
     let airportLookup = {};  // ICAO → {elev, name, ...}
@@ -390,7 +423,9 @@
     function clearMap() {
       layerGroup.clearLayers();
       exploreGroup.clearLayers();
+      routeMarkers = [];
       document.getElementById('profileWrap').classList.remove('visible');
+      lastProfileArgs = null;
     }
 
     async function loadAirports() {
@@ -408,18 +443,47 @@
           const radius = isPrivate ? 3 : 4;
           const fuelStr = [ap.fuel_100ll ? '100LL' : '', ap.fuel_jeta ? 'Jet-A' : ''].filter(Boolean).join(', ') || 'None';
           const pvtStr = isPrivate ? ' (Private)' : '';
+          const targetGroup = (!isPrivate && hasFuel) ? airportFuelGroup : airportOtherGroup;
           L.circleMarker([ap.lat, ap.lon], {
             radius, color, fillColor: color,
             fillOpacity: isPrivate ? 0.5 : 0.7, weight: 1, opacity: isPrivate ? 0.6 : 0.8,
           }).bindTooltip(`<b>${ap.icao}</b>${pvtStr}<br>${ap.name}<br>Elev: ${Math.round(ap.elev)} ft<br>Fuel: ${fuelStr}`, {
             direction: 'top', offset: [0, -6],
-          }).addTo(airportGroup);
+          }).addTo(targetGroup);
         }
       } catch (e) { /* silent */ }
     }
 
     // Load airports on startup
     loadAirports();
+
+    // ── Map declutter: auto-show/hide layers by zoom ──
+    let routeMarkers = [];  // track route markers for label management
+
+    function updateMapDeclutter() {
+      const z = map.getZoom();
+      // Background airports: hide at low zoom, fuel-only at medium
+      if (z < 8) {
+        if (map.hasLayer(airportFuelGroup)) map.removeLayer(airportFuelGroup);
+        if (map.hasLayer(airportOtherGroup)) map.removeLayer(airportOtherGroup);
+      } else if (z < 10) {
+        if (!map.hasLayer(airportFuelGroup)) map.addLayer(airportFuelGroup);
+        if (map.hasLayer(airportOtherGroup)) map.removeLayer(airportOtherGroup);
+      } else {
+        if (!map.hasLayer(airportFuelGroup)) map.addLayer(airportFuelGroup);
+        if (!map.hasLayer(airportOtherGroup)) map.addLayer(airportOtherGroup);
+      }
+      // Route marker ICAO labels: hide intermediate labels when zoomed out
+      for (const rm of routeMarkers) {
+        if (rm.isEndpoint) {
+          rm.marker.openTooltip();
+        } else {
+          if (z >= 9) rm.marker.openTooltip(); else rm.marker.closeTooltip();
+        }
+      }
+    }
+    map.on('zoomend', updateMapDeclutter);
+    updateMapDeclutter();
 
     // Toggle terrain-follow options visibility
     const terrainOpts = document.getElementById('terrainFollowOpts');
@@ -430,7 +494,122 @@
     });
     terrainOpts.style.display = 'none'; // hidden by default (Max MSL mode)
 
-    async function fetchAndDrawProfile(path, maxMsl, minAgl, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, avoidAirspace) {
+    // ── Profile zoom/pan state ──
+    let profileState = { zoom: 1, panX: 0, dragging: false, dragStartX: 0, dragStartPanX: 0 };
+    let lastProfileArgs = null;  // cached args for redraw on zoom/pan
+    let lastProfilePath = null;  // cached route path [[lat,lon],...] for click-to-map
+    let profileCursorDist = null; // distance (NM) of cursor from map click
+
+    function profileResetZoom() {
+      profileState.zoom = 1; profileState.panX = 0;
+      if (lastProfileArgs) drawProfile(...lastProfileArgs);
+    }
+    document.getElementById('profileZoomIn').addEventListener('click', () => {
+      profileState.zoom = Math.min(profileState.zoom * 1.5, 50);
+      if (lastProfileArgs) drawProfile(...lastProfileArgs);
+    });
+    document.getElementById('profileZoomOut').addEventListener('click', () => {
+      profileState.zoom = Math.max(profileState.zoom / 1.5, 1);
+      if (profileState.zoom === 1) profileState.panX = 0;
+      if (lastProfileArgs) drawProfile(...lastProfileArgs);
+    });
+    document.getElementById('profileReset').addEventListener('click', profileResetZoom);
+
+    (function initProfileInteraction() {
+      const canvas = document.getElementById('profileCanvas');
+      canvas.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const rect = canvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const oldZoom = profileState.zoom;
+        const factor = e.deltaY < 0 ? 1.25 : 0.8;
+        profileState.zoom = Math.max(1, Math.min(profileState.zoom * factor, 50));
+        // Zoom toward mouse position
+        const ratio = profileState.zoom / oldZoom;
+        profileState.panX = mouseX - ratio * (mouseX - profileState.panX);
+        // Clamp pan
+        const maxPan = (profileState.zoom - 1) * rect.width;
+        profileState.panX = Math.min(0, Math.max(-maxPan, profileState.panX));
+        if (profileState.zoom === 1) profileState.panX = 0;
+        if (lastProfileArgs) drawProfile(...lastProfileArgs);
+      }, { passive: false });
+      canvas.addEventListener('mousedown', (e) => {
+        if (profileState.zoom <= 1) return;
+        profileState.dragging = true;
+        profileState.dragStartX = e.clientX;
+        profileState.dragStartPanX = profileState.panX;
+      });
+      window.addEventListener('mousemove', (e) => {
+        if (!profileState.dragging) return;
+        const rect = canvas.getBoundingClientRect();
+        const dx = e.clientX - profileState.dragStartX;
+        const maxPan = (profileState.zoom - 1) * rect.width;
+        profileState.panX = Math.min(0, Math.max(-maxPan, profileState.dragStartPanX + dx));
+        if (lastProfileArgs) drawProfile(...lastProfileArgs);
+      });
+      window.addEventListener('mouseup', () => { profileState.dragging = false; });
+
+      // Click on profile → center map to that location
+      let profileClickMarker = null;
+      canvas.addEventListener('click', (e) => {
+        if (!lastProfileArgs || !lastProfilePath) return;
+        // Ignore if the user was dragging
+        if (Math.abs(e.clientX - profileState.dragStartX) > 5 && profileState.dragStartX) return;
+        profileCursorDist = null;  // clear map-sourced cursor
+        const rect = canvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const data = lastProfileArgs[0];
+        const dist = data.dist_nm;
+        const maxDist = dist[dist.length - 1] || 1;
+        const pad = { left: 55, right: 20 };
+        const pw = rect.width - pad.left - pad.right;
+        // Inverse of x(d): d = ((mouseX - pad.left - panOffset) / (pw * zoom)) * maxDist
+        const d = ((mouseX - pad.left - profileState.panX) / (pw * profileState.zoom)) * maxDist;
+        if (d < 0 || d > maxDist) return;
+        // Build cumulative distances for the path
+        const path = lastProfilePath;
+        const cumDist = [0];
+        for (let i = 1; i < path.length; i++) {
+          cumDist.push(cumDist[i-1] + haversineNm(path[i-1][0], path[i-1][1], path[i][0], path[i][1]));
+        }
+        // Interpolate lat/lon at distance d
+        let lat, lon;
+        for (let i = 0; i < cumDist.length - 1; i++) {
+          if (cumDist[i+1] >= d) {
+            const segLen = cumDist[i+1] - cumDist[i];
+            const t = segLen > 0 ? (d - cumDist[i]) / segLen : 0;
+            lat = path[i][0] + t * (path[i+1][0] - path[i][0]);
+            lon = path[i][1] + t * (path[i+1][1] - path[i][1]);
+            break;
+          }
+        }
+        if (lat == null) { lat = path[path.length-1][0]; lon = path[path.length-1][1]; }
+        // Center map and show a temporary marker
+        map.setView([lat, lon], Math.max(map.getZoom(), 10));
+        if (profileClickMarker) map.removeLayer(profileClickMarker);
+        profileClickMarker = L.circleMarker([lat, lon], {
+          radius: 8, color: '#e11d48', fillColor: '#e11d48', fillOpacity: 0.5, weight: 2
+        }).addTo(map);
+        setTimeout(() => { if (profileClickMarker) { map.removeLayer(profileClickMarker); profileClickMarker = null; } }, 3000);
+      });
+    })();
+
+    // Re-fetch obstacles when corridor width changes
+    document.getElementById('profileCorridorNm').addEventListener('change', () => {
+      if (!lastProfilePath || !lastProfileArgs) return;
+      const data = lastProfileArgs[0];
+      const args = lastProfileArgs;
+      // Re-run fetchAndDrawProfile with the stored path
+      // We need the original call params — re-trigger from the stored path
+      const depLabel = args[1], arrLabel = args[2];
+      const cruiseKt = args[3], maxClimbFpm = args[4], maxDescentFpm = args[5];
+      const climbSpeedKt = args[6], descentSpeedKt = args[7], terrainFollow = args[8], legsList = args[9];
+      fetchAndDrawProfile(lastProfilePath, data.max_msl_ft, data.min_agl_ft || 200,
+        depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, [], legsList);
+    });
+
+    async function fetchAndDrawProfile(path, maxMsl, minAgl, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, avoidAirspace, legsList) {
+      profileCursorDist = null;  // clear map-click cursor on new profile
       try {
         const body = { path, max_msl_ft: maxMsl, min_agl_ft: minAgl };
         if (avoidAirspace && avoidAirspace.length) body.avoid_airspace = avoidAirspace;
@@ -441,11 +620,68 @@
         });
         if (!res.ok) return;
         const data = await res.json();
-        drawProfile(data, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow);
+
+        // Fetch obstacles within user-defined corridor of route
+        let profileObstacles = [];
+        try {
+          const CORRIDOR_NM = Number(document.getElementById('profileCorridorNm').value) || 2;
+          const degBuf = CORRIDOR_NM / 60;  // ~1 NM ≈ 1 arcminute
+          let south = Infinity, north = -Infinity, west = Infinity, east = -Infinity;
+          for (const p of path) {
+            if (p[0] < south) south = p[0];
+            if (p[0] > north) north = p[0];
+            if (p[1] < west) west = p[1];
+            if (p[1] > east) east = p[1];
+          }
+          const obsParams = new URLSearchParams({
+            south: (south - degBuf).toFixed(4),
+            north: (north + degBuf).toFixed(4),
+            west: (west - degBuf).toFixed(4),
+            east: (east + degBuf).toFixed(4),
+            min_agl: '0',
+          });
+          const obsResp = await fetch('/obstacles?' + obsParams);
+          if (obsResp.ok) {
+            const allObs = await obsResp.json();
+            // Build cumulative distances for projection
+            const cumDist = [0];
+            for (let i = 1; i < path.length; i++) {
+              cumDist.push(cumDist[i-1] + haversineNm(path[i-1][0], path[i-1][1], path[i][0], path[i][1]));
+            }
+            const totalDist = cumDist[cumDist.length - 1] || 1;
+            // Project each obstacle onto the route, keep if within corridor
+            for (const o of allObs) {
+              let bestDist = Infinity, bestProj = 0;
+              for (let i = 0; i < path.length - 1; i++) {
+                const ax = path[i][1], ay = path[i][0];
+                const bx = path[i+1][1], by = path[i+1][0];
+                const dx = bx - ax, dy = by - ay;
+                const segLen2 = dx*dx + dy*dy;
+                let t = segLen2 > 0 ? ((o.lon - ax)*dx + (o.lat - ay)*dy) / segLen2 : 0;
+                t = Math.max(0, Math.min(1, t));
+                const projLat = ay + t * dy, projLon = ax + t * dx;
+                const d = haversineNm(o.lat, o.lon, projLat, projLon);
+                if (d < bestDist) {
+                  bestDist = d;
+                  bestProj = cumDist[i] + t * (cumDist[i+1] - cumDist[i]);
+                }
+              }
+              if (bestDist <= CORRIDOR_NM) {
+                profileObstacles.push({ distNm: bestProj, agl: o.agl, amsl: o.amsl, type: o.type, lit: !!o.lit });
+              }
+            }
+          }
+        } catch (e) { /* silent — obstacles are optional */ }
+
+        data._profileObstacles = profileObstacles;
+        lastProfilePath = path;  // store for click-to-map
+        profileState.zoom = 1; profileState.panX = 0;  // reset zoom on new route
+        drawProfile(data, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, legsList);
       } catch (e) { /* silent */ }
     }
 
-    function drawProfile(data, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow) {
+    function drawProfile(data, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, legsList) {
+      lastProfileArgs = [data, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, legsList];
       const wrap = document.getElementById('profileWrap');
       const canvas = document.getElementById('profileCanvas');
       wrap.classList.add('visible');
@@ -474,14 +710,20 @@
       for (const z of (data.airspace_zones || [])) {
         for (const c of z.ceiling_msl) peakAlt = Math.max(peakAlt, c);
       }
+      for (const ob of (data._profileObstacles || [])) {
+        peakAlt = Math.max(peakAlt, ob.amsl);
+      }
       const maxElev = peakAlt * 1.1;
 
-      function x(d) { return pad.left + (d / maxDist) * pw; }
+      // Zoom/pan-aware coordinate transforms
+      const zoomFactor = profileState.zoom;
+      const panOffset = profileState.panX;
+      function x(d) { return pad.left + ((d / maxDist) * pw) * zoomFactor + panOffset; }
       function y(e) { return pad.top + ph - (e / maxElev) * ph; }
 
       ctx.clearRect(0, 0, W, H);
 
-      // Grid lines
+      // Grid lines — elevation ticks (always full width)
       ctx.strokeStyle = '#e5e7eb';
       ctx.lineWidth = 0.5;
       const elevTicks = 5;
@@ -493,16 +735,30 @@
         ctx.fillText(Math.round(ev).toLocaleString() + ' ft', pad.left - 4, y(ev));
       }
 
-      // Distance labels
-      const distTicks = 5;
+      // Distance labels — adaptive tick spacing for zoom
+      const visibleNm = maxDist / zoomFactor;
+      let distStep;
+      if (visibleNm > 200) distStep = 50;
+      else if (visibleNm > 100) distStep = 25;
+      else if (visibleNm > 40) distStep = 10;
+      else if (visibleNm > 15) distStep = 5;
+      else if (visibleNm > 5) distStep = 2;
+      else distStep = 1;
       ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-      for (let i = 0; i <= distTicks; i++) {
-        const d = (maxDist / distTicks) * i;
+      for (let d = 0; d <= maxDist; d += distStep) {
         const xp = x(d);
+        if (xp < pad.left - 10 || xp > W - pad.right + 10) continue;
+        ctx.strokeStyle = '#e5e7eb'; ctx.lineWidth = 0.5;
         ctx.beginPath(); ctx.moveTo(xp, pad.top); ctx.lineTo(xp, H - pad.bottom); ctx.stroke();
         ctx.fillStyle = '#6b7280'; ctx.font = '10px system-ui';
         ctx.fillText(Math.round(d) + ' NM', xp, H - pad.bottom + 4);
       }
+
+      // Clip to plot area for all zoomed drawing
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(pad.left, 0, pw, H);
+      ctx.clip();
 
       // Max MSL ceiling line
       ctx.strokeStyle = '#dc2626';
@@ -510,16 +766,20 @@
       ctx.setLineDash([6, 4]);
       ctx.beginPath(); ctx.moveTo(pad.left, y(maxMsl)); ctx.lineTo(W - pad.right, y(maxMsl)); ctx.stroke();
       ctx.setLineDash([]);
-      ctx.fillStyle = '#dc2626'; ctx.font = '10px system-ui'; ctx.textAlign = 'left';
-      ctx.fillText('Max MSL ' + maxMsl.toLocaleString() + ' ft', pad.left + 4, y(maxMsl) - 12);
+      if (zoomFactor >= 1.3) {
+        ctx.fillStyle = '#dc2626'; ctx.font = '10px system-ui'; ctx.textAlign = 'left';
+        ctx.fillText('Max MSL ' + maxMsl.toLocaleString() + ' ft', pad.left + 4, y(maxMsl) - 12);
+      }
 
-      // Min AGL band (terrain + minAgl)
+      // Min AGL band (terrain + minAgl) — hide when zoomed out to reduce clutter
+      if (zoomFactor >= 1.3) {
       ctx.fillStyle = 'rgba(239, 68, 68, 0.08)';
       ctx.beginPath();
       ctx.moveTo(x(dist[0]), y(ground[0] + minAgl));
       for (let i = 1; i < dist.length; i++) ctx.lineTo(x(dist[i]), y(ground[i] + minAgl));
       for (let i = dist.length - 1; i >= 0; i--) ctx.lineTo(x(dist[i]), y(ground[i]));
       ctx.closePath(); ctx.fill();
+      }
 
       // Terrain fill
       ctx.fillStyle = 'rgba(180, 140, 100, 0.35)';
@@ -537,7 +797,8 @@
       for (let i = 1; i < dist.length; i++) ctx.lineTo(x(dist[i]), y(ground[i]));
       ctx.stroke();
 
-      // Min AGL line above terrain
+      // Min AGL line above terrain — hide when zoomed out
+      if (zoomFactor >= 1.3) {
       ctx.strokeStyle = 'rgba(239, 68, 68, 0.5)';
       ctx.lineWidth = 1;
       ctx.setLineDash([3, 3]);
@@ -546,13 +807,47 @@
       for (let i = 1; i < dist.length; i++) ctx.lineTo(x(dist[i]), y(ground[i] + minAgl));
       ctx.stroke();
       ctx.setLineDash([]);
+      }
 
-      // Dep / Arr labels
-      ctx.fillStyle = '#111827'; ctx.font = 'bold 11px system-ui';
-      ctx.textAlign = 'left';
-      ctx.fillText(depLabel, x(0) + 2, pad.top + 4);
-      ctx.textAlign = 'right';
-      ctx.fillText(arrLabel, x(maxDist) - 2, pad.top + 4);
+      // ── Obstacles along the route corridor ──
+      const profileObs = data._profileObstacles || [];
+      for (const ob of profileObs) {
+        const px = x(ob.distNm);
+        if (px < pad.left - 10 || px > W - pad.right + 10) continue;
+        // Find ground elevation at this distance
+        let groundAtObs = 0;
+        for (let i = 0; i < dist.length - 1; i++) {
+          if (dist[i + 1] >= ob.distNm) {
+            const t = (dist[i + 1] - dist[i]) > 0 ? (ob.distNm - dist[i]) / (dist[i + 1] - dist[i]) : 0;
+            groundAtObs = ground[i] + t * (ground[i + 1] - ground[i]);
+            break;
+          }
+        }
+        if (ob.distNm >= dist[dist.length - 1]) groundAtObs = ground[ground.length - 1];
+        const topMsl = groundAtObs + ob.agl;
+        const baseY = y(groundAtObs);
+        const topY = y(topMsl);
+        // Obstacle cylinder: red/orange bar
+        const obsColor = ob.lit ? 'rgba(220,38,38,0.7)' : 'rgba(220,100,20,0.7)';
+        ctx.strokeStyle = obsColor;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(px, baseY);
+        ctx.lineTo(px, topY);
+        ctx.stroke();
+        // Top cap
+        ctx.fillStyle = obsColor;
+        ctx.beginPath();
+        ctx.arc(px, topY, 3, 0, Math.PI * 2);
+        ctx.fill();
+        // AGL label — show when zoomed in enough
+        if (zoomFactor >= 1.5) {
+          ctx.fillStyle = obsColor;
+          ctx.font = '9px system-ui';
+          ctx.textAlign = 'left';
+          ctx.fillText(ob.agl + "' AGL", px + 5, topY + 3);
+        }
+      }
 
       // ── Airspace zones: draw bands and build per-sample constraints ──
       const BUF = 100; // vertical buffer feet
@@ -604,13 +899,16 @@
         ctx.stroke();
         ctx.setLineDash([]);
 
-        // Label
+        // Label — only if zone spans enough pixels to be readable
         const midIdx = Math.floor((s + e) / 2);
         const midCeil = cl[midIdx - s];
-        ctx.fillStyle = border;
-        ctx.font = '9px system-ui';
-        ctx.textAlign = 'center';
-        ctx.fillText(z.name + ' (' + z.cls + ')', x(dist[midIdx]), y(midCeil) - 3);
+        const zonePxWidth = x(dist[e]) - x(dist[s]);
+        if (zonePxWidth > 40) {
+          ctx.fillStyle = border;
+          ctx.font = '9px system-ui';
+          ctx.textAlign = 'center';
+          ctx.fillText(z.name + ' (' + z.cls + ')', x(dist[midIdx]), y(midCeil) - 3);
+        }
 
         // Store constraints for flight altitude
         for (let i = s; i <= e; i++) {
@@ -708,14 +1006,39 @@
         for (let i = 1; i < fa.length; i++) ctx.lineTo(x(dist[i]), y(fa[i]));
         ctx.stroke();
         ctx.fillStyle = '#2563eb'; ctx.font = '10px system-ui'; ctx.textAlign = 'left';
-        ctx.fillText(zones.length ? 'Flight alt (airspace-aware)' : 'Terrain-follow alt (est.)', pad.left + 4, y(fa[Math.min(5, fa.length - 1)]) - 8);
+        if (zoomFactor >= 1.5)
+          ctx.fillText(zones.length ? 'Flight alt (airspace-aware)' : 'Terrain-follow alt (est.)', pad.left + 4, y(fa[Math.min(5, fa.length - 1)]) - 8);
       } else {
-        // Max MSL mode — cruise at maxMsl, but duck under airspace when needed
+        // Max MSL mode — cruise at maxMsl, but duck under airspace and
+        // descend to land / climb from each airport
         const fa = new Array(dist.length);
-        let hasConstraint = false;
+
+        // Build list of sample indices where we must be at ground level (airports)
+        const apIndices = new Set();
+        if (legsList && legsList.length > 0) {
+          let cumDist = 0;
+          for (let li = 0; li <= legsList.length; li++) {
+            const targetDist = cumDist;
+            let bestIdx = 0, bestDelta = Infinity;
+            for (let i = 0; i < dist.length; i++) {
+              const d = Math.abs(dist[i] - targetDist);
+              if (d < bestDelta) { bestDelta = d; bestIdx = i; }
+            }
+            apIndices.add(bestIdx);
+            if (li < legsList.length) cumDist += legsList[li].distNm;
+          }
+        } else {
+          apIndices.add(0);
+          apIndices.add(dist.length - 1);
+        }
 
         for (let i = 0; i < dist.length; i++) {
           const terrainMin = ground[i] + minAgl;
+          if (apIndices.has(i)) {
+            // At an airport — altitude is ground level
+            fa[i] = ground[i];
+            continue;
+          }
           let alt = maxMsl; // default: cruise at max MSL
 
           // Check each zone independently (same per-zone logic as terrain-follow)
@@ -740,64 +1063,163 @@
 
           if (anyUnder) {
             alt = bestUnder;
-            hasConstraint = true;
           }
           fa[i] = Math.max(alt, terrainMin);
         }
 
-        // If there are airspace constraints, apply smoothing so the descent/climb
-        // looks realistic rather than instant altitude jumps.
-        // Use a simple rate-limited pass if cruise speed and descent rate are known.
+        // Always apply climb/descent smoothing (needed for airport departures/arrivals)
         const effCruise = cruiseKt > 0 ? cruiseKt : 120; // fallback 120kt
         const effClimb = maxClimbFpm > 0 ? maxClimbFpm : 500;
         const effDescent = maxDescentFpm > 0 ? maxDescentFpm : 500;
         const effClimbKt = climbSpeedKt > 0 ? climbSpeedKt : effCruise;
         const effDescentKt = descentSpeedKt > 0 ? descentSpeedKt : effCruise;
 
-        if (hasConstraint) {
-          // Backward pass: ensure we can descend in time for upcoming constraints
-          const ba = new Array(dist.length);
-          ba[dist.length - 1] = fa[dist.length - 1];
-          for (let i = dist.length - 2; i >= 0; i--) {
-            const segDist = dist[i + 1] - dist[i];
-            const next = ba[i + 1];
-            const terrainMin = ground[i] + minAgl;
-            const dtDesc = (segDist / effDescentKt) * 60;
-            const maxAltHere = next + effDescent * dtDesc;
-            const dtClimb = (segDist / effClimbKt) * 60;
-            const minAltHere = next - effClimb * dtClimb;
-            let alt = fa[i];
-            alt = Math.min(alt, maxAltHere);
-            alt = Math.max(alt, minAltHere);
-            ba[i] = Math.min(Math.max(alt, terrainMin), maxMsl);
-          }
-
-          // Forward pass: rate-limited, pulled toward backward targets
-          const smoothed = [Math.min(Math.max(ba[0], ground[0] + minAgl), maxMsl)];
-          for (let i = 1; i < dist.length; i++) {
-            const segDist = dist[i] - dist[i - 1];
-            const prev = smoothed[i - 1];
-            const terrainMin = ground[i] + minAgl;
-            const dtClimb = (segDist / effClimbKt) * 60;
-            const dtDesc = (segDist / effDescentKt) * 60;
-            const ceiling = Math.min(prev + effClimb * dtClimb, maxMsl);
-            const floor = Math.max(prev - effDescent * dtDesc, terrainMin);
-            smoothed.push(Math.min(ceiling, Math.max(ba[i], floor)));
-          }
-          for (let i = 0; i < dist.length; i++) fa[i] = smoothed[i];
+        // Backward pass: ensure we can descend in time for upcoming constraints
+        const ba = new Array(dist.length);
+        ba[dist.length - 1] = fa[dist.length - 1];
+        for (let i = dist.length - 2; i >= 0; i--) {
+          const segDist = dist[i + 1] - dist[i];
+          const next = ba[i + 1];
+          const terrainMin = ground[i] + minAgl;
+          const dtDesc = (segDist / effDescentKt) * 60;
+          const maxAltHere = next + effDescent * dtDesc;
+          const dtClimb = (segDist / effClimbKt) * 60;
+          const minAltHere = next - effClimb * dtClimb;
+          let alt = fa[i];
+          alt = Math.min(alt, maxAltHere);
+          alt = Math.max(alt, minAltHere);
+          if (apIndices.has(i)) alt = ground[i];  // pin to ground at airports
+          ba[i] = Math.min(Math.max(alt, terrainMin), maxMsl);
         }
+
+        // Forward pass: rate-limited, pulled toward backward targets
+        const smoothed = [apIndices.has(0) ? ground[0] : Math.min(Math.max(ba[0], ground[0] + minAgl), maxMsl)];
+        for (let i = 1; i < dist.length; i++) {
+          if (apIndices.has(i)) {
+            smoothed.push(ground[i]);  // pin to ground at airports
+            continue;
+          }
+          const segDist = dist[i] - dist[i - 1];
+          const prev = smoothed[i - 1];
+          const terrainMin = ground[i] + minAgl;
+          const dtClimb = (segDist / effClimbKt) * 60;
+          const dtDesc = (segDist / effDescentKt) * 60;
+          const ceiling = Math.min(prev + effClimb * dtClimb, maxMsl);
+          const floor = Math.max(prev - effDescent * dtDesc, terrainMin);
+          smoothed.push(Math.min(ceiling, Math.max(ba[i], floor)));
+        }
+        for (let i = 0; i < dist.length; i++) fa[i] = smoothed[i];
 
         ctx.strokeStyle = '#2563eb';
         ctx.lineWidth = 2;
-        ctx.setLineDash(hasConstraint ? [] : [5, 3]);
+        ctx.setLineDash([]);
         ctx.beginPath();
         ctx.moveTo(x(dist[0]), y(fa[0]));
         for (let i = 1; i < fa.length; i++) ctx.lineTo(x(dist[i]), y(fa[i]));
         ctx.stroke();
         ctx.setLineDash([]);
-        if (hasConstraint) {
+        if (zoomFactor >= 1.5) {
           ctx.fillStyle = '#2563eb'; ctx.font = '10px system-ui'; ctx.textAlign = 'left';
-          ctx.fillText('Flight alt (airspace-aware)', pad.left + 4, y(fa[Math.min(5, fa.length - 1)]) - 8);
+          ctx.fillText('Flight alt (est.)', pad.left + 4, y(fa[Math.min(5, fa.length - 1)]) - 8);
+        }
+      }
+
+      // ── Airport markers at each leg boundary (drawn last, on top) ──
+      const airportMarkers = [];  // {dist, label}
+      if (legsList && legsList.length > 0) {
+        let cumDist = 0;
+        airportMarkers.push({ dist: 0, label: legsList[0].from || depLabel });
+        for (const leg of legsList) {
+          cumDist += leg.distNm;
+          airportMarkers.push({ dist: cumDist, label: leg.to || arrLabel });
+        }
+      } else {
+        airportMarkers.push({ dist: 0, label: depLabel });
+        airportMarkers.push({ dist: maxDist, label: arrLabel });
+      }
+
+      // Thin out markers that would overlap at current zoom — always keep first & last
+      const minPxGap = 60;  // minimum pixels between labels
+      const visibleMarkers = [];
+      for (let i = 0; i < airportMarkers.length; i++) {
+        const ap = airportMarkers[i];
+        const isEndpoint = (i === 0 || i === airportMarkers.length - 1);
+        if (isEndpoint) { visibleMarkers.push(ap); continue; }
+        const px = x(ap.dist);
+        if (px < pad.left - 20 || px > W - pad.right + 20) continue;
+        // Check distance to last kept marker
+        const prevPx = visibleMarkers.length ? x(visibleMarkers[visibleMarkers.length - 1].dist) : -Infinity;
+        // Also check distance to the final marker
+        const lastPx = x(airportMarkers[airportMarkers.length - 1].dist);
+        if (px - prevPx >= minPxGap && lastPx - px >= minPxGap) {
+          visibleMarkers.push(ap);
+        }
+      }
+
+      const showElevation = zoomFactor >= 1.5 || visibleMarkers.length <= 4;
+      for (const ap of visibleMarkers) {
+        const px = x(ap.dist);
+        if (px < pad.left - 20 || px > W - pad.right + 20) continue;
+        // Vertical dashed line
+        ctx.strokeStyle = 'rgba(55, 65, 81, 0.35)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.moveTo(px, pad.top);
+        ctx.lineTo(px, H - pad.bottom);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        // Find closest ground sample for this airport
+        let closestIdx = 0;
+        let closestDelta = Infinity;
+        for (let i = 0; i < dist.length; i++) {
+          const d = Math.abs(dist[i] - ap.dist);
+          if (d < closestDelta) { closestDelta = d; closestIdx = i; }
+        }
+        const groundY = y(ground[closestIdx]);
+        // Draw small runway triangle at ground level
+        ctx.fillStyle = '#374151';
+        ctx.beginPath();
+        ctx.moveTo(px, groundY);
+        ctx.lineTo(px - 4, groundY + 6);
+        ctx.lineTo(px + 4, groundY + 6);
+        ctx.closePath();
+        ctx.fill();
+        // Airport label above plot
+        ctx.fillStyle = '#111827';
+        ctx.font = 'bold 10px system-ui';
+        ctx.textAlign = 'center';
+        ctx.fillText(ap.label, px, pad.top - 3);
+        // Elevation label — only when zoomed in or few airports
+        if (showElevation) {
+          ctx.fillStyle = '#6b7280';
+          ctx.font = '9px system-ui';
+          ctx.fillText(Math.round(ground[closestIdx]).toLocaleString() + ' ft', px, groundY - 5);
+        }
+      }
+
+      // Restore from plot-area clip
+      ctx.restore();
+
+      // ── Cursor line from map click ──
+      if (profileCursorDist != null) {
+        const cx = x(profileCursorDist);
+        if (cx >= pad.left && cx <= W - pad.right) {
+          ctx.save();
+          ctx.strokeStyle = '#e11d48';
+          ctx.lineWidth = 2;
+          ctx.setLineDash([4, 3]);
+          ctx.beginPath();
+          ctx.moveTo(cx, pad.top);
+          ctx.lineTo(cx, H - pad.bottom);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          // Distance label
+          ctx.fillStyle = '#e11d48';
+          ctx.font = 'bold 10px system-ui';
+          ctx.textAlign = 'center';
+          ctx.fillText(profileCursorDist.toFixed(1) + ' NM', cx, pad.top - 4);
+          ctx.restore();
         }
       }
     }
@@ -805,11 +1227,66 @@
     function addPath(path, color) {
       const poly = L.polyline(path, {color, weight: 4, opacity: 0.85});
       poly.addTo(layerGroup);
+
+      // Click on route line → center profile to that point
+      poly.on('click', (e) => {
+        L.DomEvent.stopPropagation(e);
+        if (!lastProfilePath || !lastProfileArgs) return;
+        const clickLat = e.latlng.lat, clickLon = e.latlng.lng;
+        const rp = lastProfilePath;
+        // Build cumulative distances
+        const cumDist = [0];
+        for (let i = 1; i < rp.length; i++) {
+          cumDist.push(cumDist[i-1] + haversineNm(rp[i-1][0], rp[i-1][1], rp[i][0], rp[i][1]));
+        }
+        // Project click onto nearest segment
+        let bestDist = Infinity, bestProj = 0;
+        for (let i = 0; i < rp.length - 1; i++) {
+          const ax = rp[i][1], ay = rp[i][0];
+          const bx = rp[i+1][1], by = rp[i+1][0];
+          const dx = bx - ax, dy = by - ay;
+          const segLen2 = dx*dx + dy*dy;
+          let t = segLen2 > 0 ? ((clickLon - ax)*dx + (clickLat - ay)*dy) / segLen2 : 0;
+          t = Math.max(0, Math.min(1, t));
+          const projLat = ay + t * dy, projLon = ax + t * dx;
+          const d = haversineNm(clickLat, clickLon, projLat, projLon);
+          if (d < bestDist) {
+            bestDist = d;
+            bestProj = cumDist[i] + t * (cumDist[i+1] - cumDist[i]);
+          }
+        }
+        const totalDist = cumDist[cumDist.length - 1] || 1;
+        // Set cursor and pan profile to center on that distance
+        profileCursorDist = bestProj;
+        // Ensure zoom is at least 2x so centering is useful
+        if (profileState.zoom < 2) profileState.zoom = 2;
+        const canvas = document.getElementById('profileCanvas');
+        const rect = canvas.getBoundingClientRect();
+        const pw = rect.width - 55 - 20; // pad.left=55, pad.right=20
+        // Center: we want x(bestProj) = pad.left + pw/2
+        // x(d) = pad.left + (d/maxDist)*pw*zoom + panX
+        // So panX = pw/2 - (bestProj/totalDist)*pw*zoom
+        profileState.panX = pw / 2 - (bestProj / totalDist) * pw * profileState.zoom;
+        const maxPan = (profileState.zoom - 1) * rect.width;
+        profileState.panX = Math.min(0, Math.max(-maxPan, profileState.panX));
+        if (lastProfileArgs) drawProfile(...lastProfileArgs);
+        // Scroll profile into view
+        document.getElementById('profileWrap').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      });
+
       return poly;
     }
 
-    function addMarker(lat, lon, label) {
-      return L.marker([lat, lon]).bindPopup(apLabel(label)).addTo(layerGroup);
+    function addMarker(lat, lon, label, isEndpoint = false) {
+      const marker = L.marker([lat, lon]).bindPopup(apLabel(label)).addTo(layerGroup);
+      marker.bindTooltip(label, {
+        permanent: true, direction: 'top', offset: [0, -36],
+        className: 'route-icao-label',
+      });
+      routeMarkers.push({ marker, label, isEndpoint });
+      const z = map.getZoom();
+      if (isEndpoint || z >= 9) marker.openTooltip(); else marker.closeTooltip();
+      return marker;
     }
 
     function fmt(n, digits=2) {
@@ -1075,11 +1552,12 @@
               const poly = addPath(event.coords, color);
 
               // Track per-leg map layers for selective removal on reroute
-              const m1 = event.coords.length ? addMarker(event.coords[0][0], event.coords[0][1], event.from || payload.dep_icao) : null;
+              const m1 = event.coords.length ? addMarker(event.coords[0][0], event.coords[0][1], event.from || payload.dep_icao, currentLeg === 0) : null;
               const m2 = event.coords.length ? addMarker(
                 event.coords[event.coords.length-1][0],
                 event.coords[event.coords.length-1][1],
-                event.to || payload.arr_icao
+                event.to || payload.arr_icao,
+                currentLeg === numLegs - 1
               ) : null;
               legLayers.push([poly, m1, m2].filter(Boolean));
 
@@ -1126,7 +1604,7 @@
                 if (allCoords.length >= 2) {
                   fetchAndDrawProfile(allCoords, payload.max_msl_ft, payload.min_agl_ft, payload.dep_icao, payload.arr_icao,
                     payload.cruise_speed_kt, payload.max_climb_fpm, payload.max_descent_fpm,
-                    payload.climb_speed_kt, payload.descent_speed_kt, payload.terrain_follow, payload.avoid_airspace);
+                    payload.climb_speed_kt, payload.descent_speed_kt, payload.terrain_follow, payload.avoid_airspace, legsList);
                 }
               }
               document.getElementById('status').textContent = '';
@@ -1160,7 +1638,7 @@
 
                 fetchAndDrawProfile(allCoords, payload.max_msl_ft, payload.min_agl_ft, payload.dep_icao, payload.arr_icao,
                   payload.cruise_speed_kt, payload.max_climb_fpm, payload.max_descent_fpm,
-                  payload.climb_speed_kt, payload.descent_speed_kt, payload.terrain_follow, payload.avoid_airspace);
+                  payload.climb_speed_kt, payload.descent_speed_kt, payload.terrain_follow, payload.avoid_airspace, legsList);
               } else {
                 if (!document.getElementById('error').textContent)
                   document.getElementById('status').textContent = 'Done.';
@@ -1235,10 +1713,20 @@
         });
 
         if (data.legs && data.legs.length) {
-          const firstPath = data.legs[0].path || [];
-          const lastPath = data.legs[data.legs.length - 1].path || [];
-          if (firstPath.length) addMarker(firstPath[0][0], firstPath[0][1], payload.dep_icao);
-          if (lastPath.length) addMarker(lastPath[lastPath.length-1][0], lastPath[lastPath.length-1][1], payload.arr_icao);
+          const added = new Set();
+          data.legs.forEach((leg, idx) => {
+            const path = (leg.path || []).map(p => [p[0], p[1]]);
+            const fromLabel = leg.from || (idx === 0 ? payload.dep_icao : (data.stops || [])[idx - 1]);
+            const toLabel = leg.to || (idx === data.legs.length - 1 ? payload.arr_icao : (data.stops || [])[idx]);
+            if (path.length && fromLabel && !added.has(fromLabel)) {
+              addMarker(path[0][0], path[0][1], fromLabel, idx === 0);
+              added.add(fromLabel);
+            }
+            if (path.length && toLabel && !added.has(toLabel)) {
+              addMarker(path[path.length - 1][0], path[path.length - 1][1], toLabel, idx === data.legs.length - 1);
+              added.add(toLabel);
+            }
+          });
         }
 
         if (bounds) map.fitBounds(bounds.pad(0.15));
@@ -1248,7 +1736,7 @@
         if (allCoords.length >= 2) {
           fetchAndDrawProfile(allCoords, payload.max_msl_ft, payload.min_agl_ft, payload.dep_icao, payload.arr_icao,
             payload.cruise_speed_kt, payload.max_climb_fpm, payload.max_descent_fpm,
-            payload.climb_speed_kt, payload.descent_speed_kt, payload.terrain_follow, payload.avoid_airspace);
+            payload.climb_speed_kt, payload.descent_speed_kt, payload.terrain_follow, payload.avoid_airspace, navLegs);
         }
 
       } catch (e) {
@@ -1429,6 +1917,8 @@
           cb.checked = r.avoid_airspace.includes(cb.value);
         });
       }
+      // Auto-run the route so map and profile populate immediately
+      plan();
     });
 
     refreshSavedDropdown();
