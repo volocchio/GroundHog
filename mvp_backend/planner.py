@@ -309,6 +309,7 @@ def plan_stop_sequences(
         pq: list[tuple[float, str]] = [(h_dep, dep.icao)]
         expanded = 0
         radius = max_leg_nm
+        total_direct = _direct_nm(dep, arr) or 1.0
 
         while pq and expanded < max_expansions:
             f_cost, cur_code = heapq.heappop(pq)
@@ -324,11 +325,11 @@ def plan_stop_sequences(
             cur_ap = get_airport(cur_code)
             cur_radius = start_max_leg_nm if cur_code == dep.icao else radius
             cur_fuel = _start_fuel if cur_code == dep.icao else usable_fuel_gal
+            d_cur_to_arr = _direct_nm(cur_ap, arr)
 
             neigh: List[tuple[float, Airport]] = []
-            d_to_arr = _direct_nm(cur_ap, arr)
-            if d_to_arr <= cur_radius:
-                neigh.append((d_to_arr, arr))
+            if d_cur_to_arr <= cur_radius:
+                neigh.append((d_cur_to_arr, arr))
 
             for ap in stop_candidates:
                 if ap.icao == cur_code:
@@ -337,7 +338,9 @@ def plan_stop_sequences(
                 if d <= cur_radius:
                     neigh.append((d, ap))
 
-            neigh.sort(key=lambda x: x[0])
+            # Sort by distance-to-destination (forward progress) instead of
+            # distance-from-current, so forward airports are explored first.
+            neigh.sort(key=lambda x: _direct_nm(x[1], arr))
             neigh = neigh[:max_neighbors]
 
             for d, nxt_ap in neigh:
@@ -351,7 +354,18 @@ def plan_stop_sequences(
                 extra = 0.0
                 if edge_penalty:
                     extra = edge_penalty.get((cur_code, nxt_ap.icao), 0.0)
-                new_g = cur_g + t_hr + penalty + extra
+
+                # Backtrack penalty: if this hop moves AWAY from the
+                # destination, add a time cost proportional to how much
+                # backward progress it represents.
+                d_nxt_to_arr = _direct_nm(nxt_ap, arr)
+                backtrack_nm = d_nxt_to_arr - d_cur_to_arr
+                backtrack_penalty = 0.0
+                if backtrack_nm > 0 and cruise_speed_kt > 0:
+                    # Cost = twice the backward distance converted to hours
+                    backtrack_penalty = (backtrack_nm * 2.0) / cruise_speed_kt
+
+                new_g = cur_g + t_hr + penalty + extra + backtrack_penalty
                 if new_g < best_cost.get(nxt_ap.icao, float("inf")):
                     best_cost[nxt_ap.icao] = new_g
                     prev_map[nxt_ap.icao] = cur_code
@@ -531,22 +545,23 @@ def plan_route_multi_stop(
         # Candidate neighbors: fuel stops + destination
         # Prune by straight-line range (max_leg_nm is already the fuel range)
         radius_nm = max_leg_nm
+        d_cur_to_arr = _direct_nm(cur_ap, arr)
 
         neigh: List[tuple[float, Airport]] = []
         # destination
-        d_to_arr = _direct_nm(cur_ap, arr)
-        if d_to_arr <= radius_nm:
-            neigh.append((d_to_arr, arr))
+        if d_cur_to_arr <= radius_nm:
+            neigh.append((d_cur_to_arr, arr))
 
         for ap in stop_candidates:
             if ap.icao == cur_code:
                 continue
             d = _direct_nm(cur_ap, ap)
             if d <= radius_nm:
-                # additional prune: don't move away from destination too much (loose)
                 neigh.append((d, ap))
 
-        neigh.sort(key=lambda x: x[0])
+        # Sort by distance-to-destination so forward-progress airports are
+        # explored first, preventing unnecessary backtracking.
+        neigh.sort(key=lambda x: _direct_nm(x[1], arr))
         neigh = neigh[:max_neighbors]
 
         for _, nxt_ap in neigh:
@@ -572,7 +587,14 @@ def plan_route_multi_stop(
             if not math.isfinite(t_hr):
                 continue
 
-            new_t = cur_t + t_hr
+            # Backtrack penalty: penalize hops that move away from destination
+            d_nxt_to_arr = _direct_nm(nxt_ap, arr)
+            backtrack_nm = d_nxt_to_arr - d_cur_to_arr
+            backtrack_penalty = 0.0
+            if backtrack_nm > 0 and cruise_speed_kt > 0:
+                backtrack_penalty = (backtrack_nm * 2.0) / cruise_speed_kt
+
+            new_t = cur_t + t_hr + backtrack_penalty
             if new_t < best_time.get(nxt_ap.icao, float("inf")):
                 best_time[nxt_ap.icao] = new_t
                 prev[nxt_ap.icao] = (cur_code, {"from": cur_code, "to": nxt_ap.icao, "dist_nm": dist_nm, "time_hr": t_hr, "fuel_gal": gal, "path": path})

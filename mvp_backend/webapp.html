@@ -1108,6 +1108,30 @@
           const floor = Math.max(prev - effDescent * dtDesc, terrainMin);
           smoothed.push(Math.min(ceiling, Math.max(ba[i], floor)));
         }
+
+        // Anti-sawtooth pass: if a climb is immediately followed by a descent
+        // back to a similar altitude within a short distance, flatten the spike.
+        // This prevents pointless climb/duck oscillations between close airspace zones.
+        for (let i = 1; i < dist.length - 1; i++) {
+          if (apIndices.has(i)) continue;
+          const prev = smoothed[i - 1];
+          const cur = smoothed[i];
+          const next = smoothed[i + 1];
+          // Detect spike: current is higher than both neighbors
+          if (cur > prev + 50 && cur > next + 50) {
+            // Check if the surrounding region is a short spike (< 10 NM wide)
+            let spikeStart = i, spikeEnd = i;
+            while (spikeStart > 0 && smoothed[spikeStart] > Math.min(prev, next) + 50 && !apIndices.has(spikeStart)) spikeStart--;
+            while (spikeEnd < dist.length - 1 && smoothed[spikeEnd] > Math.min(prev, next) + 50 && !apIndices.has(spikeEnd)) spikeEnd++;
+            const spikeWidth = dist[spikeEnd] - dist[spikeStart];
+            if (spikeWidth < 15) {
+              // Flatten: set to the lower of the two surrounding altitudes (stay low)
+              const flatAlt = Math.max(Math.min(prev, next), ground[i] + minAgl);
+              smoothed[i] = flatAlt;
+            }
+          }
+        }
+
         for (let i = 0; i < dist.length; i++) fa[i] = smoothed[i];
 
         ctx.strokeStyle = '#2563eb';
