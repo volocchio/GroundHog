@@ -1,0 +1,368 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1" />
+  <title>Heli Crosser</title>
+  <style>
+    html, body { height: 100%; margin: 0; background:#0b1020; color:#e5e7eb; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+    .wrap { display:flex; flex-direction:column; height:100%; }
+    header { padding:10px 12px; display:flex; gap:12px; align-items:center; justify-content:space-between; background:#111827; border-bottom:1px solid #1f2937; }
+    header .title { font-weight:700; }
+    header .meta { font-size:12px; color:#9ca3af; }
+    #game { flex:1; display:flex; align-items:center; justify-content:center; padding:10px; }
+    canvas { background:#0f172a; border:1px solid #1f2937; border-radius:12px; touch-action:none; }
+    .hud { position:fixed; left:12px; bottom:12px; font-size:12px; color:#cbd5e1; }
+    .btnbar { display:flex; gap:8px; }
+    button { background:#2563eb; border:0; color:white; padding:8px 10px; border-radius:10px; font-weight:600; cursor:pointer; }
+    button.secondary { background:#374151; }
+    .help { font-size:12px; color:#cbd5e1; line-height:1.35; }
+    .touch { display:grid; grid-template-columns:repeat(3,44px); gap:6px; align-items:center; justify-items:center; }
+    .touch button { width:44px; height:44px; border-radius:12px; padding:0; font-size:16px; }
+    @media (min-width: 900px) {
+      .hud { display:flex; gap:16px; align-items:flex-end; }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <div class="title">Heli Crosser</div>
+      <div class="meta">Frogger-like • Get the helicopter across • Avoid airplanes</div>
+    </div>
+    <div class="btnbar">
+      <button id="restart">Restart</button>
+      <button id="pause" class="secondary">Pause</button>
+    </div>
+  </header>
+
+  <div id="game">
+    <canvas id="c" width="420" height="720"></canvas>
+  </div>
+</div>
+
+<div class="hud">
+  <div class="help">
+    <div><b>Controls</b>: Arrow keys / WASD. On phone: use buttons.</div>
+    <div><b>Goal</b>: Reach the top safe pad. Each win increases speed.</div>
+  </div>
+  <div class="touch" id="touch">
+    <div></div><button data-k="ArrowUp">▲</button><div></div>
+    <button data-k="ArrowLeft">◀</button><button data-k="Space">●</button><button data-k="ArrowRight">▶</button>
+    <div></div><button data-k="ArrowDown">▼</button><div></div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+
+  // Fit canvas to screen while keeping aspect.
+  function resize() {
+    const maxW = Math.min(window.innerWidth - 24, 520);
+    const maxH = window.innerHeight - 120;
+    const scale = Math.min(maxW / 420, maxH / 720);
+    canvas.style.width = Math.floor(420 * scale) + 'px';
+    canvas.style.height = Math.floor(720 * scale) + 'px';
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // Game constants
+  const W = canvas.width, H = canvas.height;
+  const laneCount = 7;
+  const laneH = Math.floor(H / (laneCount + 2));
+  const topPadY = laneH; // safe zone at top
+  const bottomPadY = H - laneH; // start zone
+
+  let paused = false;
+  let level = 1;
+  let score = 0;
+  let best = Number(localStorage.getItem('heli_best') || 0);
+
+  const keys = new Set();
+  window.addEventListener('keydown', (e) => {
+    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' ','Space','w','a','s','d','W','A','S','D'].includes(e.key)) e.preventDefault();
+    keys.add(normKey(e.key));
+  }, {passive:false});
+  window.addEventListener('keyup', (e) => keys.delete(normKey(e.key)));
+
+  function normKey(k){
+    if (k === ' ') return 'Space';
+    if (k.length === 1) {
+      const u = k.toUpperCase();
+      if (u==='W') return 'ArrowUp';
+      if (u==='A') return 'ArrowLeft';
+      if (u==='S') return 'ArrowDown';
+      if (u==='D') return 'ArrowRight';
+    }
+    return k;
+  }
+
+  // Touch buttons
+  document.getElementById('touch').addEventListener('pointerdown', (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    const k = btn.getAttribute('data-k');
+    if (k === 'Space') {
+      // action: quick hop forward
+      keys.add('ArrowUp');
+      setTimeout(() => keys.delete('ArrowUp'), 80);
+    } else {
+      keys.add(k);
+    }
+  });
+  document.getElementById('touch').addEventListener('pointerup', (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    const k = btn.getAttribute('data-k');
+    keys.delete(k);
+    keys.delete('ArrowUp');
+  });
+  document.getElementById('touch').addEventListener('pointercancel', () => keys.clear());
+
+  // Entities
+  function rand(min, max){ return Math.random()*(max-min)+min; }
+
+  const heli = {
+    x: W/2,
+    y: bottomPadY + laneH/2,
+    r: 14,
+    speed: 180,
+    alive: true,
+    invuln: 0,
+  };
+
+  const planes = [];
+  function spawnPlanes(){
+    planes.length = 0;
+    for (let i=0;i<laneCount;i++){
+      const laneY = topPadY + (i+1)*laneH;
+      const dir = (i%2===0) ? 1 : -1;
+      const base = 70 + i*18;
+      const v = (base + level*12) * dir;
+      const count = 2 + (i%3===0 ? 1:0);
+      for (let j=0;j<count;j++){
+        planes.push({
+          lane: i,
+          y: laneY + laneH/2,
+          w: 48,
+          h: 18,
+          x: rand(0, W),
+          vx: v * rand(0.85, 1.15),
+          hue: Math.floor(rand(180, 330)),
+        });
+      }
+    }
+  }
+
+  function resetHeli(){
+    heli.x = W/2;
+    heli.y = bottomPadY + laneH/2;
+    heli.alive = true;
+    heli.invuln = 0.9;
+  }
+
+  function restart(all=false){
+    if (all){ level = 1; score = 0; }
+    resetHeli();
+    spawnPlanes();
+  }
+  restart(true);
+
+  // UI
+  document.getElementById('restart').addEventListener('click', () => restart(true));
+  document.getElementById('pause').addEventListener('click', () => {
+    paused = !paused;
+    document.getElementById('pause').textContent = paused ? 'Resume' : 'Pause';
+  });
+
+  // Collision helpers
+  function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+  function circleRectCollide(cx,cy,cr, rx,ry,rw,rh){
+    const nx = clamp(cx, rx, rx+rw);
+    const ny = clamp(cy, ry, ry+rh);
+    const dx = cx-nx, dy = cy-ny;
+    return (dx*dx + dy*dy) <= cr*cr;
+  }
+
+  // Game loop
+  let last = performance.now();
+  function tick(t){
+    const dt = Math.min(0.033, (t-last)/1000);
+    last = t;
+    if (!paused) update(dt);
+    draw();
+    requestAnimationFrame(tick);
+  }
+
+  function update(dt){
+    if (heli.invuln>0) heli.invuln -= dt;
+
+    // Movement
+    let vx=0, vy=0;
+    if (keys.has('ArrowLeft')) vx -= 1;
+    if (keys.has('ArrowRight')) vx += 1;
+    if (keys.has('ArrowUp')) vy -= 1;
+    if (keys.has('ArrowDown')) vy += 1;
+
+    const mag = Math.hypot(vx,vy) || 1;
+    vx/=mag; vy/=mag;
+
+    heli.x += vx * heli.speed * dt;
+    heli.y += vy * heli.speed * dt;
+    heli.x = clamp(heli.x, heli.r, W-heli.r);
+    heli.y = clamp(heli.y, topPadY + heli.r, bottomPadY + laneH - heli.r);
+
+    // Planes move
+    for (const p of planes){
+      p.x += p.vx * dt;
+      const wrap = 80;
+      if (p.x < -wrap) p.x = W + wrap;
+      if (p.x > W + wrap) p.x = -wrap;
+    }
+
+    // Win condition
+    if (heli.y <= topPadY + heli.r + 6){
+      score += 100 * level;
+      level += 1;
+      if (score > best){ best = score; localStorage.setItem('heli_best', String(best)); }
+      restart(false);
+    }
+
+    // Collision
+    if (heli.invuln <= 0){
+      for (const p of planes){
+        const rx = p.x - p.w/2;
+        const ry = p.y - p.h/2;
+        if (circleRectCollide(heli.x, heli.y, heli.r, rx, ry, p.w, p.h)){
+          heli.alive = false;
+          // death penalty
+          score = Math.max(0, score - 50);
+          resetHeli();
+          break;
+        }
+      }
+    }
+  }
+
+  function draw(){
+    // background
+    ctx.clearRect(0,0,W,H);
+
+    // safe zones
+    ctx.fillStyle = '#0b1226';
+    ctx.fillRect(0,0,W,topPadY+laneH);
+    ctx.fillRect(0,bottomPadY,W,laneH);
+
+    // road lanes
+    for (let i=0;i<laneCount;i++){
+      const y = topPadY + (i+1)*laneH;
+      ctx.fillStyle = (i%2===0) ? '#111827' : '#0f172a';
+      ctx.fillRect(0,y,W,laneH);
+
+      // dashed center line
+      ctx.strokeStyle = 'rgba(148,163,184,0.15)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([10,10]);
+      ctx.beginPath();
+      ctx.moveTo(0, y + laneH/2);
+      ctx.lineTo(W, y + laneH/2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // top pad marker
+    ctx.fillStyle = 'rgba(34,197,94,0.15)';
+    ctx.fillRect(0,0,W,topPadY+laneH);
+    ctx.fillStyle = 'rgba(34,197,94,0.9)';
+    ctx.font = 'bold 14px system-ui';
+    ctx.fillText('SAFE PAD', 12, 22);
+
+    // planes
+    for (const p of planes){
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      // body
+      ctx.fillStyle = `hsl(${p.hue} 85% 60%)`;
+      roundRect(-p.w/2, -p.h/2, p.w, p.h, 6);
+      ctx.fill();
+      // wing
+      ctx.fillStyle = 'rgba(255,255,255,0.25)';
+      roundRect(-p.w*0.15, -p.h*1.0, p.w*0.3, p.h*2.0, 5);
+      ctx.fill();
+      // nose
+      ctx.fillStyle = 'rgba(0,0,0,0.25)';
+      roundRect(p.w/2-10, -p.h/2, 10, p.h, 4);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // helicopter
+    ctx.save();
+    ctx.translate(heli.x, heli.y);
+    const blink = heli.invuln > 0 && Math.floor(performance.now()/120)%2===0;
+    ctx.globalAlpha = blink ? 0.35 : 1.0;
+
+    // body
+    ctx.fillStyle = '#f59e0b';
+    circle(0,0,heli.r);
+    ctx.fill();
+
+    // tail
+    ctx.fillStyle = '#fbbf24';
+    roundRect(heli.r-2, -4, 20, 8, 4);
+    ctx.fill();
+
+    // rotor
+    ctx.strokeStyle = 'rgba(226,232,240,0.75)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(-26, -18);
+    ctx.lineTo(26, -18);
+    ctx.stroke();
+
+    // cockpit
+    ctx.fillStyle = 'rgba(30,41,59,0.85)';
+    circle(-4, -2, 7);
+    ctx.fill();
+
+    ctx.restore();
+
+    // HUD text
+    ctx.fillStyle = 'rgba(226,232,240,0.9)';
+    ctx.font = '600 14px system-ui';
+    ctx.fillText(`Level: ${level}   Score: ${score}   Best: ${best}`, 12, H-12);
+
+    if (paused){
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(0,0,W,H);
+      ctx.fillStyle = 'white';
+      ctx.font = '700 28px system-ui';
+      ctx.fillText('PAUSED', W/2-58, H/2);
+    }
+  }
+
+  function roundRect(x,y,w,h,r){
+    const rr = Math.min(r, w/2, h/2);
+    ctx.beginPath();
+    ctx.moveTo(x+rr,y);
+    ctx.arcTo(x+w,y,x+w,y+h,rr);
+    ctx.arcTo(x+w,y+h,x,y+h,rr);
+    ctx.arcTo(x,y+h,x,y,rr);
+    ctx.arcTo(x,y,x+w,y,rr);
+    ctx.closePath();
+  }
+  function circle(x,y,r){
+    ctx.beginPath();
+    ctx.arc(x,y,r,0,Math.PI*2);
+    ctx.closePath();
+  }
+
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>

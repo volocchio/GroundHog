@@ -8,7 +8,7 @@ import threading
 import time
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, Response
 from pydantic import BaseModel, Field
 from typing import List
 
@@ -70,6 +70,14 @@ def index():
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/heli", response_class=HTMLResponse)
+def heli_game():
+    """Tiny Frogger-like helicopter game."""
+    here = os.path.dirname(__file__)
+    with open(os.path.join(here, "helicopter_frogger.html"), "r", encoding="utf-8") as f:
+        return f.read()
 
 
 @app.get("/airports")
