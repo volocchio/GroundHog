@@ -196,7 +196,7 @@
         <button id="deleteBtn" type="button" style="background:transparent; border:1px solid #d1d5db; color:#6b7280; margin:0; padding:5px 8px; width:auto; font-size:13px; border-radius:6px; cursor:pointer" title="Delete selected saved route">&times;</button>
       </div>
       <div class="watch-row">
-        <input type="checkbox" id="watchSearch" />
+        <input type="checkbox" id="watchSearch" checked />
         <label for="watchSearch" style="margin:0; display:inline">Watch A* search on map</label>
       </div>
       <div id="status" class="muted" style="margin-top:10px"></div>
@@ -1493,7 +1493,7 @@
     async function planStreaming(payload) {
       abortController = new AbortController();
       setPlanning(true);
-      document.getElementById('status').textContent = 'Planning route (checking fuel)...';
+      document.getElementById('status').textContent = 'Planning route (live)...';
       clearMap();
 
       let exploredCount = 0;

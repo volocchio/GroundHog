@@ -355,8 +355,20 @@ def plan_stop_sequences(
 
     # Direct route shortcut
     direct_nm = _direct_nm(dep, arr)
-    ok, _, _ = leg_fuel_ok(direct_nm * planning_detour, cruise_speed_kt,
-                           _start_fuel, burn_gph, reserve_min)
+    ok, _, _ = leg_fuel_ok(
+        direct_nm * planning_detour,
+        cruise_speed_kt,
+        _start_fuel,
+        burn_gph,
+        reserve_min,
+        dep_elev_ft=dep.elevation_ft,
+        arr_elev_ft=arr.elevation_ft,
+        cruise_alt_ft=max_msl_ft if max_msl_ft > 0 else None,
+        max_climb_fpm=max_climb_fpm,
+        max_descent_fpm=max_descent_fpm,
+        climb_speed_kt=climb_speed_kt,
+        descent_speed_kt=descent_speed_kt,
+    )
     if ok and not _is_blocked(dep.icao, arr.icao):
         return [[dep, arr]]
 
@@ -438,8 +450,20 @@ def plan_stop_sequences(
             for d, nxt_ap in neigh:
                 if _is_blocked(cur_code, nxt_ap.icao):
                     continue
-                ok, t_hr, _ = leg_fuel_ok(d * planning_detour, cruise_speed_kt,
-                                          cur_fuel, burn_gph, reserve_min)
+                ok, t_hr, _ = leg_fuel_ok(
+                    d * planning_detour,
+                    cruise_speed_kt,
+                    cur_fuel,
+                    burn_gph,
+                    reserve_min,
+                    dep_elev_ft=cur_ap.elevation_ft,
+                    arr_elev_ft=nxt_ap.elevation_ft,
+                    cruise_alt_ft=max_msl_ft if max_msl_ft > 0 else None,
+                    max_climb_fpm=max_climb_fpm,
+                    max_descent_fpm=max_descent_fpm,
+                    climb_speed_kt=climb_speed_kt,
+                    descent_speed_kt=descent_speed_kt,
+                )
                 if not ok:
                     continue
                 penalty = 0.0 if nxt_ap.icao == arr.icao else stop_penalty_hr
@@ -668,7 +692,20 @@ def plan_route_multi_stop(
                 if not leg:
                     leg_cache[key] = (float("inf"), float("inf"), float("inf"), [])
                     continue
-                ok, t_hr, gal = leg_fuel_ok(leg.dist_nm, cruise_speed_kt, usable_fuel_gal, burn_gph, reserve_min)
+                ok, t_hr, gal = leg_fuel_ok(
+                    leg.dist_nm,
+                    cruise_speed_kt,
+                    usable_fuel_gal,
+                    burn_gph,
+                    reserve_min,
+                    dep_elev_ft=cur_ap.elevation_ft,
+                    arr_elev_ft=nxt_ap.elevation_ft,
+                    cruise_alt_ft=max_msl_ft if max_msl_ft > 0 else None,
+                    max_climb_fpm=max_climb_fpm,
+                    max_descent_fpm=max_descent_fpm,
+                    climb_speed_kt=climb_speed_kt,
+                    descent_speed_kt=descent_speed_kt,
+                )
                 if not ok:
                     leg_cache[key] = (float("inf"), float("inf"), float("inf"), [])
                     continue
