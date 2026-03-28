@@ -139,17 +139,18 @@
       </div>
 
       <div id="terrainFollowOpts">
+      <div style="font-size:12px;color:#9ca3af;margin:4px 0 8px">Used for terrain-following AND for approach/departure timing in max-MSL mode.</div>
       <label>Max climb rate (fpm) — 0 = unlimited</label>
-      <input id="maxClimb" type="number" value="0" min="0" step="50" placeholder="e.g. 700" />
+      <input id="maxClimb" type="number" value="500" min="0" step="50" placeholder="e.g. 700" />
 
-      <label>Climb speed (kt) — 0 = use cruise</label>
-      <input id="climbSpeedKt" type="number" value="0" min="0" step="1" placeholder="e.g. 65" />
+      <label>Climb speed (kt)</label>
+      <input id="climbSpeedKt" type="number" value="55" min="0" step="1" placeholder="e.g. 65" />
 
       <label>Max descent rate (fpm) — 0 = unlimited</label>
-      <input id="maxDescent" type="number" value="0" min="0" step="50" placeholder="e.g. 500" />
+      <input id="maxDescent" type="number" value="1500" min="0" step="50" placeholder="e.g. 500" />
 
-      <label>Descent speed (kt) — 0 = use cruise</label>
-      <input id="descentSpeedKt" type="number" value="0" min="0" step="1" placeholder="e.g. 90" />
+      <label>Descent speed (kt)</label>
+      <input id="descentSpeedKt" type="number" value="80" min="0" step="1" placeholder="e.g. 90" />
       </div>
 
       <label style="margin-top:10px; font-weight:600">Obstacle avoidance</label>
@@ -1965,10 +1966,10 @@
       document.getElementById('fuelType').value = r.required_fuel || '100LL';
       document.getElementById('detour').value = r.max_detour_factor || 1.8;
       detourVal.textContent = r.max_detour_factor || 1.8;
-      document.getElementById('maxClimb').value = r.max_climb_fpm || 0;
-      document.getElementById('maxDescent').value = r.max_descent_fpm || 0;
-      document.getElementById('climbSpeedKt').value = r.climb_speed_kt || 0;
-      document.getElementById('descentSpeedKt').value = r.descent_speed_kt || 0;
+      document.getElementById('maxClimb').value = (r.max_climb_fpm ?? 500);
+      document.getElementById('maxDescent').value = (r.max_descent_fpm ?? 1500);
+      document.getElementById('climbSpeedKt').value = (r.climb_speed_kt ?? 55);
+      document.getElementById('descentSpeedKt').value = (r.descent_speed_kt ?? 80);
       // Set flight mode radio
       const modeVal = r.terrain_follow ? 'terrain' : 'maxmsl';
       document.querySelector(`input[name="flightMode"][value="${modeVal}"]`).checked = true;
