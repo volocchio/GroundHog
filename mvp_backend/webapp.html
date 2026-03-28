@@ -486,14 +486,11 @@
     map.on('zoomend', updateMapDeclutter);
     updateMapDeclutter();
 
-    // Toggle terrain-follow options visibility
+    // Flight-mode toggles
+    // Keep ROC/ROD inputs visible in BOTH modes (used for approach/departure timing
+    // even when flying at max MSL), so do not hide the container.
     const terrainOpts = document.getElementById('terrainFollowOpts');
-    document.querySelectorAll('input[name="flightMode"]').forEach(radio => {
-      radio.addEventListener('change', () => {
-        terrainOpts.style.display = radio.value === 'terrain' && radio.checked ? '' : 'none';
-      });
-    });
-    terrainOpts.style.display = 'none'; // hidden by default (Max MSL mode)
+    terrainOpts.style.display = '';
 
     // ── Profile zoom/pan state ──
     let profileState = { zoom: 1, panX: 0, dragging: false, dragStartX: 0, dragStartPanX: 0 };
