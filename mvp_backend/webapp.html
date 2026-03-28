@@ -1623,7 +1623,10 @@
               // accumulate
               totalDistNm += event.dist_nm;
               const legTimeHr = event.dist_nm / payload.cruise_speed_kt;
-              const legFuelGal = legTimeHr * payload.fuel_burn_gph;
+              // Enforce reserve in display: show required fuel per leg as (burn + reserve).
+              const reserveGal = (payload.reserve_min / 60) * payload.fuel_burn_gph;
+              const enrouteFuelGal = legTimeHr * payload.fuel_burn_gph;
+              const legFuelGal = enrouteFuelGal + reserveGal;
               totalTimeHr += legTimeHr;
               totalFuelGal += legFuelGal;
               lastLegFuelGal = legFuelGal;
