@@ -50,6 +50,8 @@ class RouteRequest(BaseModel):
     climb_speed_kt: float = Field(default=0, ge=0)
     descent_speed_kt: float = Field(default=0, ge=0)
 
+    # For non-terrain-follow planning, we use max_msl_ft as the cruise altitude.
+    # (User requested behavior.)
     terrain_follow: bool = Field(default=False)
 
     obstacle_radius_nm: float = Field(default=0.5, ge=0, le=5.0)
@@ -64,10 +66,17 @@ class RouteRequest(BaseModel):
 @app.get("/", response_class=HTMLResponse)
 def index():
     # Simple single-file webapp
-    import os
+    # Cache-bust for phones: always serve latest UI
     here = os.path.dirname(__file__)
     with open(os.path.join(here, "webapp.html"), "r", encoding="utf-8") as f:
-        return f.read()
+        html = f.read()
+    return HTMLResponse(
+        content=html,
+        headers={
+            "Cache-Control": "no-store, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
 
 
 @app.get("/health")
