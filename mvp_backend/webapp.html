@@ -100,10 +100,10 @@
       <div style="font-weight:600">Inputs</div>
 
       <label>Departure ICAO</label>
-      <input id="dep" value="KSZT" />
+      <input id="dep" value="KSZT" autocapitalize="characters" autocomplete="off" spellcheck="false" inputmode="text" style="text-transform: uppercase;" oninput="this.value=this.value.toUpperCase()" />
 
       <label>Arrival ICAO</label>
-      <input id="arr" value="E60" />
+      <input id="arr" value="E60" autocapitalize="characters" autocomplete="off" spellcheck="false" inputmode="text" style="text-transform: uppercase;" oninput="this.value=this.value.toUpperCase()" />
 
       <label>Intermediate waypoints (space-sep; all refuel by default, append <code>-NF</code> to skip fuel)</label>
       <input id="waypoints" placeholder="e.g. KBOI N86-NF KSLC" />
@@ -196,7 +196,7 @@
         <button id="deleteBtn" type="button" style="background:transparent; border:1px solid #d1d5db; color:#6b7280; margin:0; padding:5px 8px; width:auto; font-size:13px; border-radius:6px; cursor:pointer" title="Delete selected saved route">&times;</button>
       </div>
       <div class="watch-row">
-        <input type="checkbox" id="watchSearch" checked />
+        <input type="checkbox" id="watchSearch" />
         <label for="watchSearch" style="margin:0; display:inline">Watch A* search on map</label>
       </div>
       <div id="status" class="muted" style="margin-top:10px"></div>
@@ -1410,7 +1410,43 @@
       html += '</tr>';
 
       html += '</tbody></table>';
+      // Add GPX download button (uses last planned route path)
+      if (window.__lastPlanned && window.__lastPlanned.path && window.__lastPlanned.path.length >= 2) {
+        html += `<div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap">
+          <button id="btnGpx" style="padding:8px 10px;border-radius:10px;border:0;background:#2563eb;color:#fff;font-weight:700;cursor:pointer">
+            Download GPX
+          </button>
+        </div>`;
+      }
+
       resultsDiv.innerHTML = html;
+
+      const btn = document.getElementById('btnGpx');
+      if (btn) {
+        btn.addEventListener('click', async () => {
+          try {
+            const name = (window.__lastPlanned?.name) || 'GroundHog Route';
+            const path = window.__lastPlanned.path;
+            const r = await fetch('/export/gpx', {
+              method: 'POST',
+              headers: {'content-type': 'application/json'},
+              body: JSON.stringify({ name, path }),
+            });
+            if (!r.ok) throw new Error('GPX export failed');
+            const blob = await r.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'groundhog_route.gpx';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+          } catch (e) {
+            document.getElementById('error').textContent = String(e);
+          }
+        });
+      }
     }
 
     function setPlanning(active) {
@@ -1466,6 +1502,7 @@
       let lastLegFuelGal = 0;
       let allCoords = [];
       let legsList = [];
+      let sawFailure = false;
       let legLayers = [];  // per-leg [polyline, marker1, marker2] for selective removal
       let stops = [];
       let currentLeg = 0;
@@ -1707,6 +1744,12 @@
           document.getElementById('error').textContent = data.message + "\n\nSuggestions:\n- " + (data.suggestions || []).join('\n- ');
           return;
         }
+
+        // store last planned route for GPX download
+        window.__lastPlanned = {
+          name: `${payload.dep_icao} to ${payload.arr_icao}`,
+          path: data.legs.flatMap(l => l.path || []),
+        };
 
         // render nav log
         const navLegs = data.legs.map(l => ({

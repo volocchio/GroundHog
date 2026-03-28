@@ -13,9 +13,12 @@ from pydantic import BaseModel, Field
 from typing import List
 
 from mvp_backend.planner import load_airports_solver, plan_route_multi_stop, terrain_avoid_leg, terrain_avoid_leg_streaming, leg_fuel_ok, plan_stop_sequence, plan_stop_sequences
+from mvp_backend.gpx import gpx_from_path
 from mvp_backend.srtm_local import SRTMProvider
 from mvp_backend.grid_astar import _haversine_nm
 from mvp_backend import route_cache
+
+import hashlib
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -80,6 +83,24 @@ def heli_game():
         return f.read()
 
 
+@app.post("/export/gpx")
+def export_gpx(payload: dict):
+    """Return a GPX download for a planned route.
+
+    Expected payload:
+      {"name": "...", "path": [[lat,lon], ...]}
+    """
+    name = str(payload.get("name") or "GroundHog Route")
+    path = payload.get("path") or []
+    if not isinstance(path, list) or len(path) < 2:
+        raise HTTPException(400, "path must be a list of [lat,lon] points")
+    gpx = gpx_from_path(name, [(float(p[0]), float(p[1])) for p in path])
+    headers = {
+        "Content-Disposition": "attachment; filename=groundhog_route.gpx"
+    }
+    return Response(content=gpx, media_type="application/gpx+xml", headers=headers)
+
+
 @app.get("/airports")
 def airports_list():
     """Return all airports for map display."""
@@ -133,6 +154,27 @@ def route(req: RouteRequest):
         climb_speed_kt=req.climb_speed_kt,
         descent_speed_kt=req.descent_speed_kt,
     )
+
+    # Persist successful routes for shared learning (and later GPX export)
+    if isinstance(result, dict) and result.get("type") in ("direct", "multi_stop"):
+        # Deterministic-ish key from request + resulting stops
+        raw = json.dumps({
+            "dep": dep.icao,
+            "arr": arr.icao,
+            "max_msl_ft": req.max_msl_ft,
+            "min_agl_ft": req.min_agl_ft,
+            "detour": req.max_detour_factor,
+            "cruise": req.cruise_speed_kt,
+            "fuel": req.usable_fuel_gal,
+            "burn": req.fuel_burn_gph,
+            "reserve": req.reserve_min,
+            "fuel_type": req.required_fuel,
+            "stops": result.get("stops") or [],
+        }, sort_keys=True)
+        route_key = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+        result["route_key"] = route_key
+        route_cache.save_route(route_key, dep.icao, arr.icao, result)
+
     return result
 
 

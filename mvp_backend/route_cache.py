@@ -51,6 +51,18 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_leg_airports
             ON leg_cache(from_icao, to_icao);
 
+        CREATE TABLE IF NOT EXISTS saved_routes (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            route_key   TEXT NOT NULL UNIQUE,
+            dep_icao    TEXT NOT NULL,
+            arr_icao    TEXT NOT NULL,
+            created_at  REAL NOT NULL,
+            route_json  TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_saved_route
+            ON saved_routes(dep_icao, arr_icao);
+
         CREATE TABLE IF NOT EXISTS route_history (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             dep_icao    TEXT NOT NULL,
@@ -222,6 +234,16 @@ def record_request(dep_icao: str, arr_icao: str,
           cruise_kt, fuel_gal, burn_gph, reserve_min, fuel_type,
           max_climb_fpm, max_descent_fpm,
           climb_speed_kt, descent_speed_kt, time.time()))
+    c.commit()
+
+
+def save_route(route_key: str, dep_icao: str, arr_icao: str, route: Dict) -> None:
+    """Persist a user-saved route (for shared learning / later export)."""
+    c = _conn()
+    c.execute(
+        "INSERT OR REPLACE INTO saved_routes(route_key, dep_icao, arr_icao, created_at, route_json) VALUES (?,?,?,?,?)",
+        (route_key, dep_icao, arr_icao, time.time(), json.dumps(route)),
+    )
     c.commit()
 
 

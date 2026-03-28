@@ -201,11 +201,103 @@ def terrain_avoid_leg(
     return None
 
 
-def leg_fuel_ok(dist_nm: float, cruise_speed_kt: float, usable_fuel_gal: float, burn_gph: float, reserve_min: float) -> tuple[bool, float, float]:
-    time_hr = dist_nm / max(1e-6, cruise_speed_kt)
+def leg_fuel_ok(
+    dist_nm: float,
+    cruise_speed_kt: float,
+    usable_fuel_gal: float,
+    burn_gph: float,
+    reserve_min: float,
+    *,
+    dep_elev_ft: float | None = None,
+    arr_elev_ft: float | None = None,
+    cruise_alt_ft: float | None = None,
+    max_climb_fpm: float = 0,
+    max_descent_fpm: float = 0,
+    climb_speed_kt: float = 0,
+    descent_speed_kt: float = 0,
+) -> tuple[bool, float, float]:
+    """Fuel feasibility for a leg.
+
+    MVP model:
+    - Base enroute time = dist / cruise_speed.
+    - If climb/descent rates and speeds are provided, add climb/descent *time*
+      based on a simple climb to `cruise_alt_ft` above each airport elevation.
+
+    This is intentionally approximate (but better than ignoring climb/descent
+    when users provide those fields).
+    """
+
+    cruise_speed = max(1e-6, cruise_speed_kt)
+    time_hr = dist_nm / cruise_speed
+
+    # Optional climb/descent time model (used even when not terrain-following)
+    if (
+        dep_elev_ft is not None
+        and arr_elev_ft is not None
+        and cruise_alt_ft is not None
+        and cruise_alt_ft > 0
+        and (max_climb_fpm > 0 or max_descent_fpm > 0)
+    ):
+        # Clamp target altitude above each field elevation
+        climb_ft = max(0.0, cruise_alt_ft - dep_elev_ft)
+        descent_ft = max(0.0, cruise_alt_ft - arr_elev_ft)
+
+        climb_time_hr = (climb_ft / max(1e-6, max_climb_fpm)) / 60.0 if max_climb_fpm > 0 else 0.0
+        descent_time_hr = (descent_ft / max(1e-6, max_descent_fpm)) / 60.0 if max_descent_fpm > 0 else 0.0
+
+        # Account for climb/descent speeds by allocating some of the leg's
+        # distance to climb/descent segments.
+        cs = climb_speed_kt if climb_speed_kt and climb_speed_kt > 0 else cruise_speed
+        ds = descent_speed_kt if descent_speed_kt and descent_speed_kt > 0 else cruise_speed
+
+        climb_nm = climb_time_hr * cs
+        descent_nm = descent_time_hr * ds
+        cruise_nm = max(0.0, dist_nm - climb_nm - descent_nm)
+
+        time_hr = (cruise_nm / cruise_speed) + climb_time_hr + descent_time_hr
+
     reserve_gal = (reserve_min / 60.0) * burn_gph
     needed_gal = time_hr * burn_gph + reserve_gal
     return (needed_gal <= usable_fuel_gal, time_hr, needed_gal)
+
+
+def limiting_point_along_path(
+    path_latlon: List[Tuple[float, float]],
+    min_agl_ft: float,
+    provider: Optional[SRTMProvider] = None,
+    sample_step: int = 5,
+) -> Optional[dict]:
+    """Compute the limiting terrain point along a polyline.
+
+    Returns dict with max_terrain_ft, required_msl_ft, lat, lon.
+
+    `sample_step` subsamples the path to keep it fast.
+    """
+    if not path_latlon:
+        return None
+
+    if provider is None:
+        provider = SRTMProvider(cache_dir=os.path.join(ROOT, "mvp_backend", "srtm_cache"))
+
+    pts = path_latlon[:: max(1, sample_step)]
+    if pts[-1] != path_latlon[-1]:
+        pts.append(path_latlon[-1])
+
+    elev_m = provider.get_many_m(pts)
+    best = None
+    for (lat, lon), em in zip(pts, elev_m):
+        if em != em:
+            continue
+        terrain_ft = meters_to_feet(em)
+        req_msl = terrain_ft + min_agl_ft
+        if best is None or req_msl > best["required_msl_ft"]:
+            best = {
+                "lat": lat,
+                "lon": lon,
+                "terrain_ft": float(terrain_ft),
+                "required_msl_ft": float(req_msl),
+            }
+    return best
 
 
 def plan_stop_sequences(
