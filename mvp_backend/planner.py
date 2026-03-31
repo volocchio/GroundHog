@@ -993,6 +993,35 @@ def terrain_avoid_leg_streaming(
                 margin_km += margin_step_km
                 continue
 
+        # ── Gentle backtrack avoidance ──
+        # When prev_point is given (multi-leg route), add a light cost to
+        # cells very close to prev_point to discourage (but not block)
+        # routing back through the previous departure airport.
+        if prev_point is not None:
+            prev_lat, prev_lon = prev_point
+            cos_mid = math.cos(math.radians(0.5 * (a.lat + prev_lat)))
+            # Only penalize cells within ~10 NM of prev_point
+            penalty_radius_deg = 10.0 / 60.0  # ~10 NM in degrees lat
+            backtrack_cost = [[0.0] * n_lon for _ in range(n_lat)]
+            has_any = False
+            for i in range(n_lat):
+                for j in range(n_lon):
+                    clat, clon = grid.idx_to_latlon(i, j)
+                    dc_lat = clat - prev_lat
+                    dc_lon = (clon - prev_lon) * cos_mid
+                    d_deg = math.sqrt(dc_lat * dc_lat + dc_lon * dc_lon)
+                    if d_deg < penalty_radius_deg:
+                        ratio = 1.0 - (d_deg / penalty_radius_deg)
+                        backtrack_cost[i][j] = ratio * 0.3  # gentle nudge
+                        has_any = True
+            if has_any:
+                if airspace_cost_2d is None:
+                    airspace_cost_2d = backtrack_cost
+                else:
+                    for i in range(n_lat):
+                        for j in range(n_lon):
+                            airspace_cost_2d[i][j] += backtrack_cost[i][j]
+
         for event in astar_path_streaming(grid, passable, start, goal, yield_every=30,
                                            elev_ft=elev_ft_2d,
                                            max_climb_fpm=max_climb_fpm,

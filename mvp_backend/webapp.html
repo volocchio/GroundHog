@@ -105,6 +105,11 @@
       <label>Arrival ICAO</label>
       <input id="arr" value="E60" />
 
+      <div class="watch-row" style="margin-top:6px">
+        <input type="checkbox" id="roundTrip" style="width:auto" />
+        <label for="roundTrip" style="margin:0; display:inline; font-size:13px">Round trip (no refuel at destination)</label>
+      </div>
+
       <label>Intermediate waypoints (space-sep; all refuel by default, append <code>-NF</code> to skip fuel)</label>
       <input id="waypoints" placeholder="e.g. KBOI N86-NF KSLC" />
 
@@ -247,7 +252,7 @@
     });
     adsbOut.dispatchEvent(new Event('change'));  // apply initial state
 
-    const map = L.map('map').setView([39.0, -105.5], 5);
+    const map = L.map('map', { preferCanvas: true }).setView([39.0, -105.5], 5);
 
     const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 18,
@@ -303,6 +308,22 @@
     let abortController = null;
     let airportsLoaded = false;
     let airportLookup = {};  // ICAO → {elev, name, ...}
+
+    // Map click → set departure or arrival
+    window.setAirportField = function(field, icao) {
+      document.getElementById(field).value = icao;
+      map.closePopup();
+    };
+
+    // Add airport as intermediate waypoint (with or without fuel stop)
+    window.addWaypoint = function(icao, noFuel) {
+      const wpInput = document.getElementById('waypoints');
+      const suffix = noFuel ? '-NF' : '';
+      const token = icao + suffix;
+      const existing = wpInput.value.trim();
+      wpInput.value = existing ? existing + ' ' + token : token;
+      map.closePopup();
+    };
 
     // ── Obstacle layer: load on map move when zoomed in ──
     let _obsFetchController = null;
@@ -444,12 +465,21 @@
           const fuelStr = [ap.fuel_100ll ? '100LL' : '', ap.fuel_jeta ? 'Jet-A' : ''].filter(Boolean).join(', ') || 'None';
           const pvtStr = isPrivate ? ' (Private)' : '';
           const targetGroup = (!isPrivate && hasFuel) ? airportFuelGroup : airportOtherGroup;
+          const popupHtml = `<b>${ap.icao}</b>${pvtStr}<br>${ap.name}<br>Elev: ${Math.round(ap.elev)} ft<br>Fuel: ${fuelStr}
+            <div style="margin-top:6px; display:flex; gap:4px; flex-wrap:wrap">
+              <button onclick="setAirportField('dep','${ap.icao}')" style="padding:4px 8px; font-size:11px; border:1px solid #2563eb; background:#eff6ff; color:#2563eb; border-radius:4px; cursor:pointer">Set Departure</button>
+              <button onclick="setAirportField('arr','${ap.icao}')" style="padding:4px 8px; font-size:11px; border:1px solid #16a34a; background:#f0fdf4; color:#16a34a; border-radius:4px; cursor:pointer">Set Arrival</button>
+            </div>
+            <div style="margin-top:4px; display:flex; gap:4px; flex-wrap:wrap">
+              <button onclick="addWaypoint('${ap.icao}',false)" style="padding:4px 8px; font-size:11px; border:1px solid #9333ea; background:#faf5ff; color:#9333ea; border-radius:4px; cursor:pointer">Add Stop (land &amp; fuel)</button>
+              <button onclick="addWaypoint('${ap.icao}',true)" style="padding:4px 8px; font-size:11px; border:1px solid #6b7280; background:#f9fafb; color:#6b7280; border-radius:4px; cursor:pointer">Add Stop (no fuel)</button>
+            </div>`;
           L.circleMarker([ap.lat, ap.lon], {
             radius, color, fillColor: color,
             fillOpacity: isPrivate ? 0.5 : 0.7, weight: 1, opacity: isPrivate ? 0.6 : 0.8,
           }).bindTooltip(`<b>${ap.icao}</b>${pvtStr}<br>${ap.name}<br>Elev: ${Math.round(ap.elev)} ft<br>Fuel: ${fuelStr}`, {
             direction: 'top', offset: [0, -6],
-          }).addTo(targetGroup);
+          }).bindPopup(popupHtml).addTo(targetGroup);
         }
       } catch (e) { /* silent */ }
     }
@@ -1313,16 +1343,17 @@
         document.getElementById('profileWrap').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       });
 
-      return poly;
+      return {poly};
     }
 
-    function addMarker(lat, lon, label, isEndpoint = false) {
+    function addMarker(lat, lon, label, isEndpoint = false, legLabel = '') {
+      const displayLabel = legLabel ? `${legLabel} ${label}` : label;
       const marker = L.marker([lat, lon]).bindPopup(apLabel(label)).addTo(layerGroup);
-      marker.bindTooltip(label, {
+      marker.bindTooltip(displayLabel, {
         permanent: true, direction: 'top', offset: [0, -36],
         className: 'route-icao-label',
       });
-      routeMarkers.push({ marker, label, isEndpoint });
+      routeMarkers.push({ marker, label: displayLabel, isEndpoint });
       const z = map.getZoom();
       if (isEndpoint || z >= 9) marker.openTooltip(); else marker.closeTooltip();
       return marker;
@@ -1445,9 +1476,21 @@
     document.getElementById('abortBtn').addEventListener('click', abortPlanning);
 
     function getPayload() {
+      const dep = document.getElementById('dep').value.trim().toUpperCase();
+      const arr = document.getElementById('arr').value.trim().toUpperCase();
+      const roundTrip = document.getElementById('roundTrip').checked;
+      const waypoints = document.getElementById('waypoints').value.split(/[\s,]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
+
+      let effectiveArr = arr;
+      if (roundTrip && dep && arr && dep !== arr) {
+        // Round trip: dep → arr (no refuel) → dep
+        waypoints.push(arr + '-NF');
+        effectiveArr = dep;
+      }
+
       return {
-        dep_icao: document.getElementById('dep').value.trim().toUpperCase(),
-        arr_icao: document.getElementById('arr').value.trim().toUpperCase(),
+        dep_icao: dep,
+        arr_icao: effectiveArr,
         cruise_speed_kt: Number(document.getElementById('speedKt').value),
         usable_fuel_gal: Number(document.getElementById('usableFuel').value),
         fuel_burn_gph: Number(document.getElementById('burnGph').value),
@@ -1465,7 +1508,7 @@
         obstacle_clearance_ft: Number(document.getElementById('obsClearance').value) || 500,
         adsb_out: document.getElementById('adsbOut').checked,
         avoid_airspace: [...document.querySelectorAll('#avoidChecks input:checked')].map(cb => cb.value),
-        waypoints: document.getElementById('waypoints').value.split(/[\s,]+/).map(s => s.trim().toUpperCase()).filter(Boolean),  // may contain -NF suffix
+        waypoints,
       };
     }
 
@@ -1588,7 +1631,7 @@
               exploreGroup.clearLayers();
 
               const color = legColors[currentLeg % legColors.length];
-              const poly = addPath(event.coords, color);
+              const {poly} = addPath(event.coords, color);
 
               // Track per-leg map layers for selective removal on reroute
               const m1 = event.coords.length ? addMarker(event.coords[0][0], event.coords[0][1], event.from || payload.dep_icao, currentLeg === 0) : null;
@@ -1746,7 +1789,7 @@
         data.legs.forEach((leg, idx) => {
           const path = (leg.path || []).map(p => [p[0], p[1]]);
           if (path.length) {
-            const poly = addPath(path, colors[idx % colors.length]);
+            const {poly} = addPath(path, colors[idx % colors.length]);
             if (!bounds) bounds = poly.getBounds(); else bounds.extend(poly.getBounds());
           }
         });

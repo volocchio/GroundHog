@@ -76,8 +76,13 @@ def health():
 def airports_list():
     """Return all airports for map display."""
     airports = load_airports_solver()
-    return [
-        {
+    seen = set()
+    result = []
+    for ap in airports.values():
+        if id(ap) in seen:
+            continue
+        seen.add(id(ap))
+        result.append({
             "icao": ap.icao,
             "name": ap.name,
             "lat": ap.lat,
@@ -86,9 +91,8 @@ def airports_list():
             "facility_use": ap.facility_use,
             "fuel_100ll": ap.fuel_100ll,
             "fuel_jeta": ap.fuel_jeta,
-        }
-        for ap in airports.values()
-    ]
+        })
+    return result
 
 
 @app.post("/route")
