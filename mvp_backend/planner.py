@@ -8,7 +8,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-from mvp_backend.grid_astar import GridSpec, astar_path, astar_path_streaming, path_nm
+from mvp_backend.grid_astar import GridSpec, astar_path, astar_path_streaming, path_nm, smooth_path, densify_path
 from mvp_backend.terrain_provider import meters_to_feet
 from mvp_backend.srtm_local import SRTMProvider
 from mvp_backend import route_cache
@@ -106,13 +106,17 @@ def terrain_avoid_leg(
     limits per grid edge (terrain-following constraint).
     """
     # ── terrain intelligence quick-reject ──
+    # Only hard-reject when the precomputed data found a *specific* minimum
+    # viable altitude (proving the data covers the corridor).  When
+    # min_viable_msl is None ("no path at any altitude") the precomputed
+    # 2 km BFS likely has gaps — let fine-grained A* try.
     if max_msl_ft > 0:
-        # Translate user AGL to precomputed AGL, preserving effective ceiling
         effective_ceiling = max_msl_ft - min_agl_ft
         intel_msl = effective_ceiling + _INTEL_AGL
         vi = terrain_intel.check_viability(
             a.lat, a.lon, b.lat, b.lon, intel_msl, _INTEL_AGL)
-        if vi["analyzed"] and vi["viable"] is False:
+        if (vi["analyzed"] and vi["viable"] is False
+                and vi.get("min_viable_msl") is not None):
             route_cache.put_leg(a.icao, b.icao, max_msl_ft, min_agl_ft,
                                 max_detour_factor, None, None,
                                 max_climb_fpm, max_descent_fpm,
@@ -154,11 +158,11 @@ def terrain_avoid_leg(
         n_lon = int(math.ceil((max_lon - min_lon) / dlon)) + 1
 
         # Adaptive cell coarsening: if grid too large, increase cell size
-        _MAX_CELLS = 500_000
+        _MAX_CELLS = 1_000_000
         _dlat, _dlon = dlat, dlon
         while n_lat * n_lon > _MAX_CELLS:
-            _dlat *= 1.5
-            _dlon *= 1.5
+            _dlat *= 1.25
+            _dlon *= 1.25
             n_lat = int(math.ceil((max_lat - min_lat) / _dlat)) + 1
             n_lon = int(math.ceil((max_lon - min_lon) / _dlon)) + 1
 
@@ -199,6 +203,17 @@ def terrain_avoid_leg(
         if not path_idx:
             margin_km += margin_step_km
             continue
+
+        # Smooth out grid-aligned zig-zags
+        path_idx = smooth_path(grid, passable, path_idx,
+                               elev_ft=elev_ft_2d,
+                               max_climb_fpm=max_climb_fpm,
+                               max_descent_fpm=max_descent_fpm,
+                               cruise_kt=cruise_speed_kt,
+                               climb_speed_kt=climb_speed_kt,
+                               descent_speed_kt=descent_speed_kt)
+        # Re-densify so the path has enough points for profile rendering
+        path_idx = densify_path(grid, path_idx)
 
         dist_nm = path_nm(grid, path_idx)
         if dist_nm <= detour_limit_nm:
@@ -788,7 +803,14 @@ def _rasterize_airspace(grid: GridSpec, avoid_classes: list[str],
             continue
 
         is_hard_block = cls in ("P", "R")
-        penalty = 20.0  # high cost multiplier for avoidance
+        # Class-dependent penalty: hard-blocked classes bypass this,
+        # military classes get moderate penalty, controlled airspace
+        # gets a lighter penalty (pilots can request transition).
+        _AIRSPACE_PENALTIES = {
+            "MOA": 8.0, "W": 8.0, "A": 6.0,
+            "B": 4.0, "C": 3.0, "D": 2.0,
+        }
+        penalty = _AIRSPACE_PENALTIES.get(cls, 10.0)
 
         # Pre-compute airspace altitude bounds (may be None if data missing)
         has_alt_data = (lower_alt is not None and upper_alt is not None)
@@ -941,24 +963,25 @@ def terrain_avoid_leg_streaming(
     avoidance_tag = _atag
 
     # ── terrain intelligence quick-reject ──
+    # Only hard-reject when the precomputed data found a *specific* minimum
+    # viable altitude (proving the data covers the corridor).  When
+    # min_viable_msl is None ("no path at any altitude") the precomputed
+    # 2 km BFS likely has gaps — let fine-grained A* try.
     if max_msl_ft > 0:
-        # Translate user AGL to precomputed AGL, preserving effective ceiling
         effective_ceiling = max_msl_ft - min_agl_ft
         intel_msl = effective_ceiling + _INTEL_AGL
         vi = terrain_intel.check_viability(
             a.lat, a.lon, b.lat, b.lon, intel_msl, _INTEL_AGL)
-        if vi["analyzed"] and vi["viable"] is False:
+        if (vi["analyzed"] and vi["viable"] is False
+                and vi.get("min_viable_msl") is not None):
+            user_min_msl = vi["min_viable_msl"] - _INTEL_AGL + min_agl_ft
             route_cache.put_leg(a.icao, b.icao, max_msl_ft, min_agl_ft,
                                 max_detour_factor, None, None,
                                 max_climb_fpm, max_descent_fpm,
                                 climb_speed_kt, descent_speed_kt,
                                 avoidance_tag=avoidance_tag)
-            detail = vi["explanation"]
-            if vi.get("min_viable_msl"):
-                # Convert back to user's AGL reference
-                user_min_msl = vi["min_viable_msl"] - _INTEL_AGL + min_agl_ft
-                detail = (f"Not viable at {max_msl_ft:.0f}' MSL with {min_agl_ft:.0f}' AGL clearance. "
-                          f"Minimum viable: {user_min_msl:.0f}' MSL.")
+            detail = (f"Not viable at {max_msl_ft:.0f}' MSL with {min_agl_ft:.0f}' AGL clearance. "
+                      f"Minimum viable: {user_min_msl:.0f}' MSL.")
             yield {"type": "no_path", "reason": "terrain_intel",
                    "detail": detail,
                    "min_viable_msl": vi.get("min_viable_msl")}
@@ -1008,11 +1031,11 @@ def terrain_avoid_leg_streaming(
         n_lon = int(math.ceil((max_lon - min_lon) / dlon)) + 1
 
         # Adaptive cell coarsening: if grid too large, increase cell size
-        _MAX_CELLS = 500_000
+        _MAX_CELLS = 1_000_000
         _dlat, _dlon = dlat, dlon
         while n_lat * n_lon > _MAX_CELLS:
-            _dlat *= 1.5
-            _dlon *= 1.5
+            _dlat *= 1.25
+            _dlon *= 1.25
             n_lat = int(math.ceil((max_lat - min_lat) / _dlat)) + 1
             n_lon = int(math.ceil((max_lon - min_lon) / _dlon)) + 1
 

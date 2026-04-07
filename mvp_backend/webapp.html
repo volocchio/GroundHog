@@ -275,13 +275,14 @@
     });
 
     const vfrSectional = L.tileLayer('https://tiles.arcgis.com/tiles/ssFJjBXIUyZDrSYZ/arcgis/rest/services/VFR_Sectional/MapServer/tile/{z}/{y}/{x}', {
+      minZoom: 8,
       maxZoom: 12,
-      attribution: 'FAA VFR Sectional'
+      attribution: 'FAA VFR Sectional (zoom 8+)'
     });
 
-    const vfrWorld = L.tileLayer('https://tiles.arcgis.com/tiles/ssFJjBXIUyZDrSYZ/arcgis/rest/services/World_Aeronautical_702583/MapServer/tile/{z}/{y}/{x}', {
+    const vfrWorld = L.tileLayer('https://services.arcgisonline.com/arcgis/rest/services/Specialty/World_Navigation_Charts/MapServer/tile/{z}/{y}/{x}', {
       maxZoom: 10,
-      attribution: 'FAA World Aeronautical'
+      attribution: 'NGA Operational Navigation Charts'
     });
 
     const obstacleGroup = L.layerGroup().addTo(map);
@@ -295,7 +296,7 @@
       '🛰️ Satellite + Labels': esriImagery,
       '🛣️ Street Map': osmLayer,
       '🛩️ VFR Sectional': vfrSectional,
-      '🌍 World Aeronautical': vfrWorld,
+      '🌍 Navigation Charts': vfrWorld,
     }, {
       '<span class="layer-swatch" style="background:#2060cc"></span> Airspace': airspaceGroup,
       '<span class="layer-swatch" style="background:#cc3300"></span> Obstacles (FAA)': obstacleGroup,
@@ -737,11 +738,10 @@
       const minAgl = data.min_agl_ft;
 
       const maxDist = dist[dist.length - 1] || 1;
-      // Include airspace ceilings in Y-axis range so bands are fully visible
+      // Scale Y-axis to highest MSL, terrain, or obstacle.
+      // Exclude airspace ceilings — unlimited (99999) zones blow up the scale
+      // and clipped airspace bands are still visible above the chart.
       let peakAlt = Math.max(maxMsl, ...ground);
-      for (const z of (data.airspace_zones || [])) {
-        for (const c of z.ceiling_msl) peakAlt = Math.max(peakAlt, c);
-      }
       for (const ob of (data._profileObstacles || [])) {
         peakAlt = Math.max(peakAlt, ob.amsl);
       }

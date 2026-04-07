@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import math
 import os
 import sqlite3
+import subprocess
 import threading
 import time
 
-from fastapi import FastAPI, HTTPException, Query
+import logging
+
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from typing import List
+
+logger = logging.getLogger("groundhog")
 
 from mvp_backend.planner import load_airports_solver, plan_route_multi_stop, terrain_avoid_leg, terrain_avoid_leg_streaming, leg_fuel_ok, plan_stop_sequence, plan_stop_sequences
 from mvp_backend.srtm_local import SRTMProvider
@@ -71,6 +78,25 @@ def index():
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+# ── GitHub webhook auto-deploy ───────────────────────────────────
+DEPLOY_SCRIPT = os.path.join(ROOT, "deploy", "deploy.sh")
+WEBHOOK_SECRET_FILE = os.path.join(ROOT, ".webhook_secret")
+
+
+@app.post("/deploy-hook")
+async def deploy_hook(request: Request):
+    if not os.path.isfile(WEBHOOK_SECRET_FILE):
+        raise HTTPException(404)
+    secret = open(WEBHOOK_SECRET_FILE).read().strip().encode()
+    body = await request.body()
+    sig_header = request.headers.get("X-Hub-Signature-256", "")
+    expected = "sha256=" + hmac.new(secret, body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig_header, expected):
+        raise HTTPException(403, "Invalid signature")
+    subprocess.Popen(["bash", DEPLOY_SCRIPT], cwd=ROOT)
+    return {"status": "deploying"}
 
 
 @app.get("/airports")
@@ -136,6 +162,11 @@ def route(req: RouteRequest):
 @app.post("/route/stream")
 def route_stream(req: RouteRequest):
     """SSE endpoint that streams A* exploration events for visualization."""
+    logger.info("POST /route/stream  %s → %s  msl=%.0f agl=%.0f detour=%.1f "
+                "climb=%s desc=%s avoid=%s obstacles=%.1f/%.0f",
+                req.dep_icao, req.arr_icao, req.max_msl_ft, req.min_agl_ft,
+                req.max_detour_factor, req.max_climb_fpm, req.max_descent_fpm,
+                req.avoid_airspace, req.obstacle_radius_nm, req.obstacle_clearance_ft)
     airports = load_airports_solver()
     dep = airports.get(req.dep_icao.strip().upper())
     arr = airports.get(req.arr_icao.strip().upper())

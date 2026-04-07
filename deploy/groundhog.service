@@ -1,0 +1,15 @@
+[Unit]
+Description=GroundHog Route Planner Backend
+After=network.target
+
+[Service]
+Type=simple
+User=groundhog
+WorkingDirectory=/opt/groundhog
+ExecStart=/opt/groundhog/.venv/bin/uvicorn mvp_backend.server:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
