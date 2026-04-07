@@ -12,6 +12,8 @@ from mvp_backend.grid_astar import GridSpec, astar_path, astar_path_streaming, p
 from mvp_backend.terrain_provider import meters_to_feet
 from mvp_backend.srtm_local import SRTMProvider
 from mvp_backend import route_cache
+from mvp_backend import terrain_intel
+from mvp_backend.terrain_intel import DEFAULT_AGL_FT as _INTEL_AGL
 
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -103,6 +105,20 @@ def terrain_avoid_leg(
     When max_climb_fpm/max_descent_fpm > 0, also enforces climb/descent rate
     limits per grid edge (terrain-following constraint).
     """
+    # ── terrain intelligence quick-reject ──
+    if max_msl_ft > 0:
+        # Translate user AGL to precomputed AGL, preserving effective ceiling
+        effective_ceiling = max_msl_ft - min_agl_ft
+        intel_msl = effective_ceiling + _INTEL_AGL
+        vi = terrain_intel.check_viability(
+            a.lat, a.lon, b.lat, b.lon, intel_msl, _INTEL_AGL)
+        if vi["analyzed"] and vi["viable"] is False:
+            route_cache.put_leg(a.icao, b.icao, max_msl_ft, min_agl_ft,
+                                max_detour_factor, None, None,
+                                max_climb_fpm, max_descent_fpm,
+                                climb_speed_kt, descent_speed_kt)
+            return None
+
     # ── persistent cache lookup ──
     cached = route_cache.get_leg(a.icao, b.icao, max_msl_ft, min_agl_ft, max_detour_factor,
                                  max_climb_fpm, max_descent_fpm,
@@ -253,9 +269,16 @@ def plan_stop_sequences(
             return True
         return False
 
-    # Realistic planning cushion — 15 % accounts for typical terrain detours
-    # without forcing unnecessary fuel stops.
-    planning_detour = min(max_detour_factor, 1.15)
+    # Realistic planning cushion for terrain detours.  At low ceilings
+    # (< 8000 ft) mountain terrain forces much larger detours, so scale up
+    # the cushion to keep the fuel-stop planner from promising legs that
+    # the terrain A* can't deliver.
+    if max_msl_ft > 0 and max_msl_ft < 8000:
+        # Linear ramp: 1.15 @ 8000 → 1.45 @ 4000 → 1.60 @ 3000
+        terrain_extra = 0.075 * (8000 - max_msl_ft) / 1000.0
+        planning_detour = min(max_detour_factor, 1.15 + terrain_extra)
+    else:
+        planning_detour = min(max_detour_factor, 1.15)
 
     stop_penalty_hr = 0.5
 
@@ -300,6 +323,21 @@ def plan_stop_sequences(
         if code == arr.icao:
             return arr
         return airports[code]
+
+    # Cross-track helper: approximate perpendicular distance from the
+    # dep→arr great-circle line, in NM.  Used to penalise stops that are
+    # far to the side of the intended route even if they aren't "behind".
+    _xt_mid_lat = 0.5 * (dep.lat + arr.lat)
+    _xt_cos = math.cos(math.radians(_xt_mid_lat))
+    _xt_dx_arr = (arr.lon - dep.lon) * _xt_cos
+    _xt_dy_arr = arr.lat - dep.lat
+    _xt_track_len = math.sqrt(_xt_dx_arr ** 2 + _xt_dy_arr ** 2) or 1e-12
+
+    def _cross_track_nm(ap: Airport) -> float:
+        dx = (ap.lon - dep.lon) * _xt_cos
+        dy = ap.lat - dep.lat
+        cross_deg = abs(dx * _xt_dy_arr - dy * _xt_dx_arr) / _xt_track_len
+        return cross_deg * 60.0  # rough deg → NM
 
     # ── Core A* returning (best_cost, prev) so we can reconstruct paths ──
     def _run_astar(edge_penalty: Optional[Dict[tuple, float]] = None):
@@ -362,10 +400,17 @@ def plan_stop_sequences(
                 backtrack_nm = d_nxt_to_arr - d_cur_to_arr
                 backtrack_penalty = 0.0
                 if backtrack_nm > 0 and cruise_speed_kt > 0:
-                    # Cost = twice the backward distance converted to hours
-                    backtrack_penalty = (backtrack_nm * 2.0) / cruise_speed_kt
+                    # Cost = 3× the backward distance converted to hours
+                    backtrack_penalty = (backtrack_nm * 3.0) / cruise_speed_kt
 
-                new_g = cur_g + t_hr + penalty + extra + backtrack_penalty
+                # Off-track penalty: stops far from the dep→arr line are
+                # likely to produce zig-zag multi-leg routes.
+                offtrack_penalty = 0.0
+                if nxt_ap.icao != arr.icao and cruise_speed_kt > 0:
+                    xt = _cross_track_nm(nxt_ap)
+                    offtrack_penalty = (xt * 1.5) / cruise_speed_kt
+
+                new_g = cur_g + t_hr + penalty + extra + backtrack_penalty + offtrack_penalty
                 if new_g < best_cost.get(nxt_ap.icao, float("inf")):
                     best_cost[nxt_ap.icao] = new_g
                     prev_map[nxt_ap.icao] = cur_code
@@ -592,7 +637,7 @@ def plan_route_multi_stop(
             backtrack_nm = d_nxt_to_arr - d_cur_to_arr
             backtrack_penalty = 0.0
             if backtrack_nm > 0 and cruise_speed_kt > 0:
-                backtrack_penalty = (backtrack_nm * 2.0) / cruise_speed_kt
+                backtrack_penalty = (backtrack_nm * 3.0) / cruise_speed_kt
 
             new_t = cur_t + t_hr + backtrack_penalty
             if new_t < best_time.get(nxt_ap.icao, float("inf")):
@@ -895,6 +940,30 @@ def terrain_avoid_leg_streaming(
         _atag += f"|PP{prev_point[0]:.2f},{prev_point[1]:.2f}"
     avoidance_tag = _atag
 
+    # ── terrain intelligence quick-reject ──
+    if max_msl_ft > 0:
+        # Translate user AGL to precomputed AGL, preserving effective ceiling
+        effective_ceiling = max_msl_ft - min_agl_ft
+        intel_msl = effective_ceiling + _INTEL_AGL
+        vi = terrain_intel.check_viability(
+            a.lat, a.lon, b.lat, b.lon, intel_msl, _INTEL_AGL)
+        if vi["analyzed"] and vi["viable"] is False:
+            route_cache.put_leg(a.icao, b.icao, max_msl_ft, min_agl_ft,
+                                max_detour_factor, None, None,
+                                max_climb_fpm, max_descent_fpm,
+                                climb_speed_kt, descent_speed_kt,
+                                avoidance_tag=avoidance_tag)
+            detail = vi["explanation"]
+            if vi.get("min_viable_msl"):
+                # Convert back to user's AGL reference
+                user_min_msl = vi["min_viable_msl"] - _INTEL_AGL + min_agl_ft
+                detail = (f"Not viable at {max_msl_ft:.0f}' MSL with {min_agl_ft:.0f}' AGL clearance. "
+                          f"Minimum viable: {user_min_msl:.0f}' MSL.")
+            yield {"type": "no_path", "reason": "terrain_intel",
+                   "detail": detail,
+                   "min_viable_msl": vi.get("min_viable_msl")}
+            return
+
     # ── persistent cache lookup (instant return, no animation) ──
     cached = route_cache.get_leg(a.icao, b.icao, max_msl_ft, min_agl_ft, max_detour_factor,
                                  max_climb_fpm, max_descent_fpm,
@@ -1048,6 +1117,16 @@ def terrain_avoid_leg_streaming(
     # Determine *why* no path was found so the UI can display a useful hint.
     diag_reason = "unknown"
     diag_detail = ""
+    min_viable_msl = None
+    # Check terrain intel for min viable MSL (use precomputed AGL)
+    if max_msl_ft > 0:
+        effective_ceiling = max_msl_ft - min_agl_ft
+        intel_msl = effective_ceiling + _INTEL_AGL
+        vi = terrain_intel.check_viability(
+            a.lat, a.lon, b.lat, b.lon, intel_msl, _INTEL_AGL)
+        if vi.get("min_viable_msl"):
+            # Convert back to user's AGL reference
+            min_viable_msl = vi["min_viable_msl"] - _INTEL_AGL + min_agl_ft
     # Check if terrain ceiling is the blocker: sample the direct path midpoint
     mid_lat = 0.5 * (a.lat + b.lat)
     mid_lon = 0.5 * (a.lon + b.lon)
@@ -1082,4 +1161,8 @@ def terrain_avoid_leg_streaming(
                         max_climb_fpm, max_descent_fpm,
                         climb_speed_kt, descent_speed_kt,
                         avoidance_tag=avoidance_tag)
-    yield {"type": "no_path", "reason": diag_reason, "detail": diag_detail}
+    fail_event = {"type": "no_path", "reason": diag_reason, "detail": diag_detail}
+    if min_viable_msl is not None:
+        fail_event["min_viable_msl"] = min_viable_msl
+        fail_event["detail"] += f" Minimum viable MSL: {min_viable_msl:.0f}'."
+    yield fail_event

@@ -16,6 +16,7 @@ from mvp_backend.planner import load_airports_solver, plan_route_multi_stop, ter
 from mvp_backend.srtm_local import SRTMProvider
 from mvp_backend.grid_astar import _haversine_nm
 from mvp_backend import route_cache
+from mvp_backend import terrain_intel
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -486,6 +487,42 @@ def elevation_profile(req: ProfileRequest):
 def cache_stats():
     """Return cache and route history statistics."""
     return route_cache.cache_stats()
+
+
+# ── terrain intelligence endpoints ───────────────────────────────────
+
+@app.get("/terrain-intel/summary")
+def terrain_intel_summary():
+    """Return terrain intelligence coverage summary."""
+    return terrain_intel.coverage_summary()
+
+
+@app.get("/terrain-intel/check")
+def terrain_intel_check(
+    from_lat: float = Query(...), from_lon: float = Query(...),
+    to_lat: float = Query(...), to_lon: float = Query(...),
+    msl_ft: float = Query(5000), agl_ft: float = Query(1000),
+):
+    """Quick viability check for a corridor."""
+    return terrain_intel.check_viability(from_lat, from_lon, to_lat, to_lon, msl_ft, agl_ft)
+
+
+@app.post("/terrain-intel/precompute")
+def terrain_intel_precompute(
+    lat_min: int = Query(31), lat_max: int = Query(49),
+    lon_min: int = Query(-125), lon_max: int = Query(-104),
+):
+    """Trigger background terrain precomputation."""
+    def _run():
+        terrain_intel.precompute_region(
+            lat_range=(lat_min, lat_max),
+            lon_range=(lon_min, lon_max),
+        )
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return {"status": "started", "region": {
+        "lat": [lat_min, lat_max], "lon": [lon_min, lon_max]
+    }}
 
 
 # ── obstacles endpoint ───────────────────────────────────────────────
