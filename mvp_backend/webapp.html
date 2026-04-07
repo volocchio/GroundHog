@@ -339,6 +339,10 @@
       return { color, size };
     }
 
+    function _debounce(fn, ms) {
+      let t; return function(...a) { clearTimeout(t); t = setTimeout(() => fn.apply(this, a), ms); };
+    }
+
     async function loadObstacles() {
       const z = map.getZoom();
       obstacleGroup.clearLayers();
@@ -373,8 +377,7 @@
       }
     }
 
-    map.on('moveend', loadObstacles);
-    map.on('zoomend', loadObstacles);
+    map.on('moveend', _debounce(loadObstacles, 300));
 
     /* ── Airspace layer ─────────────────────────────────────────── */
     const AIRSPACE_MIN_ZOOM = 7;
@@ -433,8 +436,7 @@
       }
     }
 
-    map.on('moveend', loadAirspace);
-    map.on('zoomend', loadAirspace);
+    map.on('moveend', _debounce(loadAirspace, 300));
 
     function apLabel(icao) {
       const ap = airportLookup[icao];
