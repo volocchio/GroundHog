@@ -380,9 +380,12 @@ def plan_stop_sequences(
             cur_fuel = _start_fuel if cur_code == dep.icao else usable_fuel_gal
             d_cur_to_arr = _direct_nm(cur_ap, arr)
 
-            neigh: List[tuple[float, Airport]] = []
+            neigh: List[tuple[float, float, Airport]] = []  # (d, t_hr, ap)
             if d_cur_to_arr <= cur_radius:
-                neigh.append((d_cur_to_arr, arr))
+                ok_a, t_a, _ = leg_fuel_ok(d_cur_to_arr * planning_detour,
+                                           cruise_speed_kt, cur_fuel, burn_gph, reserve_min)
+                if ok_a and not _is_blocked(cur_code, arr.icao):
+                    neigh.append((d_cur_to_arr, t_a, arr))
 
             for ap in stop_candidates:
                 if ap.icao == cur_code:
@@ -396,20 +399,20 @@ def plan_stop_sequences(
                     d_ap_to_arr = _direct_nm(ap, arr)
                     if d_ap_to_arr > d_cur_to_arr * 1.15 + 20:
                         continue
-                    neigh.append((d, ap))
+                    if _is_blocked(cur_code, ap.icao):
+                        continue
+                    ok, t_hr, _ = leg_fuel_ok(d * planning_detour,
+                                              cruise_speed_kt, cur_fuel, burn_gph, reserve_min)
+                    if not ok:
+                        continue
+                    neigh.append((d, t_hr, ap))
 
             # Sort by distance-to-destination (forward progress) instead of
             # distance-from-current, so forward airports are explored first.
-            neigh.sort(key=lambda x: _direct_nm(x[1], arr))
+            neigh.sort(key=lambda x: _direct_nm(x[2], arr))
             neigh = neigh[:max_neighbors]
 
-            for d, nxt_ap in neigh:
-                if _is_blocked(cur_code, nxt_ap.icao):
-                    continue
-                ok, t_hr, _ = leg_fuel_ok(d * planning_detour, cruise_speed_kt,
-                                          cur_fuel, burn_gph, reserve_min)
-                if not ok:
-                    continue
+            for d, t_hr, nxt_ap in neigh:
                 penalty = 0.0 if nxt_ap.icao == arr.icao else stop_penalty_hr
                 extra = 0.0
                 if edge_penalty:

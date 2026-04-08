@@ -1,17 +1,19 @@
 import sqlite3
 conn = sqlite3.connect('mvp_backend/airspace_data/airspace.sqlite')
 
-# Check all R and P areas in Nevada (roughly 36-42N, 115-120W)
+print('Classes:', conn.execute('SELECT DISTINCT class FROM airspace').fetchall())
+
+# Check R areas near Camp Pendleton (33.2N, -117.4W area)
 rows = conn.execute(
     "SELECT name, class, lower_alt, lower_code, upper_alt, upper_code, "
     "min_lat, max_lat, min_lon, max_lon "
-    "FROM airspace WHERE class IN ('R','P','MOA') "
-    "AND min_lat < 42 AND max_lat > 36 "
-    "AND min_lon < -115 AND max_lon > -120 "
+    "FROM airspace WHERE class IN ('R','P') "
+    "AND min_lat < 33.6 AND max_lat > 33.0 "
+    "AND min_lon < -117.0 AND max_lon > -117.8 "
     "ORDER BY class, name"
 ).fetchall()
 
-print(f"=== Restricted/Prohibited/MOA in Nevada area ({len(rows)} entries) ===")
+print(f"\n=== R/P areas near Camp Pendleton ({len(rows)} entries) ===")
 for r in rows:
     name, cls, la, lc, ua, uc, mn_lat, mx_lat, mn_lon, mx_lon = r
     floor_str = f"{la} {lc}" if la is not None else "NULL"

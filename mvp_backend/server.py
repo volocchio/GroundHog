@@ -270,12 +270,15 @@ def route_stream(req: RouteRequest):
                     leg_offset = sum(len(s) - 1 for s in all_sequences)
 
                     # Build flattened stops list for route_plan event
+                    # Only include actual fuel stops (exclude -NF waypoints)
                     flat_stops = []
                     for prev_seq in all_sequences:
-                        flat_stops.extend(ap.icao for ap in prev_seq[1:])
-                    flat_stops.extend(ap.icao for ap in sequence[1:-1])
+                        flat_stops.extend(ap.icao for ap in prev_seq[1:] if waypoint_fuel.get(ap.icao, True))
+                    flat_stops.extend(ap.icao for ap in sequence[1:-1] if waypoint_fuel.get(ap.icao, True))
                     for fi in range(si + 1, len(segment_endpoints) - 1):
-                        flat_stops.append(segment_endpoints[fi + 1].icao if fi + 1 < len(segment_endpoints) - 1 else None)
+                        ep = segment_endpoints[fi + 1] if fi + 1 < len(segment_endpoints) - 1 else None
+                        if ep and waypoint_fuel.get(ep.icao, True):
+                            flat_stops.append(ep.icao)
                     flat_stops = [s for s in flat_stops if s and s != arr.icao]
 
                     total_legs_so_far = leg_offset + seg_num_legs
