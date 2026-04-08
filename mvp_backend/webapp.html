@@ -257,6 +257,10 @@
 
     const map = L.map('map', { preferCanvas: true }).setView([39.0, -105.5], 5);
 
+    // Custom pane for airspace polygons — below markers so airports are clickable through airspace
+    map.createPane('airspacePane');
+    map.getPane('airspacePane').style.zIndex = 350;  // below default markerPane (600)
+
     const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 18,
       attribution: '&copy; OpenStreetMap'
@@ -427,6 +431,7 @@
             color: st.color, weight: 2, opacity: 0.8,
             fillColor: st.color, fillOpacity: st.fill,
             dashArray: st.dash,
+            pane: 'airspacePane',
           });
           const lowerStr = a.lower_code === 'SFC' ? 'SFC' : `${a.lower_alt}' ${a.lower_code}`;
           const upperStr = `${a.upper_alt}' ${a.upper_code}`;
@@ -1435,6 +1440,7 @@
       html += '</tr></thead><tbody>';
 
       let tripDist = 0, tripTime = 0, tripFuel = 0;
+      const stopSet = new Set((stops || []).map(s => s.toUpperCase()));
       legs.forEach((leg, i) => {
         tripDist += leg.distNm;
         tripTime += leg.timeHr;
@@ -1442,11 +1448,12 @@
         const fuelRem = usableFuelGal - leg.fuelGal;
         const legMin = Math.round(leg.timeHr * 60);
         const tripMin = Math.round(tripTime * 60);
+        const isFuelStop = stopSet.has((leg.to || '').toUpperCase());
 
         html += '<tr style="border-bottom:1px solid #ddd">';
         html += `<td style="padding:2px 6px">${i + 1}${leg.cached ? ' \u26A1' : ''}</td>`;
         html += `<td style="padding:2px 6px">${apLabel(leg.from)}</td>`;
-        html += `<td style="padding:2px 6px">${apLabel(leg.to)}</td>`;
+        html += `<td style="padding:2px 6px">${apLabel(leg.to)}${isFuelStop ? ' <span title="Fuel stop" style="cursor:help">\u26FD</span>' : ''}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${fmt(leg.distNm, 1)}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${legMin}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${fmt(leg.timeHr, 1)}</td>`;
@@ -1598,6 +1605,8 @@
               const names = event.airports.map(a => `${a.icao} (Class ${a.airspace_class} — ${a.airspace_name})`);
               const warnDiv = document.getElementById('error');
               warnDiv.innerHTML = `<span style="color:#b45309">⚠️ ADS-B Out not equipped — the following airports are inside ADS-B required airspace:<br>${names.join('<br>')}</span>`;
+              setPlanning(false);
+              return;
             }
 
             if (event.type === 'reroute') {
