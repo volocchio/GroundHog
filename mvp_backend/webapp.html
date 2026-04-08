@@ -137,6 +137,9 @@
       <label>Min altitude (ft AGL)</label>
       <input id="minAgl" type="number" value="200" min="0" step="50" />
 
+      <label>Max altitude (ft AGL) — blank = no limit</label>
+      <input id="maxAgl" type="number" value="" min="0" step="50" placeholder="e.g. 500" />
+
       <label>Flight mode</label>
       <div class="radio-group">
         <label><input type="radio" name="flightMode" value="maxmsl" checked /> Fly at max MSL</label>
@@ -296,7 +299,7 @@
       '🛰️ Satellite + Labels': esriImagery,
       '🛣️ Street Map': osmLayer,
       '🛩️ VFR Sectional': vfrSectional,
-      '🌍 Navigation Charts': vfrWorld,
+      '🌍 World Aeronautical': vfrWorld,
     }, {
       '<span class="layer-swatch" style="background:#2060cc"></span> Airspace': airspaceGroup,
       '<span class="layer-swatch" style="background:#cc3300"></span> Obstacles (FAA)': obstacleGroup,
@@ -636,12 +639,12 @@
       // We need the original call params — re-trigger from the stored path
       const depLabel = args[1], arrLabel = args[2];
       const cruiseKt = args[3], maxClimbFpm = args[4], maxDescentFpm = args[5];
-      const climbSpeedKt = args[6], descentSpeedKt = args[7], terrainFollow = args[8], legsList = args[9], avoidAs = args[10] || [];
-      fetchAndDrawProfile(lastProfilePath, data.max_msl_ft, data.min_agl_ft || 200,
+      const climbSpeedKt = args[6], descentSpeedKt = args[7], terrainFollow = args[8], legsList = args[9], avoidAs = args[10] || [], maxAgl = args[11] || 0;
+      fetchAndDrawProfile(lastProfilePath, data.max_msl_ft, data.min_agl_ft || 200, maxAgl,
         depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, avoidAs, legsList);
     });
 
-    async function fetchAndDrawProfile(path, maxMsl, minAgl, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, avoidAirspace, legsList) {
+    async function fetchAndDrawProfile(path, maxMsl, minAgl, maxAgl, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, avoidAirspace, legsList) {
       profileCursorDist = null;  // clear map-click cursor on new profile
       try {
         const body = { path, max_msl_ft: maxMsl, min_agl_ft: minAgl };
@@ -709,12 +712,12 @@
         data._profileObstacles = profileObstacles;
         lastProfilePath = path;  // store for click-to-map
         profileState.zoom = 1; profileState.panX = 0;  // reset zoom on new route
-        drawProfile(data, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, legsList, avoidAirspace);
+        drawProfile(data, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, legsList, avoidAirspace, maxAgl);
       } catch (e) { /* silent */ }
     }
 
-    function drawProfile(data, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, legsList, avoidAirspace) {
-      lastProfileArgs = [data, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, legsList, avoidAirspace];
+    function drawProfile(data, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, legsList, avoidAirspace, maxAgl) {
+      lastProfileArgs = [data, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, legsList, avoidAirspace, maxAgl];
       const wrap = document.getElementById('profileWrap');
       const canvas = document.getElementById('profileCanvas');
       wrap.classList.add('visible');
@@ -811,6 +814,20 @@
       for (let i = 1; i < dist.length; i++) ctx.lineTo(x(dist[i]), y(ground[i] + minAgl));
       for (let i = dist.length - 1; i >= 0; i--) ctx.lineTo(x(dist[i]), y(ground[i]));
       ctx.closePath(); ctx.fill();
+      }
+
+      // Max AGL line (terrain + maxAgl) — dashed orange line above terrain
+      if (maxAgl > 0 && zoomFactor >= 1.3) {
+        ctx.strokeStyle = 'rgba(234, 88, 12, 0.7)';
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([5, 4]);
+        ctx.beginPath();
+        ctx.moveTo(x(dist[0]), y(ground[0] + maxAgl));
+        for (let i = 1; i < dist.length; i++) ctx.lineTo(x(dist[i]), y(ground[i] + maxAgl));
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(234, 88, 12, 0.8)'; ctx.font = '10px system-ui'; ctx.textAlign = 'left';
+        ctx.fillText('Max AGL ' + maxAgl.toLocaleString() + ' ft', pad.left + 4, y(ground[Math.min(5, ground.length - 1)] + maxAgl) - 4);
       }
 
       // Terrain fill
@@ -990,7 +1007,9 @@
           } else if (anyOver) {
             alt = bestOver;           // climb over if can't go under
           }
-          target[i] = Math.min(Math.max(alt, terrainMin), maxMsl);
+          let ceiling = maxMsl;
+          if (maxAgl > 0) ceiling = Math.min(ceiling, ground[i] + maxAgl);
+          target[i] = Math.min(Math.max(alt, terrainMin), ceiling);
         }
 
         // Backward pass first: compute the latest altitude needed at each point
@@ -1014,18 +1033,24 @@
           // Can't be lower than what climb to next point requires
           alt = Math.max(alt, minAltForClimb);
           // Always respect terrain floor and MSL ceiling
-          ba[i] = Math.min(Math.max(alt, terrainMin), maxMsl);
+          let baCeiling = maxMsl;
+          if (maxAgl > 0) baCeiling = Math.min(baCeiling, ground[i] + maxAgl);
+          ba[i] = Math.min(Math.max(alt, terrainMin), baCeiling);
         }
 
         // Forward pass: rate-limited from start, pulled toward backward-pass altitudes
-        const fa = [Math.min(Math.max(ba[0], ground[0] + minAgl), maxMsl)];
+        let faCeiling0 = maxMsl;
+        if (maxAgl > 0) faCeiling0 = Math.min(faCeiling0, ground[0] + maxAgl);
+        const fa = [Math.min(Math.max(ba[0], ground[0] + minAgl), faCeiling0)];
         for (let i = 1; i < dist.length; i++) {
           const segDist = dist[i] - dist[i - 1];
           const prev = fa[i - 1];
           const terrainMin = ground[i] + minAgl;
           const dtClimb = (segDist / climbKt) * 60;
           const dtDescent = (segDist / descentKt) * 60;
-          const ceiling = maxClimbFpm > 0 ? Math.min(prev + maxClimbFpm * dtClimb, maxMsl) : maxMsl;
+          let faCeiling = maxMsl;
+          if (maxAgl > 0) faCeiling = Math.min(faCeiling, ground[i] + maxAgl);
+          const ceiling = maxClimbFpm > 0 ? Math.min(prev + maxClimbFpm * dtClimb, faCeiling) : faCeiling;
           const floor = maxDescentFpm > 0 ? Math.max(prev - maxDescentFpm * dtDescent, terrainMin) : terrainMin;
           // Pull toward backward-pass target (which anticipates future constraints)
           fa.push(Math.min(ceiling, Math.max(ba[i], floor)));
@@ -1097,7 +1122,9 @@
           if (anyUnder) {
             alt = bestUnder;
           }
-          fa[i] = Math.max(alt, terrainMin);
+          let effCeiling = maxMsl;
+          if (maxAgl > 0) effCeiling = Math.min(effCeiling, ground[i] + maxAgl);
+          fa[i] = Math.min(Math.max(alt, terrainMin), effCeiling);
         }
 
         // Gap-fill pass: if two ducking regions are separated by a short gap
@@ -1397,11 +1424,13 @@
       html += '<th style="text-align:left;padding:2px 6px">From</th>';
       html += '<th style="text-align:left;padding:2px 6px">To</th>';
       html += '<th style="text-align:right;padding:2px 6px">Dist<br>NM</th>';
-      html += '<th style="text-align:right;padding:2px 6px">Time</th>';
+      html += '<th style="text-align:right;padding:2px 6px">Time<br>min</th>';
+      html += '<th style="text-align:right;padding:2px 6px">Time<br>hrs</th>';
       html += '<th style="text-align:right;padding:2px 6px">Fuel<br>Burn</th>';
       html += '<th style="text-align:right;padding:2px 6px">Fuel<br>Rem</th>';
       html += '<th style="text-align:right;padding:2px 6px;border-left:2px solid #888">Trip<br>Dist</th>';
-      html += '<th style="text-align:right;padding:2px 6px">Trip<br>Time</th>';
+      html += '<th style="text-align:right;padding:2px 6px">Trip<br>Time<br>min</th>';
+      html += '<th style="text-align:right;padding:2px 6px">Trip<br>Time<br>hrs</th>';
       html += '<th style="text-align:right;padding:2px 6px">Trip<br>Fuel</th>';
       html += '</tr></thead><tbody>';
 
@@ -1419,11 +1448,13 @@
         html += `<td style="padding:2px 6px">${apLabel(leg.from)}</td>`;
         html += `<td style="padding:2px 6px">${apLabel(leg.to)}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${fmt(leg.distNm, 1)}</td>`;
-        html += `<td style="text-align:right;padding:2px 6px">${legMin} min</td>`;
+        html += `<td style="text-align:right;padding:2px 6px">${legMin}</td>`;
+        html += `<td style="text-align:right;padding:2px 6px">${fmt(leg.timeHr, 1)}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${fmt(leg.fuelGal, 1)} gal</td>`;
         html += `<td style="text-align:right;padding:2px 6px;color:${fuelRem < reserveGal ? '#dc2626' : '#16a34a'}">${fmt(fuelRem, 1)} gal</td>`;
         html += `<td style="text-align:right;padding:2px 6px;border-left:2px solid #888">${fmt(tripDist, 1)}</td>`;
-        html += `<td style="text-align:right;padding:2px 6px">${tripMin} min</td>`;
+        html += `<td style="text-align:right;padding:2px 6px">${tripMin}</td>`;
+        html += `<td style="text-align:right;padding:2px 6px">${fmt(tripTime, 1)}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${fmt(tripFuel, 1)} gal</td>`;
         html += '</tr>';
       });
@@ -1434,8 +1465,8 @@
         html += `<td style="padding:2px 6px">${legs.length + 1} \u2716</td>`;
         html += `<td style="padding:2px 6px">${failedLeg.from ? apLabel(failedLeg.from) : '?'}</td>`;
         html += `<td style="padding:2px 6px">${failedLeg.to ? apLabel(failedLeg.to) : '?'}</td>`;
-        html += '<td colspan="4" style="padding:2px 6px">NO PATH FOUND</td>';
-        html += '<td colspan="3" style="border-left:2px solid #888"></td>';
+        html += '<td colspan="5" style="padding:2px 6px">NO PATH FOUND</td>';
+        html += '<td colspan="4" style="border-left:2px solid #888"></td>';
         html += '</tr>';
       }
 
@@ -1444,17 +1475,18 @@
       html += '<tr style="border-top:2px solid #888; font-weight:600">';
       html += `<td colspan="3" style="padding:2px 6px">Total</td>`;
       html += `<td style="text-align:right;padding:2px 6px">${fmt(tripDist, 1)}</td>`;
-      html += `<td style="text-align:right;padding:2px 6px">${Math.round(tripTime * 60)} min</td>`;
+      html += `<td style="text-align:right;padding:2px 6px">${Math.round(tripTime * 60)}</td>`;
+      html += `<td style="text-align:right;padding:2px 6px">${fmt(tripTime, 1)}</td>`;
       html += `<td style="text-align:right;padding:2px 6px">${fmt(tripFuel, 1)} gal</td>`;
       html += `<td style="text-align:right;padding:2px 6px;color:${lastFuelRem < reserveGal ? '#dc2626' : '#16a34a'}">${fmt(lastFuelRem, 1)} gal</td>`;
-      html += '<td colspan="3" style="border-left:2px solid #888"></td>';
+      html += '<td colspan="4" style="border-left:2px solid #888"></td>';
       html += '</tr>';
 
       // reserve row
       html += '<tr style="font-size:0.9em; color:#666">';
-      html += `<td colspan="5" style="padding:2px 6px">Reserve (${fmt(reserveMin, 0)} min)</td>`;
+      html += `<td colspan="6" style="padding:2px 6px">Reserve (${fmt(reserveMin, 0)} min)</td>`;
       html += `<td colspan="2" style="text-align:right;padding:2px 6px">${fmt(reserveGal, 1)} gal</td>`;
-      html += '<td colspan="3" style="border-left:2px solid #888"></td>';
+      html += '<td colspan="4" style="border-left:2px solid #888"></td>';
       html += '</tr>';
 
       html += '</tbody></table>';
@@ -1499,6 +1531,7 @@
         reserve_min: Number(document.getElementById('reserveMin').value),
         min_agl_ft: Number(document.getElementById('minAgl').value),
         max_msl_ft: Number(document.getElementById('maxMsl').value),
+        max_agl_ft: Number(document.getElementById('maxAgl').value) || 0,
         required_fuel: document.getElementById('fuelType').value,
         max_detour_factor: Number(document.getElementById('detour').value),
         max_climb_fpm: Number(document.getElementById('maxClimb').value) || 0,
@@ -1686,7 +1719,7 @@
                   failedLeg: { from: event.from, to: event.to },
                 });
                 if (allCoords.length >= 2) {
-                  fetchAndDrawProfile(allCoords, payload.max_msl_ft, payload.min_agl_ft, payload.dep_icao, payload.arr_icao,
+                  fetchAndDrawProfile(allCoords, payload.max_msl_ft, payload.min_agl_ft, payload.max_agl_ft || 0, payload.dep_icao, payload.arr_icao,
                     payload.cruise_speed_kt, payload.max_climb_fpm, payload.max_descent_fpm,
                     payload.climb_speed_kt, payload.descent_speed_kt, payload.terrain_follow, payload.avoid_airspace, legsList);
                 }
@@ -1720,7 +1753,7 @@
                 if (stops.length) statusMsg += ` | ${stops.length} fuel stop${stops.length !== 1 ? 's' : ''}`;
                 document.getElementById('status').textContent = statusMsg;
 
-                fetchAndDrawProfile(allCoords, payload.max_msl_ft, payload.min_agl_ft, payload.dep_icao, payload.arr_icao,
+                fetchAndDrawProfile(allCoords, payload.max_msl_ft, payload.min_agl_ft, payload.max_agl_ft || 0, payload.dep_icao, payload.arr_icao,
                   payload.cruise_speed_kt, payload.max_climb_fpm, payload.max_descent_fpm,
                   payload.climb_speed_kt, payload.descent_speed_kt, payload.terrain_follow, payload.avoid_airspace, legsList);
               } else {
@@ -1818,7 +1851,7 @@
         // Fetch and draw elevation profile for all legs combined
         const allCoords = data.legs.flatMap(l => l.path || []);
         if (allCoords.length >= 2) {
-          fetchAndDrawProfile(allCoords, payload.max_msl_ft, payload.min_agl_ft, payload.dep_icao, payload.arr_icao,
+          fetchAndDrawProfile(allCoords, payload.max_msl_ft, payload.min_agl_ft, payload.max_agl_ft || 0, payload.dep_icao, payload.arr_icao,
             payload.cruise_speed_kt, payload.max_climb_fpm, payload.max_descent_fpm,
             payload.climb_speed_kt, payload.descent_speed_kt, payload.terrain_follow, payload.avoid_airspace, navLegs);
         }
@@ -1936,6 +1969,7 @@
         reserve_min: payload.reserve_min,
         max_msl_ft: payload.max_msl_ft,
         min_agl_ft: payload.min_agl_ft,
+        max_agl_ft: payload.max_agl_ft,
         required_fuel: payload.required_fuel,
         max_detour_factor: payload.max_detour_factor,
         max_climb_fpm: payload.max_climb_fpm,
@@ -1979,6 +2013,7 @@
       document.getElementById('reserveMin').value = r.reserve_min || 30;
       document.getElementById('maxMsl').value = r.max_msl_ft || 7000;
       document.getElementById('minAgl').value = r.min_agl_ft || 200;
+      document.getElementById('maxAgl').value = r.max_agl_ft || '';
       document.getElementById('fuelType').value = r.required_fuel || '100LL';
       document.getElementById('detour').value = r.max_detour_factor || 1.8;
       detourVal.textContent = r.max_detour_factor || 1.8;

@@ -169,15 +169,31 @@ def _line_of_sight(
     descent_speed_kt: float = 0,
     airspace_cost: Optional[List[List[float]]] = None,
     max_airspace_cost: float = 0.5,
+    max_ridge_excess_ft: float = 1500.0,
 ) -> bool:
     """Check if all cells on the line from a to b are passable and satisfy
-    climb/descent constraints between consecutive cells."""
+    climb/descent constraints between consecutive cells.
+
+    Also rejects shortcuts where intermediate terrain rises more than
+    max_ridge_excess_ft above both endpoints — prevents smoothing from
+    cutting straight over mountain ridges that A* originally routed around.
+    """
     cells = _bresenham_cells(a[0], a[1], b[0], b[1])
     for ci, cj in cells:
         if not passable[ci][cj]:
             return False
         if airspace_cost is not None and airspace_cost[ci][cj] > max_airspace_cost:
             return False
+
+    # Reject shortcuts that cross ridges much higher than endpoints
+    if elev_ft is not None and len(cells) > 2:
+        elev_a = elev_ft[a[0]][a[1]]
+        elev_b = elev_ft[b[0]][b[1]]
+        base = max(elev_a, elev_b)
+        for ci, cj in cells[1:-1]:
+            if elev_ft[ci][cj] - base > max_ridge_excess_ft:
+                return False
+
     # Check climb/descent constraints along the shortcut
     if elev_ft is not None and cruise_kt > 0 and len(cells) > 1:
         for k in range(len(cells) - 1):

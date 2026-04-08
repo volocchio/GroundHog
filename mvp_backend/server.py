@@ -44,6 +44,7 @@ class RouteRequest(BaseModel):
 
     min_agl_ft: float = Field(ge=0)
     max_msl_ft: float = Field(gt=0)
+    max_agl_ft: float = Field(default=0, ge=0)
 
     required_fuel: str = Field(pattern=r"^(100LL|JETA)$")
 
