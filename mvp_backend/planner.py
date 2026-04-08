@@ -389,6 +389,13 @@ def plan_stop_sequences(
                     continue
                 d = _direct_nm(cur_ap, ap)
                 if d <= cur_radius:
+                    # Reject stops that move significantly farther from the
+                    # destination than we are now.  Allow up to 15% backtrack
+                    # (covers slight detours for terrain) but reject anything
+                    # that's a complete double-back.
+                    d_ap_to_arr = _direct_nm(ap, arr)
+                    if d_ap_to_arr > d_cur_to_arr * 1.15 + 20:
+                        continue
                     neigh.append((d, ap))
 
             # Sort by distance-to-destination (forward progress) instead of
@@ -410,20 +417,23 @@ def plan_stop_sequences(
 
                 # Backtrack penalty: if this hop moves AWAY from the
                 # destination, add a time cost proportional to how much
-                # backward progress it represents.
+                # backward progress it represents.  A complete double-back
+                # should be nearly prohibitive.
                 d_nxt_to_arr = _direct_nm(nxt_ap, arr)
                 backtrack_nm = d_nxt_to_arr - d_cur_to_arr
                 backtrack_penalty = 0.0
                 if backtrack_nm > 0 and cruise_speed_kt > 0:
-                    # Cost = 3× the backward distance converted to hours
-                    backtrack_penalty = (backtrack_nm * 3.0) / cruise_speed_kt
+                    # Heavy penalty: 8× the backward distance as hours.
+                    # This strongly discourages any stop that moves away
+                    # from the destination.
+                    backtrack_penalty = (backtrack_nm * 8.0) / cruise_speed_kt
 
                 # Off-track penalty: stops far from the dep→arr line are
                 # likely to produce zig-zag multi-leg routes.
                 offtrack_penalty = 0.0
                 if nxt_ap.icao != arr.icao and cruise_speed_kt > 0:
                     xt = _cross_track_nm(nxt_ap)
-                    offtrack_penalty = (xt * 1.5) / cruise_speed_kt
+                    offtrack_penalty = (xt * 3.0) / cruise_speed_kt
 
                 new_g = cur_g + t_hr + penalty + extra + backtrack_penalty + offtrack_penalty
                 if new_g < best_cost.get(nxt_ap.icao, float("inf")):
@@ -617,6 +627,9 @@ def plan_route_multi_stop(
                 continue
             d = _direct_nm(cur_ap, ap)
             if d <= radius_nm:
+                d_ap_to_arr = _direct_nm(ap, arr)
+                if d_ap_to_arr > d_cur_to_arr * 1.15 + 20:
+                    continue
                 neigh.append((d, ap))
 
         # Sort by distance-to-destination so forward-progress airports are
@@ -652,7 +665,7 @@ def plan_route_multi_stop(
             backtrack_nm = d_nxt_to_arr - d_cur_to_arr
             backtrack_penalty = 0.0
             if backtrack_nm > 0 and cruise_speed_kt > 0:
-                backtrack_penalty = (backtrack_nm * 3.0) / cruise_speed_kt
+                backtrack_penalty = (backtrack_nm * 8.0) / cruise_speed_kt
 
             new_t = cur_t + t_hr + backtrack_penalty
             if new_t < best_time.get(nxt_ap.icao, float("inf")):
@@ -941,6 +954,7 @@ def terrain_avoid_leg_streaming(
     obstacle_radius_nm: float = 0,
     obstacle_clearance_ft: float = 500,
     prev_point: tuple[float, float] | None = None,
+    avoid_borders: bool = True,
 ):
     """Generator that yields A* exploration events for one leg.
 
@@ -960,6 +974,8 @@ def terrain_avoid_leg_streaming(
         _atag += f"|O{obstacle_radius_nm:.1f}_{obstacle_clearance_ft:.0f}"
     if prev_point is not None:
         _atag += f"|PP{prev_point[0]:.2f},{prev_point[1]:.2f}"
+    if avoid_borders:
+        _atag += "|BORDERS"
     avoidance_tag = _atag
 
     # ── terrain intelligence quick-reject ──
@@ -1059,6 +1075,14 @@ def terrain_avoid_leg_streaming(
                 if elev_ft_2d is not None:
                     elev_ft_2d[i][j] = elev_ft[k]
                 k += 1
+
+        # ── Border avoidance: mark cells outside CONUS as impassable ──
+        if avoid_borders:
+            for i in range(n_lat):
+                for j in range(n_lon):
+                    clat, clon = grid.idx_to_latlon(i, j)
+                    if clat > 49.0 or clat < 25.0:
+                        passable[i][j] = False
 
         start = grid.latlon_to_idx(a.lat, a.lon)
         goal = grid.latlon_to_idx(b.lat, b.lon)

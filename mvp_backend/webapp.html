@@ -187,6 +187,11 @@
       <label>Max detour factor: <span id="detourVal">1.8</span>x</label>
       <input id="detour" type="range" min="1" max="5" value="1.8" step="0.1" />
 
+      <div style="display:flex; align-items:center; gap:6px; margin:6px 0 0">
+        <input type="checkbox" id="avoidBorders" checked style="width:auto" />
+        <label for="avoidBorders" style="margin:0; display:inline; font-size:13px">Avoid international border crossings</label>
+      </div>
+
       <details>
         <summary>Advanced (hidden for MVP)</summary>
         <div class="muted">Grid is fixed at ~1 km; corridor expansion is automatic.</div>
@@ -1550,6 +1555,7 @@
         obstacle_clearance_ft: Number(document.getElementById('obsClearance').value) || 500,
         adsb_out: document.getElementById('adsbOut').checked,
         avoid_airspace: [...document.querySelectorAll('#avoidChecks input:checked')].map(cb => cb.value),
+        avoid_borders: document.getElementById('avoidBorders').checked,
         waypoints,
       };
     }
@@ -1990,6 +1996,7 @@
         obstacle_clearance_ft: payload.obstacle_clearance_ft,
         adsb_out: payload.adsb_out,
         avoid_airspace: payload.avoid_airspace,
+        avoid_borders: payload.avoid_borders,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(routes));
       refreshSavedDropdown();
@@ -2040,6 +2047,7 @@
       // ADS-B Out + airspace avoidance
       document.getElementById('adsbOut').checked = r.adsb_out !== false;
       document.getElementById('adsbOut').dispatchEvent(new Event('change'));
+      document.getElementById('avoidBorders').checked = r.avoid_borders !== false;
       if (r.avoid_airspace) {
         document.querySelectorAll('#avoidChecks input[type="checkbox"]:not(:disabled)').forEach(cb => {
           cb.checked = r.avoid_airspace.includes(cb.value);

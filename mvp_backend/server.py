@@ -63,6 +63,7 @@ class RouteRequest(BaseModel):
 
     adsb_out: bool = Field(default=True)
     avoid_airspace: list[str] = Field(default_factory=lambda: ["P", "R"])
+    avoid_borders: bool = Field(default=True)
 
     waypoints: list[str] = Field(default_factory=list)
 
@@ -311,6 +312,7 @@ def route_stream(req: RouteRequest):
                             obstacle_radius_nm=req.obstacle_radius_nm,
                             obstacle_clearance_ft=req.obstacle_clearance_ft,
                             prev_point=prev_pt,
+                            avoid_borders=req.avoid_borders,
                         ):
                             if event.get("type") == "path":
                                 event["leg_index"] = global_leg
