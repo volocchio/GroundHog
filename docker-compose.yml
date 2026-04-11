@@ -7,7 +7,14 @@ services:
     networks:
       - caddy-net
     restart: unless-stopped
+    volumes:
+      - groundhog-srtm:/app/mvp_backend/srtm_cache
+      - groundhog-cache:/app/mvp_backend/route_cache_data
 
 networks:
   caddy-net:
     external: true
+
+volumes:
+  groundhog-srtm:
+  groundhog-cache:
