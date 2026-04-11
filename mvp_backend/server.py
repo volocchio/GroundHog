@@ -35,7 +35,7 @@ app = FastAPI(title="Terrain+Fuel Route Planner MVP")
 
 @app.get("/health")
 def health():
-    \"\"\"Health check endpoint for Docker / monitoring.\"\"\"
+    """Health check endpoint for Docker / monitoring."""
     srtm_count = len([f for f in os.listdir(os.path.join(ROOT, "mvp_backend", "srtm_cache"))
                       if f.endswith(".hgt")]) if os.path.isdir(os.path.join(ROOT, "mvp_backend", "srtm_cache")) else 0
     return {"status": "ok", "srtm_tiles": srtm_count}
