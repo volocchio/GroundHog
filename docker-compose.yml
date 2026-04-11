@@ -1,0 +1,13 @@
+services:
+  groundhog:
+    build: .
+    container_name: groundhog
+    ports:
+      - "8504:8000"
+    networks:
+      - caddy-net
+    restart: unless-stopped
+
+networks:
+  caddy-net:
+    external: true
