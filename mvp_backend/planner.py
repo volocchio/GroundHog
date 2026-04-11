@@ -326,8 +326,13 @@ def plan_stop_sequences(
     ceiling_ft = (max_msl_ft - min_agl_ft) if max_msl_ft > 0 else 0
 
     # Build candidate fuel stops — skip unreachable-altitude airports
+    # Deduplicate: FAA LID aliases cause same Airport under multiple keys
     stop_candidates: List[Airport] = []
+    _seen_ids: set = set()
     for ap in airports.values():
+        if id(ap) in _seen_ids:
+            continue
+        _seen_ids.add(id(ap))
         if ap.facility_use != "PU":
             continue
         if want_100ll and ap.fuel_100ll != 1:
@@ -577,9 +582,13 @@ def plan_route_multi_stop(
         }
     max_leg_nm = max_leg_time * cruise_speed_kt
 
-    # Build candidate stop list once
+    # Build candidate stop list once (deduplicate FAA LID aliases)
     stop_candidates: List[Airport] = []
+    _seen_ids2: set = set()
     for ap in airports.values():
+        if id(ap) in _seen_ids2:
+            continue
+        _seen_ids2.add(id(ap))
         if ap.facility_use != "PU":
             continue
         if want_100ll and ap.fuel_100ll != 1:
