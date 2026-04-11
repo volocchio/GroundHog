@@ -21,6 +21,24 @@ import requests
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
+MAX_RETRIES = 3
+
+
+def _download_with_retry(url: str, timeout: int = 300, **kwargs) -> requests.Response:
+    """Download URL with exponential backoff retries."""
+    for attempt in range(MAX_RETRIES):
+        try:
+            r = requests.get(url, timeout=timeout, **kwargs)
+            r.raise_for_status()
+            return r
+        except (requests.RequestException, IOError) as e:
+            if attempt < MAX_RETRIES - 1:
+                wait = 5 * (2 ** attempt)
+                print(f"  Retry {attempt + 1}/{MAX_RETRIES} after {wait}s: {e}", flush=True)
+                time.sleep(wait)
+            else:
+                raise
+
 # ── FAA NASR download ─────────────────────────────────────────────────
 
 NASR_DISTRIBUTION_URL = "https://soa.smext.faa.gov/apra/nfdc/nasr/chart?edition=current"
@@ -35,7 +53,7 @@ def download_nasr():
 
     # The FAA NASR API returns a JSON with the download URL
     headers = {"Accept": "application/json"}
-    r = requests.get(NASR_DISTRIBUTION_URL, headers=headers, timeout=60)
+    r = _download_with_retry(NASR_DISTRIBUTION_URL, timeout=60, headers=headers)
     r.raise_for_status()
     data = r.json()
 
@@ -46,7 +64,7 @@ def download_nasr():
         download_url = "https://nfdc.faa.gov/webContent/28DaySub/28DaySubscription_Effective_" + _current_cycle() + ".zip"
 
     print(f"  URL: {download_url}", flush=True)
-    r2 = requests.get(download_url, timeout=300, stream=True)
+    r2 = _download_with_retry(download_url, timeout=300, stream=True)
     r2.raise_for_status()
 
     content = r2.content
@@ -93,7 +111,7 @@ def download_dof():
     print("Downloading FAA DOF data...", flush=True)
     os.makedirs(OBS_DIR, exist_ok=True)
 
-    r = requests.get(DOF_URL, timeout=300)
+    r = _download_with_retry(DOF_URL, timeout=300)
     r.raise_for_status()
     print(f"  Downloaded {len(r.content) / 1024 / 1024:.1f} MB", flush=True)
 

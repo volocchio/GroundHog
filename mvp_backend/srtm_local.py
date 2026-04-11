@@ -83,13 +83,17 @@ class SRTMProvider:
         if not os.path.exists(path):
             url = _tile_url(ilat, ilon)
             gz_path = path + ".gz"
+            tmp_gz = gz_path + ".tmp"
             if not os.path.exists(gz_path):
-                r = requests.get(url, timeout=60)
+                r = requests.get(url, timeout=90)
                 r.raise_for_status()
-                with open(gz_path, "wb") as f:
+                with open(tmp_gz, "wb") as f:
                     f.write(r.content)
-            with gzip.open(gz_path, "rb") as gz, open(path, "wb") as out:
+                os.replace(tmp_gz, gz_path)  # atomic rename
+            tmp_hgt = path + ".tmp"
+            with gzip.open(gz_path, "rb") as gz, open(tmp_hgt, "wb") as out:
                 out.write(gz.read())
+            os.replace(tmp_hgt, path)  # atomic rename
 
         size = os.path.getsize(path)
         # each sample is 2 bytes

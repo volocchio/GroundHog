@@ -2,11 +2,13 @@
 """Pre-download SRTM tiles for CONUS so first routes don't wait on S3.
 
 Run once after container start: python3 -m mvp_backend.prefetch_srtm
-Covers lat 24-50, lon -125 to -66 (CONUS + buffer).  ~700 tiles, ~1.5 GB.
+Covers lat 24-50, lon -125 to -66 (CONUS + buffer).  ~1500 tiles, ~1.5 GB.
+Uses concurrent downloads for speed.  Retries transient failures.
 """
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from mvp_backend.srtm_local import SRTMProvider
 
@@ -16,43 +18,71 @@ CACHE = os.path.join(ROOT, "mvp_backend", "srtm_cache")
 LAT_MIN, LAT_MAX = 24, 50   # Florida Keys to Canadian border
 LON_MIN, LON_MAX = -125, -66  # Pacific coast to Atlantic coast
 
+MAX_RETRIES = 3
+MAX_WORKERS = 8  # concurrent download threads
+
+
+def _tile_path(lat: int, lon: int) -> str:
+    ns = "N" if lat >= 0 else "S"
+    ew = "E" if lon >= 0 else "W"
+    return os.path.join(CACHE, f"{ns}{abs(lat):02d}{ew}{abs(lon):03d}.hgt")
+
+
+def _fetch_one(provider: SRTMProvider, lat: int, lon: int) -> str:
+    """Download a single tile with retries.  Returns status string."""
+    if os.path.exists(_tile_path(lat, lon)):
+        return "cached"
+    for attempt in range(MAX_RETRIES):
+        try:
+            provider._load_tile(lat, lon)
+            return "downloaded"
+        except Exception as e:
+            if "404" in str(e) or "403" in str(e):
+                return "ocean"  # no tile (ocean / outside coverage)
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(2 ** attempt)  # exponential backoff
+                continue
+            print(f"  WARN: tile ({lat},{lon}) failed after {MAX_RETRIES} attempts: {e}",
+                  file=sys.stderr, flush=True)
+            return "failed"
+    return "failed"
+
 
 def main():
+    os.makedirs(CACHE, exist_ok=True)
     provider = SRTMProvider(cache_dir=CACHE)
-    total = (LAT_MAX - LAT_MIN) * (LON_MAX - LON_MIN)
-    done = 0
-    skipped = 0
-    failed = 0
+
+    tiles = [(lat, lon)
+             for lat in range(LAT_MIN, LAT_MAX)
+             for lon in range(LON_MIN, LON_MAX)]
+    total = len(tiles)
+    cached = downloaded = ocean = failed = 0
     t0 = time.time()
 
-    for lat in range(LAT_MIN, LAT_MAX):
-        for lon in range(LON_MIN, LON_MAX):
-            done += 1
-            # Check if already cached
-            ns = "N" if lat >= 0 else "S"
-            ew = "E" if lon >= 0 else "W"
-            hgt = os.path.join(CACHE, f"{ns}{abs(lat):02d}{ew}{abs(lon):03d}.hgt")
-            if os.path.exists(hgt):
-                skipped += 1
-                continue
-            try:
-                provider._load_tile(lat, lon)
-                if done % 20 == 0:
-                    elapsed = time.time() - t0
-                    pct = done / total * 100
-                    print(f"  [{pct:5.1f}%] {done}/{total} tiles  "
-                          f"({skipped} cached, {failed} failed)  "
-                          f"{elapsed:.0f}s elapsed", flush=True)
-            except Exception as e:
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        futures = {pool.submit(_fetch_one, provider, lat, lon): (lat, lon)
+                   for lat, lon in tiles}
+        for i, fut in enumerate(as_completed(futures), 1):
+            status = fut.result()
+            if status == "cached":
+                cached += 1
+            elif status == "downloaded":
+                downloaded += 1
+            elif status == "ocean":
+                ocean += 1
+            else:
                 failed += 1
-                # Ocean tiles return 404 — that's fine
-                if "404" not in str(e):
-                    print(f"  WARN: tile N{lat} W{abs(lon)} failed: {e}",
-                          file=sys.stderr, flush=True)
+            if i % 50 == 0 or i == total:
+                elapsed = time.time() - t0
+                pct = i / total * 100
+                print(f"  [{pct:5.1f}%] {i}/{total}  "
+                      f"{cached} cached, {downloaded} new, "
+                      f"{ocean} ocean, {failed} failed  "
+                      f"{elapsed:.0f}s", flush=True)
 
     elapsed = time.time() - t0
-    print(f"\nDone: {done} tiles checked, {skipped} cached, "
-          f"{done - skipped - failed} downloaded, {failed} failed (ocean).  "
+    print(f"\nDone: {total} tiles, {cached} cached, "
+          f"{downloaded} downloaded, {ocean} ocean, {failed} failed.  "
           f"{elapsed:.0f}s total.", flush=True)
 
 

@@ -15,8 +15,8 @@ COPY . ./
 
 RUN chmod +x /app/entrypoint.sh
 
-# Persistent data directories (mount as volumes)
-VOLUME ["/app/mvp_backend/srtm_cache"]
+# Persistent data directories (mount as Docker volumes)
+VOLUME ["/app/mvp_backend/srtm_cache", "/app/mvp_backend/obstacle_data", "/app/mvp_backend/airspace_data", "/app/faa_nasr"]
 
 EXPOSE 8000
 
