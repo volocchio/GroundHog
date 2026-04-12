@@ -266,7 +266,11 @@ def route_stream(req: RouteRequest):
                 )
 
                 if not sequences_pool:
-                    yield f"data: {json.dumps({'type': 'no_path', 'message': f'No fuel-feasible route found for segment {seg_dep.icao} → {seg_arr.icao} (detour {eff_detour:.1f}x, attempt {attempt+1}/{max_retries+1}).'})}\n\n"
+                    if attempt < max_retries:
+                        yield f"data: {json.dumps({'type': 'reroute', 'message': f'No fuel-feasible route for {seg_dep.icao} → {seg_arr.icao} (detour {eff_detour:.1f}x, attempt {attempt+1}/{max_retries+1}) — widening search...', 'blocked': [list(p) for p in blocked_pairs], 'keep_legs': sum(len(s) - 1 for s in all_sequences)})}\n\n"
+                        continue
+                    # All retries exhausted
+                    yield f"data: {json.dumps({'type': 'no_path', 'message': f'No fuel-feasible route found for segment {seg_dep.icao} → {seg_arr.icao} after {max_retries+1} attempts (max detour {eff_detour:.1f}x).'})}\n\n"
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
                     return
 
