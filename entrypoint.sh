@@ -7,6 +7,13 @@ set -e
 trap 'kill -TERM $(jobs -p) 2>/dev/null; wait' TERM INT
 
 echo "=== GroundHog startup $(date -u) ==="
+
+# Rebuild airports_solver.csv from FAA NASR volume data if available
+if [ -f /app/faa_nasr/extract/APT.txt ]; then
+    echo "Rebuilding airports_solver.csv from FAA NASR data..."
+    python3 -m mvp_backend.build_airports_solver 2>&1 || echo "WARN: CSV rebuild failed (using bundled copy)"
+fi
+
 echo "  SRTM tiles: $(ls /app/mvp_backend/srtm_cache/*.hgt 2>/dev/null | wc -l) cached"
 echo "  Airports:   $(wc -l < /app/mvp_backend/airports_solver.csv 2>/dev/null || echo 0) rows"
 echo "  Obstacles:  $(python3 -c "import sqlite3,os; p='/app/mvp_backend/obstacle_data/obstacles.sqlite'; print(sqlite3.connect(p).execute('SELECT COUNT(*) FROM obstacles').fetchone()[0]) if os.path.exists(p) else print(0)" 2>/dev/null)"
