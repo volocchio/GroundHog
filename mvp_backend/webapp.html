@@ -102,6 +102,10 @@
       <label>Departure ICAO</label>
       <input id="dep" value="KSZT" />
 
+      <div style="display:flex; justify-content:center; margin:4px 0 -4px 0;">
+        <button type="button" id="swapBtn" onclick="swapDepArr()" style="width:auto; margin:0; padding:4px 18px; font-size:13px; background:#f3f4f6; color:#374151; border:1px solid #d1d5db; border-radius:8px; cursor:pointer; display:inline-flex; align-items:center; gap:4px;" title="Swap departure &amp; arrival">&#x21C5; Swap</button>
+      </div>
+
       <label>Arrival ICAO</label>
       <input id="arr" value="E60" />
 
@@ -326,6 +330,15 @@
     window.setAirportField = function(field, icao) {
       document.getElementById(field).value = icao;
       map.closePopup();
+    };
+
+    // Swap departure and arrival airports
+    window.swapDepArr = function() {
+      const dep = document.getElementById('dep');
+      const arr = document.getElementById('arr');
+      const tmp = dep.value;
+      dep.value = arr.value;
+      arr.value = tmp;
     };
 
     // Add airport as intermediate waypoint (with or without fuel stop)
@@ -1115,6 +1128,7 @@
 
           for (const z of zones) {
             if (i < z.start_idx || i > z.end_idx) continue;
+            if (avoidAirspace && avoidAirspace.length && !avoidAirspace.includes(z.cls)) continue;
             const zFloor = z.floor_msl[i - z.start_idx];
             const zCeil  = z.ceiling_msl[i - z.start_idx];
             // Does our cruise altitude (maxMsl) penetrate this zone?
