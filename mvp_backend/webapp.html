@@ -1293,11 +1293,21 @@
         ctx.lineTo(px + 4, groundY + 6);
         ctx.closePath();
         ctx.fill();
-        // Airport label above plot
+        // Airport label above plot — align endpoints so they don't clip
         ctx.fillStyle = '#111827';
         ctx.font = 'bold 10px system-ui';
-        ctx.textAlign = 'center';
-        ctx.fillText(ap.label, px, pad.top - 3);
+        const isFirst = (ap === visibleMarkers[0]);
+        const isLast  = (ap === visibleMarkers[visibleMarkers.length - 1]);
+        if (isFirst && !isLast) {
+          ctx.textAlign = 'left';
+          ctx.fillText(ap.label, px, pad.top - 3);
+        } else if (isLast && !isFirst) {
+          ctx.textAlign = 'right';
+          ctx.fillText(ap.label, px, pad.top - 3);
+        } else {
+          ctx.textAlign = 'center';
+          ctx.fillText(ap.label, px, pad.top - 3);
+        }
         // Elevation label — only when zoomed in or few airports
         if (showElevation) {
           ctx.fillStyle = '#6b7280';
