@@ -1095,11 +1095,14 @@
         const fa = new Array(dist.length);
 
         // Build list of sample indices where we must be at ground level (airports)
+        // Scale cumulative leg distances to match profile path distance
         const apIndices = new Set();
         if (legsList && legsList.length > 0) {
+          const rawTotal = legsList.reduce((s, l) => s + l.distNm, 0);
+          const scale = rawTotal > 0 ? maxDist / rawTotal : 1;
           let cumDist = 0;
           for (let li = 0; li <= legsList.length; li++) {
-            const targetDist = cumDist;
+            const targetDist = cumDist * scale;
             let bestIdx = 0, bestDelta = Infinity;
             for (let i = 0; i < dist.length; i++) {
               const d = Math.abs(dist[i] - targetDist);
@@ -1247,13 +1250,17 @@
       }
 
       // ── Airport markers at each leg boundary (drawn last, on top) ──
+      // Scale leg distances so the last airport lands exactly at maxDist
+      // (A* path distance can differ from summed great-circle leg distances)
       const airportMarkers = [];  // {dist, label}
       if (legsList && legsList.length > 0) {
+        const rawTotal = legsList.reduce((s, l) => s + l.distNm, 0);
+        const scale = rawTotal > 0 ? maxDist / rawTotal : 1;
         let cumDist = 0;
         airportMarkers.push({ dist: 0, label: legsList[0].from || depLabel });
         for (const leg of legsList) {
           cumDist += leg.distNm;
-          airportMarkers.push({ dist: cumDist, label: leg.to || arrLabel });
+          airportMarkers.push({ dist: cumDist * scale, label: leg.to || arrLabel });
         }
       } else {
         airportMarkers.push({ dist: 0, label: depLabel });
