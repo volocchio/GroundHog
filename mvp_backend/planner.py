@@ -5,6 +5,7 @@ import json
 import math
 import os
 import sqlite3
+import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -110,6 +111,7 @@ def terrain_avoid_leg(
     cruise_speed_kt: float = 0,
     climb_speed_kt: float = 0,
     descent_speed_kt: float = 0,
+    timeout_s: float = 90.0,
 ) -> Optional[LegResult]:
     """Find terrain-avoiding path between airports using grid A*.
 
@@ -117,6 +119,7 @@ def terrain_avoid_leg(
     When max_climb_fpm/max_descent_fpm > 0, also enforces climb/descent rate
     limits per grid edge (terrain-following constraint).
     """
+    _deadline = time.monotonic() + timeout_s
     # ── terrain intelligence quick-reject ──
     # Only hard-reject when the precomputed data found a *specific* minimum
     # viable altitude (proving the data covers the corridor).  When
@@ -153,13 +156,23 @@ def terrain_avoid_leg(
     ceiling_ft = max_msl_ft - min_agl_ft
 
     mid_lat = 0.5 * (a.lat + b.lat)
-    dlat = cell_km * _deg_per_km_lat()
-    dlon = cell_km * _deg_per_km_lon(mid_lat)
+
+    # Adaptive cell size: coarsen for long legs to keep grid manageable
+    eff_cell_km = cell_km
+    if direct_km > 400:
+        eff_cell_km = max(cell_km, 2.0)
+    elif direct_km > 200:
+        eff_cell_km = max(cell_km, 1.5)
+
+    dlat = eff_cell_km * _deg_per_km_lat()
+    dlon = eff_cell_km * _deg_per_km_lon(mid_lat)
 
     # Scale initial margin so the grid captures alternate routes around
     # large obstacles (e.g. mountain ranges perpendicular to the track).
     margin_km = max(initial_margin_km, direct_km * 0.55)
     while margin_km <= max_margin_km:
+        if time.monotonic() > _deadline:
+            break  # timeout — treat as failure
         # bbox expanded
         min_lat = min(a.lat, b.lat) - margin_km * _deg_per_km_lat()
         max_lat = max(a.lat, b.lat) + margin_km * _deg_per_km_lat()
@@ -170,7 +183,7 @@ def terrain_avoid_leg(
         n_lon = int(math.ceil((max_lon - min_lon) / dlon)) + 1
 
         # Adaptive cell coarsening: if grid too large, increase cell size
-        _MAX_CELLS = 1_000_000
+        _MAX_CELLS = 500_000
         _dlat, _dlon = dlat, dlon
         while n_lat * n_lon > _MAX_CELLS:
             _dlat *= 1.25
@@ -197,6 +210,9 @@ def terrain_avoid_leg(
                 if elev_ft_2d is not None:
                     elev_ft_2d[i][j] = elev_ft[k]
                 k += 1
+
+        if time.monotonic() > _deadline:
+            break  # timeout after grid build
 
         start = grid.latlon_to_idx(a.lat, a.lon)
         goal = grid.latlon_to_idx(b.lat, b.lon)
@@ -1049,8 +1065,16 @@ def terrain_avoid_leg_streaming(
     ceiling_ft = max_msl_ft - min_agl_ft
 
     mid_lat = 0.5 * (a.lat + b.lat)
-    dlat = cell_km * _deg_per_km_lat()
-    dlon = cell_km * _deg_per_km_lon(mid_lat)
+
+    # Adaptive cell size: coarsen for long legs to keep grid manageable
+    eff_cell_km = cell_km
+    if direct_km > 400:
+        eff_cell_km = max(cell_km, 2.0)
+    elif direct_km > 200:
+        eff_cell_km = max(cell_km, 1.5)
+
+    dlat = eff_cell_km * _deg_per_km_lat()
+    dlon = eff_cell_km * _deg_per_km_lon(mid_lat)
 
     # Scale initial margin so the grid captures alternate routes around
     # large obstacles (e.g. mountain ranges perpendicular to the track).
@@ -1071,7 +1095,7 @@ def terrain_avoid_leg_streaming(
         n_lon = int(math.ceil((max_lon - min_lon) / dlon)) + 1
 
         # Adaptive cell coarsening: if grid too large, increase cell size
-        _MAX_CELLS = 1_000_000
+        _MAX_CELLS = 500_000
         _dlat, _dlon = dlat, dlon
         while n_lat * n_lon > _MAX_CELLS:
             _dlat *= 1.25
