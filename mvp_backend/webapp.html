@@ -1411,10 +1411,16 @@
       return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
-    function renderNavLog({legs, usableFuelGal, reserveMin, burnGph, depLabel, arrLabel, stops, failedLeg}) {
+    function renderNavLog({legs, usableFuelGal, reserveMin, burnGph, depLabel, arrLabel, stops, failedLeg, nfStops}) {
       const reserveGal = (reserveMin / 60) * burnGph;
       const resultsDiv = document.getElementById('results');
-      const route = apLabel(depLabel) + (stops && stops.length ? ' → ' + stops.map(s => apLabel(s)).join(' → ') : '') + ' → ' + apLabel(arrLabel);
+      const _nf = nfStops || new Set();
+      // Build route header from legs to include NF waypoints
+      const intermediates = legs.length > 1 ? legs.slice(0, -1).map(l => l.to) : (legs.length === 1 && stops && stops.length ? stops : []);
+      const route = apLabel(depLabel) + (intermediates.length ? ' → ' + intermediates.map(s => {
+        const isNF = _nf.has((s || '').toUpperCase());
+        return apLabel(s) + (isNF ? ' <span title="No fuel" style="color:#dc2626;font-size:0.75em;cursor:help">NF</span>' : ' \u26FD');
+      }).join(' → ') : '') + ' → ' + apLabel(arrLabel);
 
       // Great circle distance between dep and arr
       const depAp = airportLookup[depLabel], arrAp = airportLookup[arrLabel];
@@ -1445,20 +1451,29 @@
       html += '</tr></thead><tbody>';
 
       let tripDist = 0, tripTime = 0, tripFuel = 0;
+      let currentFuel = usableFuelGal;
       const stopSet = new Set((stops || []).map(s => s.toUpperCase()));
       legs.forEach((leg, i) => {
         tripDist += leg.distNm;
         tripTime += leg.timeHr;
         tripFuel += leg.fuelGal;
-        const fuelRem = usableFuelGal - leg.fuelGal;
+        currentFuel -= leg.fuelGal;
+        const fuelRem = currentFuel;
         const legMin = Math.round(leg.timeHr * 60);
         const tripMin = Math.round(tripTime * 60);
-        const isFuelStop = stopSet.has((leg.to || '').toUpperCase());
+        const toCode = (leg.to || '').toUpperCase();
+        const isFuelStop = stopSet.has(toCode);
+        const isNF = _nf.has(toCode);
+        const isLastLeg = (i === legs.length - 1);
+
+        let toIcon = '';
+        if (isFuelStop) toIcon = ' <span title="Fuel stop" style="cursor:help">\u26FD</span>';
+        else if (isNF) toIcon = ' <span title="No fuel" style="color:#dc2626;font-size:0.75em;cursor:help">NF</span>';
 
         html += '<tr style="border-bottom:1px solid #ddd">';
         html += `<td style="padding:2px 6px">${i + 1}${leg.cached ? ' \u26A1' : ''}</td>`;
         html += `<td style="padding:2px 6px">${apLabel(leg.from)}</td>`;
-        html += `<td style="padding:2px 6px">${apLabel(leg.to)}${isFuelStop ? ' <span title="Fuel stop" style="cursor:help">\u26FD</span>' : ''}</td>`;
+        html += `<td style="padding:2px 6px">${apLabel(leg.to)}${toIcon}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${fmt(leg.distNm, 1)}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${legMin}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${fmt(leg.timeHr, 1)}</td>`;
@@ -1469,6 +1484,11 @@
         html += `<td style="text-align:right;padding:2px 6px">${fmt(tripTime, 1)}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${fmt(tripFuel, 1)} gal</td>`;
         html += '</tr>';
+
+        // Refuel at this stop unless it's NF or the final destination
+        if (!isLastLeg && !isNF) {
+          currentFuel = usableFuelGal;
+        }
       });
 
       // failed leg row (if route aborted mid-way)
@@ -1483,7 +1503,7 @@
       }
 
       // totals row
-      const lastFuelRem = legs.length ? usableFuelGal - legs[legs.length - 1].fuelGal : usableFuelGal;
+      const lastFuelRem = currentFuel;
       html += '<tr style="border-top:2px solid #888; font-weight:600">';
       html += `<td colspan="3" style="padding:2px 6px">Total</td>`;
       html += `<td style="text-align:right;padding:2px 6px">${fmt(tripDist, 1)}</td>`;
@@ -1732,6 +1752,7 @@
                   arrLabel: payload.arr_icao,
                   stops,
                   failedLeg: { from: event.from, to: event.to },
+                  nfStops: new Set((payload.waypoints || []).filter(w => w.toUpperCase().endsWith('-NF')).map(w => w.slice(0, -3).toUpperCase())),
                 });
                 if (allCoords.length >= 2) {
                   fetchAndDrawProfile(allCoords, payload.max_msl_ft, payload.min_agl_ft, payload.max_agl_ft || 0, payload.dep_icao, payload.arr_icao,
@@ -1754,6 +1775,7 @@
                   depLabel: payload.dep_icao,
                   arrLabel: payload.arr_icao,
                   stops,
+                  nfStops: new Set((payload.waypoints || []).filter(w => w.toUpperCase().endsWith('-NF')).map(w => w.slice(0, -3).toUpperCase())),
                 });
 
                 const cachedCount = legsList.filter(l => l.cached).length;
@@ -1829,6 +1851,7 @@
           depLabel: payload.dep_icao,
           arrLabel: payload.arr_icao,
           stops: data.stops || [],
+          nfStops: new Set((payload.waypoints || []).filter(w => w.toUpperCase().endsWith('-NF')).map(w => w.slice(0, -3).toUpperCase())),
         });
 
         document.getElementById('status').textContent = '';
