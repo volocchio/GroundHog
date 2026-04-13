@@ -60,12 +60,18 @@ def load_airports_solver(path: str = DATA_AIRPORTS_SOLVER) -> Dict[str, Airport]
             # Also index by LID so users can type either
             if lid and lid not in out:
                 out[lid] = ap
-    # Add FAA LID aliases: K-prefixed US ICAO -> 3-char LID (e.g. KE60 -> E60)
+    # Add FAA LID aliases: K-prefixed US ICAO -> 3-char LID (e.g. KSZT -> SZT)
     for icao_code, ap_obj in list(out.items()):
         if len(icao_code) == 4 and icao_code.startswith("K") and icao_code[1:].isalnum():
             lid_alias = icao_code[1:]
             if lid_alias not in out:
                 out[lid_alias] = ap_obj
+    # Reverse aliases: 3-char US LID -> K-prefixed ICAO (e.g. E60 -> KE60)
+    for code, ap_obj in list(out.items()):
+        if len(code) == 3 and code.isalnum():
+            k_alias = "K" + code
+            if k_alias not in out:
+                out[k_alias] = ap_obj
     return out
 
 
