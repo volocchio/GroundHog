@@ -141,9 +141,9 @@
 
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:4px 12px; font-size:0.85em; margin-top:6px">
         <label style="margin:0">OAT (°C)</label>
-        <label style="margin:0">Gross weight (lb)</label>
+        <label style="margin:0">TOW (lb)</label>
         <input id="oatC" type="number" value="15" step="1" title="Outside air temperature" />
-        <input id="grossWeightLb" type="number" value="0" min="0" step="10" placeholder="0 = max GW" title="0 = use max gross weight" />
+        <input id="grossWeightLb" type="number" value="0" min="0" step="10" placeholder="0 = MTOW" title="Your takeoff weight — use 0 for MTOW" />
       </div>
 
       <label>Reserve (minutes)</label>
@@ -158,7 +158,7 @@
       <label>Fuel burn (gph)</label>
       <input id="burnGph" type="number" value="13" min="0" step="0.1" />
 
-      <label>Max altitude (ft MSL)</label>
+      <label>Max target altitude (ft MSL)</label>
       <input id="maxMsl" type="number" value="7000" min="0" step="50" />
 
       <label>Min altitude (ft AGL)</label>
