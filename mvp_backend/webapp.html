@@ -829,9 +829,7 @@
       if (!ac) { detail.textContent = ''; return; }
       const parts = [`Base: ${ac.base_type || 'Manual'}`];
       if (ac.bew_lb) parts.push(`BEW: ${ac.bew_lb} lb`);
-      if (ac.usable_fuel_gal) parts.push(`Fuel: ${ac.usable_fuel_gal} gal`);
-      if (ac.cruise_speed_kt) parts.push(`Cruise: ${ac.cruise_speed_kt} kt`);
-      if (ac.fuel_burn_gph) parts.push(`Burn: ${ac.fuel_burn_gph} gph`);
+      if (ac.pilot_lb) parts.push(`Pilot: ${ac.pilot_lb} lb`);
       if (ac.notes) parts.push(ac.notes);
       detail.textContent = parts.join(' • ');
     }
@@ -848,24 +846,8 @@
       const aircraft = getSavedAircraft();
       aircraft[cleanReg] = {
         base_type: heliType,
-        cruise_speed_kt: Number(document.getElementById('speedKt').value),
-        usable_fuel_gal: Number(document.getElementById('usableFuel').value),
-        fuel_burn_gph: Number(document.getElementById('burnGph').value),
-        reserve_min: Number(document.getElementById('reserveMin').value),
-        fuel_type: document.getElementById('fuelType').value,
-        max_msl_ft: Number(document.getElementById('maxMsl').value),
-        gross_weight_lb: Number(document.getElementById('grossWeightLb').value) || 0,
         bew_lb: Number(document.getElementById('bewLb').value) || 0,
         pilot_lb: Number(document.getElementById('pilotLb').value) || 0,
-        pax_lb: Number(document.getElementById('paxLb').value) || 0,
-        cargo_lb: Number(document.getElementById('cargoLb').value) || 0,
-        fuel_load_gal: Number(document.getElementById('fuelLoadGal').value) || 0,
-        max_climb_fpm: Number(document.getElementById('maxClimb').value) || 0,
-        max_descent_fpm: Number(document.getElementById('maxDescent').value) || 0,
-        climb_speed_kt: Number(document.getElementById('climbSpeedKt').value) || 0,
-        descent_speed_kt: Number(document.getElementById('descentSpeedKt').value) || 0,
-        adsb_out: document.getElementById('adsbOut').checked,
-        notes: '',
       };
       localStorage.setItem(AIRCRAFT_KEY, JSON.stringify(aircraft));
       refreshAircraftDropdown();
@@ -898,27 +880,9 @@
         updateHeliInfo();
       }
 
-      // Then overlay with saved overrides
-      if (ac.cruise_speed_kt) document.getElementById('speedKt').value = ac.cruise_speed_kt;
-      if (ac.usable_fuel_gal) document.getElementById('usableFuel').value = ac.usable_fuel_gal;
-      if (ac.fuel_burn_gph) document.getElementById('burnGph').value = ac.fuel_burn_gph;
-      if (ac.reserve_min != null) document.getElementById('reserveMin').value = ac.reserve_min;
-      if (ac.fuel_type) document.getElementById('fuelType').value = ac.fuel_type;
-      if (ac.max_msl_ft) document.getElementById('maxMsl').value = ac.max_msl_ft;
+      // Overlay with saved BEW & pilot weight
       if (ac.bew_lb) document.getElementById('bewLb').value = ac.bew_lb;
       if (ac.pilot_lb != null) document.getElementById('pilotLb').value = ac.pilot_lb;
-      if (ac.pax_lb != null) document.getElementById('paxLb').value = ac.pax_lb;
-      if (ac.cargo_lb != null) document.getElementById('cargoLb').value = ac.cargo_lb;
-      if (ac.fuel_load_gal != null) document.getElementById('fuelLoadGal').value = ac.fuel_load_gal;
-      if (ac.gross_weight_lb) document.getElementById('grossWeightLb').value = ac.gross_weight_lb;
-      if (ac.max_climb_fpm) document.getElementById('maxClimb').value = ac.max_climb_fpm;
-      if (ac.max_descent_fpm) document.getElementById('maxDescent').value = ac.max_descent_fpm;
-      if (ac.climb_speed_kt) document.getElementById('climbSpeedKt').value = ac.climb_speed_kt;
-      if (ac.descent_speed_kt) document.getElementById('descentSpeedKt').value = ac.descent_speed_kt;
-      if (ac.adsb_out != null) {
-        document.getElementById('adsbOut').checked = ac.adsb_out;
-        document.getElementById('adsbOut').dispatchEvent(new Event('change'));
-      }
       updateWeightBuildUp();
     });
 
