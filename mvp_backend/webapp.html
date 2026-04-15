@@ -565,11 +565,13 @@
       try {
         const res = await fetch(`/elevation?lat=${lat}&lon=${lon}`);
         const data = await res.json();
-        const elevFt = Math.round(data.elev_ft);
         const label = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+        const elevLine = data.elev_ft != null
+          ? `Elev: ${Math.round(data.elev_ft)} ft (SRTM)`
+          : `<i>Elevation data not available</i>`;
 
         popup.setContent(
-          `<b>Custom Point</b><br>${label}<br>Elev: ${elevFt} ft (SRTM)`
+          `<b>Custom Point</b><br>${label}<br>${elevLine}`
           + `<div style="margin-top:6px; display:flex; gap:4px; flex-wrap:wrap">`
           + `<button onclick="setCustomPoint('dep','${code}')" style="padding:4px 8px; font-size:11px; border:1px solid #2563eb; background:#eff6ff; color:#2563eb; border-radius:4px; cursor:pointer">Set Departure</button>`
           + `<button onclick="setCustomPoint('arr','${code}')" style="padding:4px 8px; font-size:11px; border:1px solid #16a34a; background:#f0fdf4; color:#16a34a; border-radius:4px; cursor:pointer">Set Arrival</button>`
@@ -580,7 +582,18 @@
           + `</div>`
         );
       } catch (err) {
-        popup.setContent(`<b>Custom Point</b><br>${lat.toFixed(4)}°, ${lon.toFixed(4)}°<br><i>Elevation unavailable</i>`);
+        const label = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+        popup.setContent(
+          `<b>Custom Point</b><br>${label}<br><i>Elevation data not available</i>`
+          + `<div style="margin-top:6px; display:flex; gap:4px; flex-wrap:wrap">`
+          + `<button onclick="setCustomPoint('dep','${code}')" style="padding:4px 8px; font-size:11px; border:1px solid #2563eb; background:#eff6ff; color:#2563eb; border-radius:4px; cursor:pointer">Set Departure</button>`
+          + `<button onclick="setCustomPoint('arr','${code}')" style="padding:4px 8px; font-size:11px; border:1px solid #16a34a; background:#f0fdf4; color:#16a34a; border-radius:4px; cursor:pointer">Set Arrival</button>`
+          + `</div>`
+          + `<div style="margin-top:4px; display:flex; gap:4px; flex-wrap:wrap">`
+          + `<button onclick="addCustomWaypoint('${code}',false)" style="padding:4px 8px; font-size:11px; border:1px solid #9333ea; background:#faf5ff; color:#9333ea; border-radius:4px; cursor:pointer">Add Stop (land &amp; fuel)</button>`
+          + `<button onclick="addCustomWaypoint('${code}',true)" style="padding:4px 8px; font-size:11px; border:1px solid #6b7280; background:#f9fafb; color:#6b7280; border-radius:4px; cursor:pointer">Add Stop (no fuel)</button>`
+          + `</div>`
+        );
       }
     });
 

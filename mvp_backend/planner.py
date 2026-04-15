@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-from mvp_backend.grid_astar import GridSpec, astar_path, astar_path_streaming, path_nm, smooth_path, densify_path
+from mvp_backend.grid_astar import GridSpec, astar_path, astar_path_streaming, path_nm, smooth_path
 from mvp_backend.terrain_provider import meters_to_feet
 from mvp_backend.srtm_local import SRTMProvider
 from mvp_backend import route_cache
@@ -88,6 +88,24 @@ def _direct_nm(a: Airport, b: Airport) -> float:
     # reuse haversine from grid_astar
     from mvp_backend.grid_astar import _haversine_nm
     return _haversine_nm(a.lat, a.lon, b.lat, b.lon)
+
+
+def _densify_latlon(path: List[Tuple[float, float]], max_step_nm: float = 2.0) -> List[Tuple[float, float]]:
+    """Interpolate lat/lon points along a path so segments are at most max_step_nm apart."""
+    from mvp_backend.grid_astar import _haversine_nm
+    if len(path) <= 1:
+        return list(path)
+    result = [path[0]]
+    for k in range(len(path) - 1):
+        lat0, lon0 = path[k]
+        lat1, lon1 = path[k + 1]
+        seg_nm = _haversine_nm(lat0, lon0, lat1, lon1)
+        n_sub = max(1, int(seg_nm / max_step_nm))
+        for s in range(1, n_sub):
+            t = s / n_sub
+            result.append((lat0 + (lat1 - lat0) * t, lon0 + (lon1 - lon0) * t))
+        result.append(path[k + 1])
+    return result
 
 
 @dataclass
@@ -240,12 +258,13 @@ def terrain_avoid_leg(
                                cruise_kt=cruise_speed_kt,
                                climb_speed_kt=climb_speed_kt,
                                descent_speed_kt=descent_speed_kt)
-        # Re-densify so the path has enough points for profile rendering
-        path_idx = densify_path(grid, path_idx)
 
         dist_nm = path_nm(grid, path_idx)
         if dist_nm <= detour_limit_nm:
-            path_latlon = [grid.idx_to_latlon(i, j) for i, j in path_idx]
+            # Convert smoothed waypoints to lat/lon, then interpolate
+            # at ~2 NM intervals using true lat/lon (not grid-snapped)
+            smoothed_latlon = [grid.idx_to_latlon(i, j) for i, j in path_idx]
+            path_latlon = _densify_latlon(smoothed_latlon, max_step_nm=2.0)
             route_cache.put_leg(a.icao, b.icao, max_msl_ft, min_agl_ft, max_detour_factor, dist_nm, path_latlon,
                                 max_climb_fpm, max_descent_fpm,
                                 climb_speed_kt, descent_speed_kt)

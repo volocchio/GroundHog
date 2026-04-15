@@ -113,6 +113,9 @@ class SRTMProvider:
         out: List[float] = []
         for lat, lon in pts:
             _, ilat, ilon = _tile_name(lat, lon)
-            tile = self._load_tile(ilat, ilon)
-            out.append(tile.elev_m(lat, lon))
+            try:
+                tile = self._load_tile(ilat, ilon)
+                out.append(tile.elev_m(lat, lon))
+            except Exception:
+                out.append(float("nan"))
         return out

@@ -636,8 +636,9 @@ def elevation_at_point(lat: float = Query(...), lon: float = Query(...)):
     from mvp_backend.terrain_provider import meters_to_feet
     provider = SRTMProvider(cache_dir=os.path.join(ROOT, "mvp_backend", "srtm_cache"))
     elev_m = provider.get_one_m(lat, lon)
-    elev_ft = meters_to_feet(elev_m) if elev_m == elev_m else 0.0
-    return {"lat": lat, "lon": lon, "elev_ft": round(elev_ft, 0)}
+    if elev_m != elev_m:  # NaN
+        return {"lat": lat, "lon": lon, "elev_ft": None}
+    return {"lat": lat, "lon": lon, "elev_ft": round(meters_to_feet(elev_m), 0)}
 
 
 # ── cache stats endpoint ─────────────────────────────────────────────
