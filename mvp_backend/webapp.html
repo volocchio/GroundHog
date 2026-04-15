@@ -394,15 +394,16 @@
     function showElevInfo(field, elevFt) {
       const div = document.getElementById(field + 'Elev');
       if (!div) return;
-      if (elevFt == null) { div.textContent = ''; return; }
+      if (elevFt == null) { return; } // leave existing text, don't clear
       const da = daFromElev(elevFt);
       div.textContent = `Field elev: ${Math.round(elevFt)} ft MSL  •  DA: ${da} ft`;
     }
 
-    function updateFieldElevation(field) {
+    function updateFieldElevation(field, retries) {
       const val = document.getElementById(field).value.trim().toUpperCase();
       const div = document.getElementById(field + 'Elev');
       if (!val) { if (div) div.textContent = ''; return; }
+      const retriesLeft = retries != null ? retries : 2;
 
       // ICAO airport
       const ap = airportLookup[val];
@@ -412,11 +413,25 @@
       if (val.startsWith('@')) {
         const parts = val.slice(1).split(',');
         if (parts.length === 2) {
-          if (div) div.textContent = 'Loading…';
+          if (div && !div.textContent) div.textContent = 'Loading…';
           fetch(`/elevation?lat=${parts[0]}&lon=${parts[1]}`)
             .then(r => r.json())
-            .then(d => showElevInfo(field, d.elev_ft))
-            .catch(() => { if (div) div.textContent = ''; });
+            .then(d => {
+              if (d.elev_ft != null) {
+                showElevInfo(field, d.elev_ft);
+              } else if (retriesLeft > 0) {
+                // SRTM tile may still be downloading — retry
+                if (div && !div.textContent.includes('elev')) div.textContent = 'Fetching elevation…';
+                setTimeout(() => updateFieldElevation(field, retriesLeft - 1), 3000);
+              } else {
+                if (div) div.textContent = 'Elevation data not available';
+              }
+            })
+            .catch(() => {
+              if (retriesLeft > 0) {
+                setTimeout(() => updateFieldElevation(field, retriesLeft - 1), 3000);
+              } else if (div) { div.textContent = 'Elevation data not available'; }
+            });
         }
         return;
       }
@@ -2423,6 +2438,10 @@
         });
 
         document.getElementById('status').textContent = '';
+
+        // Refresh elevation/DA now that SRTM tiles are downloaded
+        updateFieldElevation('dep');
+        updateFieldElevation('arr');
 
         // map
         const colors = ['#2563eb', '#16a34a'];
