@@ -633,6 +633,8 @@
       document.getElementById('burnGph').value = d.fuel_burn_gph;
       document.getElementById('fuelType').value = h.fuel_type;
       document.getElementById('grossWeightLb').value = 0;
+      // Re-filter My Aircraft to match the new type
+      refreshAircraftDropdown();
     });
 
     loadHelicopters();
@@ -648,15 +650,19 @@
     function refreshAircraftDropdown() {
       const sel = document.getElementById('savedAircraft');
       const aircraft = getSavedAircraft();
+      const filterType = document.getElementById('heliType').value;
       sel.innerHTML = '<option value="">\u2014 Select saved aircraft \u2014</option>';
       for (const reg of Object.keys(aircraft).sort()) {
         const ac = aircraft[reg];
+        // If a helicopter type is selected, only show aircraft of that type
+        if (filterType && ac.base_type && ac.base_type !== filterType) continue;
         const opt = document.createElement('option');
         opt.value = reg;
         const base = ac.base_type ? ` (${ac.base_type})` : '';
         opt.textContent = `${reg}${base}`;
         sel.appendChild(opt);
       }
+      updateAircraftDetail();
     }
 
     function updateAircraftDetail() {
