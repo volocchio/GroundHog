@@ -139,12 +139,24 @@
         <div id="aircraftDetail" class="muted" style="margin-top:3px; font-size:11px"></div>
       </div>
 
-      <div style="display:grid; grid-template-columns:1fr 1fr; gap:4px 12px; font-size:0.85em; margin-top:6px">
-        <label style="margin:0">OAT (°C)</label>
-        <label style="margin:0">TOW (lb)</label>
-        <input id="oatC" type="number" value="15" step="1" title="Outside air temperature" />
-        <input id="grossWeightLb" type="number" value="0" min="0" step="10" placeholder="0 = MTOW" title="Your takeoff weight — use 0 for MTOW" />
+      <label style="margin:0">OAT (°C)</label>
+      <input id="oatC" type="number" value="15" step="1" title="Outside air temperature" style="margin-bottom:4px" />
+
+      <div id="weightBuildUp" style="margin-top:6px; border:1px solid #d1d5db; border-radius:8px; padding:8px; background:#f9fafb">
+        <div style="font-weight:600; font-size:12px; margin-bottom:6px">Weight Build-Up</div>
+        <div style="display:grid; grid-template-columns:1fr auto; gap:3px 8px; font-size:0.85em; align-items:center">
+          <label style="margin:0" title="Basic Empty Weight from AFM">BEW (lb)</label>
+          <input id="bewLb" type="number" value="0" min="0" step="1" style="width:90px; text-align:right" title="Basic Empty Weight — auto-filled from helicopter type" />
+          <label style="margin:0">Pilot + Pax (lb)</label>
+          <input id="paxLb" type="number" value="170" min="0" step="1" style="width:90px; text-align:right" title="Combined weight of pilot and passengers" />
+          <label style="margin:0">Cargo (lb)</label>
+          <input id="cargoLb" type="number" value="0" min="0" step="1" style="width:90px; text-align:right" title="Baggage, tools, equipment" />
+          <label style="margin:0">Fuel load (gal)</label>
+          <input id="fuelLoadGal" type="number" value="0" min="0" step="0.1" style="width:90px; text-align:right" title="Fuel on board at departure — 0 = full tanks" />
+        </div>
+        <div id="towBar" style="margin-top:8px; font-size:0.82em"></div>
       </div>
+      <input id="grossWeightLb" type="hidden" value="0" />
 
       <label>Reserve (minutes)</label>
       <input id="reserveMin" type="number" value="30" min="0" step="1" />
@@ -633,6 +645,11 @@
         // Pre-select S300C since defaults are S300C
         if (helicopterData['S300C']) sel.value = 'S300C';
         updateHeliInfo();
+        // Populate weight build-up with S300C defaults
+        if (helicopterData['S300C']) {
+          document.getElementById('bewLb').value = helicopterData['S300C'].empty_weight_lb;
+          updateWeightBuildUp();
+        }
       } catch(e) { /* silent */ }
     }
 
@@ -650,6 +667,88 @@
         + `Payload (full fuel): ${h.max_payload_full_fuel_lb} lb`;
     }
 
+    // ── Weight Build-Up ──
+    let _higeCheckTimer = null;
+
+    function updateWeightBuildUp() {
+      const code = document.getElementById('heliType').value;
+      const h = (code && helicopterData[code]) ? helicopterData[code] : null;
+      const bew = Number(document.getElementById('bewLb').value) || 0;
+      const pax = Number(document.getElementById('paxLb').value) || 0;
+      const cargo = Number(document.getElementById('cargoLb').value) || 0;
+      let fuelGal = Number(document.getElementById('fuelLoadGal').value) || 0;
+      const usableFuelGal = Number(document.getElementById('usableFuel').value) || 0;
+      if (fuelGal === 0 && usableFuelGal > 0) fuelGal = usableFuelGal;
+      const fwPG = (h && h.fuel_weight_lb_per_gal) ? h.fuel_weight_lb_per_gal : 6.0;
+      const fuelLb = fuelGal * fwPG;
+      const tow = bew + pax + cargo + fuelLb;
+
+      // Update hidden grossWeightLb
+      document.getElementById('grossWeightLb').value = Math.round(tow);
+
+      const bar = document.getElementById('towBar');
+      if (!h || bew === 0) {
+        bar.innerHTML = tow > 0
+          ? `<div style="font-weight:600">TOW: ${Math.round(tow)} lb</div><div class="muted">Select a helicopter type for limit checks</div>`
+          : '';
+        return;
+      }
+      const mtow = h.max_gross_weight_lb;
+      const pct = Math.min((tow / mtow) * 100, 100);
+      const overMtow = tow > mtow;
+      const barColor = overMtow ? '#dc2626' : pct > 95 ? '#f59e0b' : '#16a34a';
+      const overAmt = overMtow ? tow - mtow : 0;
+
+      let html = `<div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:3px">`;
+      html += `<span style="font-weight:600">TOW: ${Math.round(tow)} lb</span>`;
+      html += `<span style="color:#6b7280">MTOW: ${Math.round(mtow)} lb</span>`;
+      html += `</div>`;
+      html += `<div style="background:#e5e7eb; border-radius:4px; height:8px; overflow:hidden">`;
+      html += `<div style="background:${barColor}; width:${pct}%; height:100%; border-radius:4px; transition:width 0.2s"></div>`;
+      html += `</div>`;
+      if (overMtow) {
+        html += `<div style="color:#dc2626; font-weight:600; margin-top:3px">⚠ Over MTOW by ${Math.round(overAmt)} lb — reduce ${(overAmt / fwPG).toFixed(1)} gal fuel or ${Math.round(overAmt)} lb payload</div>`;
+      }
+      // Show zero-fuel weight
+      const zfw = bew + pax + cargo;
+      html += `<div style="color:#6b7280; margin-top:2px">ZFW: ${Math.round(zfw)} lb &nbsp;|&nbsp; Fuel: ${fuelGal.toFixed(1)} gal (${Math.round(fuelLb)} lb) &nbsp;|&nbsp; Useful load: ${Math.round(tow - bew)} lb</div>`;
+      bar.innerHTML = html;
+
+      // Async HIGE check
+      clearTimeout(_higeCheckTimer);
+      _higeCheckTimer = setTimeout(() => checkHigeLimit(code, tow), 400);
+    }
+
+    async function checkHigeLimit(typeCode, tow) {
+      try {
+        const depIcao = document.getElementById('dep').value.trim().toUpperCase();
+        const depAp = airportLookup[depIcao];
+        const pa = depAp ? depAp.elev_ft : 0;
+        const oat = Number(document.getElementById('oatC').value) || 15;
+        const res = await fetch(`/helicopters/${typeCode}/performance?pressure_alt_ft=${pa}&oat_c=${oat}&gross_weight_lb=${tow}`);
+        if (!res.ok) return;
+        const perf = await res.json();
+        const bar = document.getElementById('towBar');
+        if (!bar.innerHTML) return;
+        // Remove any previous HIGE line
+        bar.querySelectorAll('.hige-warn').forEach(el => el.remove());
+        const warnings = (perf.warnings || []).filter(w => w.includes('HIGE') || w.includes('HOGE') || w.includes('hover'));
+        if (warnings.length > 0) {
+          const div = document.createElement('div');
+          div.className = 'hige-warn';
+          div.style.cssText = 'color:#b45309; margin-top:3px; font-weight:600';
+          div.textContent = '⚠ ' + warnings[0];
+          bar.appendChild(div);
+        }
+      } catch(e) { /* silent */ }
+    }
+
+    // Wire weight inputs to live-update
+    ['bewLb', 'paxLb', 'cargoLb', 'fuelLoadGal', 'usableFuel', 'oatC'].forEach(id => {
+      document.getElementById(id).addEventListener('input', updateWeightBuildUp);
+    });
+    document.getElementById('dep').addEventListener('change', updateWeightBuildUp);
+
     document.getElementById('heliType').addEventListener('change', function() {
       const code = this.value;
       updateHeliInfo();
@@ -660,7 +759,10 @@
       document.getElementById('usableFuel').value = d.usable_fuel_gal;
       document.getElementById('burnGph').value = d.fuel_burn_gph;
       document.getElementById('fuelType').value = h.fuel_type;
+      document.getElementById('bewLb').value = h.empty_weight_lb;
+      document.getElementById('fuelLoadGal').value = 0; // 0 = full tanks
       document.getElementById('grossWeightLb').value = 0;
+      updateWeightBuildUp();
       // Re-filter My Aircraft to match the new type
       refreshAircraftDropdown();
     });
@@ -700,11 +802,10 @@
       const ac = getSavedAircraft()[reg];
       if (!ac) { detail.textContent = ''; return; }
       const parts = [`Base: ${ac.base_type || 'Manual'}`];
+      if (ac.bew_lb) parts.push(`BEW: ${ac.bew_lb} lb`);
       if (ac.usable_fuel_gal) parts.push(`Fuel: ${ac.usable_fuel_gal} gal`);
       if (ac.cruise_speed_kt) parts.push(`Cruise: ${ac.cruise_speed_kt} kt`);
       if (ac.fuel_burn_gph) parts.push(`Burn: ${ac.fuel_burn_gph} gph`);
-      if (ac.empty_weight_lb) parts.push(`Empty: ${ac.empty_weight_lb} lb`);
-      if (ac.max_gross_weight_lb) parts.push(`Max GW: ${ac.max_gross_weight_lb} lb`);
       if (ac.notes) parts.push(ac.notes);
       detail.textContent = parts.join(' • ');
     }
@@ -728,6 +829,10 @@
         fuel_type: document.getElementById('fuelType').value,
         max_msl_ft: Number(document.getElementById('maxMsl').value),
         gross_weight_lb: Number(document.getElementById('grossWeightLb').value) || 0,
+        bew_lb: Number(document.getElementById('bewLb').value) || 0,
+        pax_lb: Number(document.getElementById('paxLb').value) || 0,
+        cargo_lb: Number(document.getElementById('cargoLb').value) || 0,
+        fuel_load_gal: Number(document.getElementById('fuelLoadGal').value) || 0,
         max_climb_fpm: Number(document.getElementById('maxClimb').value) || 0,
         max_descent_fpm: Number(document.getElementById('maxDescent').value) || 0,
         climb_speed_kt: Number(document.getElementById('climbSpeedKt').value) || 0,
@@ -773,6 +878,10 @@
       if (ac.reserve_min != null) document.getElementById('reserveMin').value = ac.reserve_min;
       if (ac.fuel_type) document.getElementById('fuelType').value = ac.fuel_type;
       if (ac.max_msl_ft) document.getElementById('maxMsl').value = ac.max_msl_ft;
+      if (ac.bew_lb) document.getElementById('bewLb').value = ac.bew_lb;
+      if (ac.pax_lb != null) document.getElementById('paxLb').value = ac.pax_lb;
+      if (ac.cargo_lb != null) document.getElementById('cargoLb').value = ac.cargo_lb;
+      if (ac.fuel_load_gal != null) document.getElementById('fuelLoadGal').value = ac.fuel_load_gal;
       if (ac.gross_weight_lb) document.getElementById('grossWeightLb').value = ac.gross_weight_lb;
       if (ac.max_climb_fpm) document.getElementById('maxClimb').value = ac.max_climb_fpm;
       if (ac.max_descent_fpm) document.getElementById('maxDescent').value = ac.max_descent_fpm;
@@ -782,6 +891,7 @@
         document.getElementById('adsbOut').checked = ac.adsb_out;
         document.getElementById('adsbOut').dispatchEvent(new Event('change'));
       }
+      updateWeightBuildUp();
     });
 
     refreshAircraftDropdown();
@@ -2394,6 +2504,10 @@
         helicopter_type: payload.helicopter_type,
         oat_c: payload.oat_c,
         gross_weight_lb: payload.gross_weight_lb,
+        bew_lb: Number(document.getElementById('bewLb').value) || 0,
+        pax_lb: Number(document.getElementById('paxLb').value) || 0,
+        cargo_lb: Number(document.getElementById('cargoLb').value) || 0,
+        fuel_load_gal: Number(document.getElementById('fuelLoadGal').value) || 0,
         cruise_speed_kt: payload.cruise_speed_kt,
         usable_fuel_gal: payload.usable_fuel_gal,
         fuel_burn_gph: payload.fuel_burn_gph,
@@ -2450,6 +2564,10 @@
       }
       document.getElementById('oatC').value = r.oat_c != null ? r.oat_c : 15;
       document.getElementById('grossWeightLb').value = r.gross_weight_lb || 0;
+      if (r.bew_lb) document.getElementById('bewLb').value = r.bew_lb;
+      if (r.pax_lb != null) document.getElementById('paxLb').value = r.pax_lb;
+      if (r.cargo_lb != null) document.getElementById('cargoLb').value = r.cargo_lb;
+      if (r.fuel_load_gal != null) document.getElementById('fuelLoadGal').value = r.fuel_load_gal;
       document.getElementById('speedKt').value = r.cruise_speed_kt || 75;
       document.getElementById('usableFuel').value = r.usable_fuel_gal || 48;
       document.getElementById('burnGph').value = r.fuel_burn_gph || 13;
@@ -2480,6 +2598,7 @@
           cb.checked = r.avoid_airspace.includes(cb.value);
         });
       }
+      updateWeightBuildUp();
       // Auto-run the route so map and profile populate immediately
       plan();
     });
