@@ -79,6 +79,7 @@ class HelicopterModel:
     usable_fuel_gal: float       # max usable fuel
     fuel_weight_lb_per_gal: float  # 6.0 for avgas, 6.7 for Jet-A
     service_ceiling_da_ft: float # density-altitude service ceiling
+    autorotation_glide_ratio: float = 4.0  # horizontal:vertical glide ratio in autorotation
     # Performance breakpoints (sorted ascending by da_ft)
     perf_table: List[PerfPoint] = field(default_factory=list)
     notes: str = ""              # source / caveats
@@ -238,6 +239,7 @@ class HelicopterModel:
             "usable_fuel_gal": self.usable_fuel_gal,
             "fuel_weight_lb_per_gal": self.fuel_weight_lb_per_gal,
             "service_ceiling_da_ft": self.service_ceiling_da_ft,
+            "autorotation_glide_ratio": self.autorotation_glide_ratio,
             "max_payload_full_fuel_lb": round(self.max_payload_lb(), 1),
             "notes": self.notes,
             "defaults": {
@@ -319,6 +321,7 @@ _register(HelicopterModel(
     usable_fuel_gal=19.2,
     fuel_weight_lb_per_gal=6.0,
     service_ceiling_da_ft=14000,
+    autorotation_glide_ratio=4.0,
     perf_table=[
         PerfPoint(da_ft=0,    max_roc_fpm=1000, cruise_ktas=96, fuel_burn_gph=8.0, hoge_max_gw_lb=1370, hige_max_gw_lb=1370),
         PerfPoint(da_ft=2000, max_roc_fpm=850,  cruise_ktas=94, fuel_burn_gph=7.8, hoge_max_gw_lb=1330, hige_max_gw_lb=1370),
@@ -365,6 +368,7 @@ _register(HelicopterModel(
     usable_fuel_gal=73.4,
     fuel_weight_lb_per_gal=6.7,
     service_ceiling_da_ft=14000,
+    autorotation_glide_ratio=4.5,
     perf_table=[
         PerfPoint(da_ft=0,    max_roc_fpm=1200, cruise_ktas=110, fuel_burn_gph=22.0, hoge_max_gw_lb=2700, hige_max_gw_lb=2700),
         PerfPoint(da_ft=2000, max_roc_fpm=1050, cruise_ktas=108, fuel_burn_gph=21.5, hoge_max_gw_lb=2620, hige_max_gw_lb=2700),
@@ -388,6 +392,7 @@ _register(HelicopterModel(
     usable_fuel_gal=76,
     fuel_weight_lb_per_gal=6.7,
     service_ceiling_da_ft=13500,
+    autorotation_glide_ratio=4.5,
     perf_table=[
         PerfPoint(da_ft=0,    max_roc_fpm=1350, cruise_ktas=115, fuel_burn_gph=27.0, hoge_max_gw_lb=3200, hige_max_gw_lb=3200),
         PerfPoint(da_ft=2000, max_roc_fpm=1170, cruise_ktas=113, fuel_burn_gph=26.5, hoge_max_gw_lb=3100, hige_max_gw_lb=3200),
@@ -411,6 +416,7 @@ _register(HelicopterModel(
     usable_fuel_gal=141.5,
     fuel_weight_lb_per_gal=6.7,
     service_ceiling_da_ft=18500,
+    autorotation_glide_ratio=5.0,
     perf_table=[
         PerfPoint(da_ft=0,    max_roc_fpm=1800, cruise_ktas=133, fuel_burn_gph=44.0, hoge_max_gw_lb=5250, hige_max_gw_lb=5250),
         PerfPoint(da_ft=2000, max_roc_fpm=1600, cruise_ktas=131, fuel_burn_gph=43.0, hoge_max_gw_lb=5100, hige_max_gw_lb=5250),
@@ -435,6 +441,7 @@ _register(HelicopterModel(
     usable_fuel_gal=143,
     fuel_weight_lb_per_gal=6.7,
     service_ceiling_da_ft=23000,
+    autorotation_glide_ratio=5.0,
     perf_table=[
         PerfPoint(da_ft=0,    max_roc_fpm=1800, cruise_ktas=130, fuel_burn_gph=48.0, hoge_max_gw_lb=5512, hige_max_gw_lb=5512),
         PerfPoint(da_ft=4000, max_roc_fpm=1450, cruise_ktas=127, fuel_burn_gph=46.0, hoge_max_gw_lb=5200, hige_max_gw_lb=5400),
@@ -457,6 +464,7 @@ _register(HelicopterModel(
     usable_fuel_gal=62,
     fuel_weight_lb_per_gal=6.7,
     service_ceiling_da_ft=16000,
+    autorotation_glide_ratio=4.5,
     perf_table=[
         PerfPoint(da_ft=0,    max_roc_fpm=1700, cruise_ktas=135, fuel_burn_gph=28.0, hoge_max_gw_lb=3000, hige_max_gw_lb=3000),
         PerfPoint(da_ft=2000, max_roc_fpm=1480, cruise_ktas=133, fuel_burn_gph=27.3, hoge_max_gw_lb=2900, hige_max_gw_lb=3000),
@@ -503,6 +511,7 @@ _register(HelicopterModel(
     usable_fuel_gal=209,
     fuel_weight_lb_per_gal=6.7,
     service_ceiling_da_ft=12600,
+    autorotation_glide_ratio=4.0,
     perf_table=[
         PerfPoint(da_ft=0,    max_roc_fpm=1660, cruise_ktas=110, fuel_burn_gph=80.0, hoge_max_gw_lb=8500, hige_max_gw_lb=9500),
         PerfPoint(da_ft=2000, max_roc_fpm=1420, cruise_ktas=108, fuel_burn_gph=78.0, hoge_max_gw_lb=8100, hige_max_gw_lb=9200),

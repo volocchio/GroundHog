@@ -77,6 +77,11 @@ class RouteRequest(BaseModel):
     avoid_airspace: list[str] = Field(default_factory=lambda: ["P", "R"])
     avoid_borders: bool = Field(default=True)
 
+    water_risk: float = Field(default=100, ge=0, le=100,
+                              description="Water crossing risk tolerance: 0=must glide to shore, 100=ignore water.")
+    glide_ratio: float = Field(default=4.0, ge=0, le=20,
+                               description="Autorotation glide ratio (horizontal:vertical).")
+
     waypoints: list[str] = Field(default_factory=list)
 
 
@@ -248,22 +253,31 @@ def route_stream(req: RouteRequest):
     if not arr:
         raise HTTPException(404, f"Unknown arr_icao {req.arr_icao}")
 
-    # Resolve waypoints into airport objects; -NF suffix = no fuel
+    # Resolve waypoints into airport objects; -NF suffix = no fuel, -VIA = flyover
     waypoint_aps = []
     waypoint_fuel = {}  # icao → True (refuel) / False (no fuel)
+    waypoint_via = set()  # icao codes that are flyover-only (no landing)
     for wp_raw in (req.waypoints or []):
         raw = wp_raw.strip()
-        if raw.upper().endswith('-NF'):
+        if raw.upper().endswith('-VIA'):
+            code = raw[:-4].strip()
+            fuel = False
+            via = True
+        elif raw.upper().endswith('-NF'):
             code = raw[:-3].strip()
             fuel = False
+            via = False
         else:
             code = raw
             fuel = True
+            via = False
         wp = _resolve_airport(code, airports)
         if not wp:
             raise HTTPException(404, f"Unknown waypoint: {code}")
         waypoint_aps.append(wp)
         waypoint_fuel[wp.icao] = fuel
+        if via:
+            waypoint_via.add(wp.icao)
 
     # Segments: dep → wp1, wp1 → wp2, ..., wpN → arr
     segment_endpoints = [dep] + waypoint_aps + [arr]
@@ -412,11 +426,18 @@ def route_stream(req: RouteRequest):
                             obstacle_clearance_ft=req.obstacle_clearance_ft,
                             prev_point=prev_pt,
                             avoid_borders=req.avoid_borders,
+                            glide_ratio=req.glide_ratio,
+                            water_risk=req.water_risk,
                         ):
                             if event.get("type") == "path":
                                 event["leg_index"] = global_leg
                                 event["from"] = from_ap.icao
                                 event["to"] = to_ap.icao
+                                # Mark VIA (flyover) waypoints
+                                if from_ap.icao in waypoint_via:
+                                    event["from_via"] = True
+                                if to_ap.icao in waypoint_via:
+                                    event["to_via"] = True
                                 seg_last_leg_dist = event.get("dist_nm", 0.0)
                                 # ── Attach helicopter performance for this leg ──
                                 if heli:

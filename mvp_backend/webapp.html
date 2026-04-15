@@ -116,7 +116,7 @@
         <label for="roundTrip" style="margin:0; display:inline; font-size:13px">Round trip (no refuel at destination)</label>
       </div>
 
-      <label>Intermediate waypoints (space-sep; all refuel by default, append <code>-NF</code> to skip fuel)</label>
+      <label>Intermediate waypoints (space-sep; <code>-NF</code> = no fuel, <code>-VIA</code> = flyover)</label>
       <input id="waypoints" placeholder="e.g. KBOI N86-NF KSLC" />
 
       <label>Fuel type required (for stops)</label>
@@ -234,6 +234,16 @@
       <label>Max detour factor: <span id="detourVal">1.8</span>x</label>
       <input id="detour" type="range" min="1" max="5" value="1.8" step="0.1" />
 
+      <label style="margin-top:8px">Water crossing: <span id="waterRiskLabel" style="font-weight:600">Avoid (glide to shore)</span></label>
+      <select id="waterRisk" style="margin:2px 0">
+        <option value="0" selected>Avoid — must glide to shore</option>
+        <option value="25">Cautious — 1.5× glide range</option>
+        <option value="50">Moderate — 2× glide range</option>
+        <option value="75">Aggressive — 3× glide range</option>
+        <option value="100">Ignore water</option>
+      </select>
+      <div id="glideInfo" class="muted" style="font-size:11px; margin:2px 0"></div>
+
       <div style="display:flex; align-items:center; gap:6px; margin:6px 0 0">
         <input type="checkbox" id="avoidBorders" checked style="width:auto" />
         <label for="avoidBorders" style="margin:0; display:inline; font-size:13px">Avoid international border crossings</label>
@@ -306,6 +316,30 @@
     const detour = document.getElementById('detour');
     const detourVal = document.getElementById('detourVal');
     detour.addEventListener('input', () => detourVal.textContent = detour.value);
+
+    // Water risk label update
+    const waterRiskSel = document.getElementById('waterRisk');
+    waterRiskSel.addEventListener('change', () => updateGlideInfo());
+
+    function updateGlideInfo() {
+      const code = document.getElementById('heliType').value;
+      const h = helicopterData[code];
+      const infoDiv = document.getElementById('glideInfo');
+      const risk = Number(waterRiskSel.value);
+      if (risk >= 100) {
+        infoDiv.textContent = 'Water crossings unrestricted.';
+        return;
+      }
+      const ratio = h ? h.autorotation_glide_ratio : 4.0;
+      const msl = Number(document.getElementById('maxMsl').value) || 3000;
+      const glideNm = (msl * ratio / 6076.12).toFixed(1);
+      const mult = risk <= 0 ? 1.0 : risk <= 25 ? 1.5 : risk <= 50 ? 2.0 : 3.0;
+      const effNm = (glideNm * mult).toFixed(1);
+      infoDiv.textContent = `Glide ratio ${ratio}:1 • ${glideNm} NM from ${msl}' MSL` + (mult > 1 ? ` • Effective: ${effNm} NM` : '');
+    }
+
+    // Update glide info when MSL changes
+    document.getElementById('maxMsl').addEventListener('input', updateGlideInfo);
 
     // ADS-B Out logic: when unchecked, force-check B & C avoidance
     const adsbOut = document.getElementById('adsbOut');
@@ -457,9 +491,9 @@
     };
 
     // Add airport as intermediate waypoint (with or without fuel stop)
-    window.addWaypoint = function(icao, noFuel) {
+    window.addWaypoint = function(icao, mode) {
       const wpInput = document.getElementById('waypoints');
-      const suffix = noFuel ? '-NF' : '';
+      const suffix = mode === 'VIA' ? '-VIA' : (mode ? '-NF' : '');
       const token = icao + suffix;
       const existing = wpInput.value.trim();
       wpInput.value = existing ? existing + ' ' + token : token;
@@ -621,6 +655,7 @@
             <div style="margin-top:4px; display:flex; gap:4px; flex-wrap:wrap">
               <button onclick="addWaypoint('${ap.icao}',false)" style="padding:4px 8px; font-size:11px; border:1px solid #9333ea; background:#faf5ff; color:#9333ea; border-radius:4px; cursor:pointer">Add Stop (land &amp; fuel)</button>
               <button onclick="addWaypoint('${ap.icao}',true)" style="padding:4px 8px; font-size:11px; border:1px solid #6b7280; background:#f9fafb; color:#6b7280; border-radius:4px; cursor:pointer">Add Stop (no fuel)</button>
+              <button onclick="addWaypoint('${ap.icao}','VIA')" style="padding:4px 8px; font-size:11px; border:1px solid #ea580c; background:#fff7ed; color:#ea580c; border-radius:4px; cursor:pointer">Add Waypoint</button>
             </div>`;
           L.circleMarker([ap.lat, ap.lon], {
             radius, color, fillColor: color,
@@ -648,9 +683,9 @@
       map.closePopup();
       updateWeightBuildUp();
     };
-    window.addCustomWaypoint = function(code, noFuel) {
+    window.addCustomWaypoint = function(code, mode) {
       const wpInput = document.getElementById('waypoints');
-      const suffix = noFuel ? '-NF' : '';
+      const suffix = mode === 'VIA' ? '-VIA' : (mode ? '-NF' : '');
       const token = code + suffix;
       const existing = wpInput.value.trim();
       wpInput.value = existing ? existing + ' ' + token : token;
@@ -703,6 +738,7 @@
           + `<div style="margin-top:4px; display:flex; gap:4px; flex-wrap:wrap">`
           + `<button onclick="addCustomWaypoint('${code}',false)" style="padding:4px 8px; font-size:11px; border:1px solid #9333ea; background:#faf5ff; color:#9333ea; border-radius:4px; cursor:pointer">Add Stop (land &amp; fuel)</button>`
           + `<button onclick="addCustomWaypoint('${code}',true)" style="padding:4px 8px; font-size:11px; border:1px solid #6b7280; background:#f9fafb; color:#6b7280; border-radius:4px; cursor:pointer">Add Stop (no fuel)</button>`
+          + `<button onclick="addCustomWaypoint('${code}','VIA')" style="padding:4px 8px; font-size:11px; border:1px solid #ea580c; background:#fff7ed; color:#ea580c; border-radius:4px; cursor:pointer">Add Waypoint</button>`
           + `</div>`
         );
       } catch (err) {
@@ -717,6 +753,7 @@
           + `<div style="margin-top:4px; display:flex; gap:4px; flex-wrap:wrap">`
           + `<button onclick="addCustomWaypoint('${code}',false)" style="padding:4px 8px; font-size:11px; border:1px solid #9333ea; background:#faf5ff; color:#9333ea; border-radius:4px; cursor:pointer">Add Stop (land &amp; fuel)</button>`
           + `<button onclick="addCustomWaypoint('${code}',true)" style="padding:4px 8px; font-size:11px; border:1px solid #6b7280; background:#f9fafb; color:#6b7280; border-radius:4px; cursor:pointer">Add Stop (no fuel)</button>`
+          + `<button onclick="addCustomWaypoint('${code}','VIA')" style="padding:4px 8px; font-size:11px; border:1px solid #ea580c; background:#fff7ed; color:#ea580c; border-radius:4px; cursor:pointer">Add Waypoint</button>`
           + `</div>`
         );
       }
@@ -743,6 +780,7 @@
         // Pre-select S300C since defaults are S300C
         if (helicopterData['S300C']) sel.value = 'S300C';
         updateHeliInfo();
+        updateGlideInfo();
         // Populate weight build-up with S300C defaults
         if (helicopterData['S300C']) {
           document.getElementById('bewLb').value = helicopterData['S300C'].empty_weight_lb;
@@ -870,6 +908,7 @@
     document.getElementById('heliType').addEventListener('change', function() {
       const code = this.value;
       updateHeliInfo();
+      updateGlideInfo();
       if (!code || !helicopterData[code]) return;
       const h = helicopterData[code];
       const d = h.defaults;
@@ -2136,6 +2175,8 @@
         adsb_out: document.getElementById('adsbOut').checked,
         avoid_airspace: [...document.querySelectorAll('#avoidChecks input:checked')].map(cb => cb.value),
         avoid_borders: document.getElementById('avoidBorders').checked,
+        water_risk: Number(document.getElementById('waterRisk').value),
+        glide_ratio: (helicopterData[document.getElementById('heliType').value] || {}).autorotation_glide_ratio || 4.0,
         waypoints,
       };
     }
@@ -2616,6 +2657,7 @@
         adsb_out: payload.adsb_out,
         avoid_airspace: payload.avoid_airspace,
         avoid_borders: payload.avoid_borders,
+        water_risk: payload.water_risk,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(routes));
       refreshSavedDropdown();
@@ -2684,6 +2726,8 @@
       document.getElementById('adsbOut').checked = r.adsb_out !== false;
       document.getElementById('adsbOut').dispatchEvent(new Event('change'));
       document.getElementById('avoidBorders').checked = r.avoid_borders !== false;
+      document.getElementById('waterRisk').value = r.water_risk != null ? r.water_risk : 0;
+      updateGlideInfo();
       if (r.avoid_airspace) {
         document.querySelectorAll('#avoidChecks input[type="checkbox"]:not(:disabled)').forEach(cb => {
           cb.checked = r.avoid_airspace.includes(cb.value);

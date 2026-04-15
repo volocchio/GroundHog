@@ -994,6 +994,116 @@ def _rasterize_obstacles(grid: GridSpec, passable: list[list[bool]],
                     passable[i][j] = False
 
 
+def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
+                      glide_ratio: float, max_msl_ft: float,
+                      water_risk: float) -> list[list[float]] | None:
+    """Build a 2D cost grid penalizing water cells beyond autorotation glide range.
+
+    Water is detected as elevation <= 0 or NaN/inf (SRTM void = ocean).
+    Uses multi-source BFS from all land cells to compute distance-to-shore
+    for each water cell, then applies cost based on whether the cell is
+    within glide range.
+
+    water_risk: 0=strict (glide to shore), 25/50/75=relaxed, 100=ignore.
+    Returns None if no penalty needed.
+    """
+    if water_risk >= 100:
+        return None
+
+    n_lat = grid.n_lat
+    n_lon = grid.n_lon
+
+    # Risk multiplier on effective glide range
+    if water_risk <= 0:
+        glide_mult = 1.0
+    elif water_risk <= 25:
+        glide_mult = 1.5
+    elif water_risk <= 50:
+        glide_mult = 2.0
+    else:
+        glide_mult = 3.0
+
+    # Glide range in NM from cruise altitude (over water, terrain ~ 0)
+    glide_range_nm = max_msl_ft * glide_ratio / 6076.12 * glide_mult
+
+    # Cell size in NM (approximate)
+    mid_lat = grid.lat0 + (n_lat / 2) * grid.dlat
+    cell_nm_lat = grid.dlat / _deg_per_km_lat() / 1.852
+    cell_nm_lon = grid.dlon / _deg_per_km_lon(mid_lat) / 1.852
+    cell_nm = 0.5 * (cell_nm_lat + cell_nm_lon)
+
+    glide_range_cells = glide_range_nm / cell_nm if cell_nm > 0 else 0
+
+    # Identify water vs land
+    # Water: elev <= 0 or inf (SRTM void/ocean)
+    is_water = [[False] * n_lon for _ in range(n_lat)]
+    has_water = False
+    k = 0
+    for i in range(n_lat):
+        for j in range(n_lon):
+            e = elev_ft[k]
+            if e <= 0 or e == float("inf"):
+                is_water[i][j] = True
+                has_water = True
+            k += 1
+
+    if not has_water:
+        return None
+
+    # BFS from all land cells to compute distance-to-shore for water cells
+    from collections import deque
+    INF = float("inf")
+    dist = [[INF] * n_lon for _ in range(n_lat)]
+    q = deque()
+
+    # Seed: all land cells at distance 0
+    for i in range(n_lat):
+        for j in range(n_lon):
+            if not is_water[i][j]:
+                dist[i][j] = 0.0
+                q.append((i, j))
+
+    # 8-connected BFS
+    while q:
+        ci, cj = q.popleft()
+        cd = dist[ci][cj]
+        for di in (-1, 0, 1):
+            ni = ci + di
+            if ni < 0 or ni >= n_lat:
+                continue
+            for dj in (-1, 0, 1):
+                if di == 0 and dj == 0:
+                    continue
+                nj = cj + dj
+                if nj < 0 or nj >= n_lon:
+                    continue
+                step = 1.414 if (di != 0 and dj != 0) else 1.0
+                nd = cd + step
+                if nd < dist[ni][nj]:
+                    dist[ni][nj] = nd
+                    q.append((ni, nj))
+
+    # Build cost grid
+    WATER_BASE = 2.0       # mild cost for any water cell
+    WATER_BEYOND = 30.0    # heavy cost for cells beyond glide range
+    cost = [[0.0] * n_lon for _ in range(n_lat)]
+    has_cost = False
+    for i in range(n_lat):
+        for j in range(n_lon):
+            if not is_water[i][j]:
+                continue
+            d = dist[i][j]
+            if d <= glide_range_cells:
+                cost[i][j] = WATER_BASE
+            else:
+                # Scale penalty by how far beyond glide range
+                excess = (d - glide_range_cells) / max(1.0, glide_range_cells)
+                cost[i][j] = WATER_BASE + WATER_BEYOND * min(excess, 3.0)
+            has_cost = True
+
+    return cost if has_cost else None
+
+
 def terrain_avoid_leg_streaming(
     a: Airport,
     b: Airport,
@@ -1014,6 +1124,8 @@ def terrain_avoid_leg_streaming(
     obstacle_clearance_ft: float = 500,
     prev_point: tuple[float, float] | None = None,
     avoid_borders: bool = True,
+    glide_ratio: float = 0,
+    water_risk: float = 100,
 ):
     """Generator that yields A* exploration events for one leg.
 
@@ -1035,6 +1147,8 @@ def terrain_avoid_leg_streaming(
         _atag += f"|PP{prev_point[0]:.2f},{prev_point[1]:.2f}"
     if avoid_borders:
         _atag += "|BORDERS"
+    if water_risk < 100 and glide_ratio > 0:
+        _atag += f"|W{water_risk:.0f}G{glide_ratio:.1f}"
     avoidance_tag = _atag
 
     # ── terrain intelligence quick-reject ──
@@ -1175,6 +1289,21 @@ def terrain_avoid_leg_streaming(
             if not passable[start[0]][start[1]] or not passable[goal[0]][goal[1]]:
                 margin_km += margin_step_km
                 continue
+
+        # ── Water avoidance cost ──
+        if glide_ratio > 0 and water_risk < 100:
+            water_cost_2d = _build_water_cost(
+                grid, elev_ft, passable,
+                glide_ratio=glide_ratio, max_msl_ft=max_msl_ft,
+                water_risk=water_risk,
+            )
+            if water_cost_2d is not None:
+                if airspace_cost_2d is None:
+                    airspace_cost_2d = water_cost_2d
+                else:
+                    for i in range(n_lat):
+                        for j in range(n_lon):
+                            airspace_cost_2d[i][j] += water_cost_2d[i][j]
 
         # ── Gentle backtrack avoidance ──
         # When prev_point is given (multi-leg route), add a light cost to
