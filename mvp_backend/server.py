@@ -24,6 +24,7 @@ from mvp_backend.srtm_local import SRTMProvider
 from mvp_backend.grid_astar import _haversine_nm
 from mvp_backend import route_cache
 from mvp_backend import terrain_intel
+from mvp_backend import helicopter_db
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -43,6 +44,10 @@ def health():
 class RouteRequest(BaseModel):
     dep_icao: str
     arr_icao: str
+
+    helicopter_type: str = Field(default="", description="Helicopter type code (e.g. S300C, R44, B206). Empty = manual entry.")
+    oat_c: float = Field(default=15.0, description="Outside air temperature (°C) for performance calculations.")
+    gross_weight_lb: float = Field(default=0, ge=0, description="Gross weight (lb). 0 = use max gross weight for type.")
 
     cruise_speed_kt: float = Field(gt=0)
     usable_fuel_gal: float = Field(gt=0)
@@ -129,6 +134,38 @@ def airports_list():
             "fuel_jeta": ap.fuel_jeta,
         })
     return result
+
+
+# ── helicopter performance database ─────────────────────────────────
+
+@app.get("/helicopters")
+def helicopters_list():
+    """Return all helicopter types in the database."""
+    return helicopter_db.list_helicopters()
+
+
+@app.get("/helicopters/{type_code}")
+def helicopter_detail(type_code: str):
+    """Return full detail for a helicopter type."""
+    heli = helicopter_db.get_helicopter(type_code)
+    if not heli:
+        raise HTTPException(404, f"Unknown helicopter type: {type_code}")
+    return heli.to_dict()
+
+
+@app.get("/helicopters/{type_code}/performance")
+def helicopter_performance(
+    type_code: str,
+    pressure_alt_ft: float = Query(0),
+    oat_c: float = Query(15),
+    gross_weight_lb: float = Query(0),
+):
+    """Compute performance at given conditions."""
+    heli = helicopter_db.get_helicopter(type_code)
+    if not heli:
+        raise HTTPException(404, f"Unknown helicopter type: {type_code}")
+    gw = gross_weight_lb if gross_weight_lb > 0 else None
+    return heli.performance_at(pressure_alt_ft, oat_c, gw)
 
 
 @app.post("/route")
@@ -218,6 +255,27 @@ def route_stream(req: RouteRequest):
             hits = _airports_in_airspace(all_aps, classes=("B", "C"))
             if hits:
                 yield f"data: {json.dumps({'type': 'adsb_warning', 'airports': hits})}\n\n"
+
+        # ── Helicopter performance check (departure) ──
+        heli = helicopter_db.get_helicopter(req.helicopter_type) if req.helicopter_type else None
+        if heli:
+            gw = req.gross_weight_lb if req.gross_weight_lb > 0 else None
+            dep_perf = heli.performance_at(dep.elevation_ft, req.oat_c, gw)
+            arr_perf = heli.performance_at(arr.elevation_ft, req.oat_c, gw)
+            # Send helicopter info event with performance at departure & arrival
+            heli_event = {
+                "type": "helicopter_info",
+                "helicopter": heli.to_dict(),
+                "oat_c": req.oat_c,
+                "departure": dep_perf,
+                "arrival": arr_perf,
+            }
+            yield f"data: {json.dumps(heli_event)}\n\n"
+            # If there are blockers at departure, warn but don't stop
+            if dep_perf["warnings"]:
+                yield f"data: {json.dumps({'type': 'helicopter_warning', 'phase': 'departure', 'airport': dep.icao, 'warnings': dep_perf['warnings']})}\n\n"
+            if arr_perf["warnings"]:
+                yield f"data: {json.dumps({'type': 'helicopter_warning', 'phase': 'arrival', 'airport': arr.icao, 'warnings': arr_perf['warnings']})}\n\n"
 
         # First pass: plan all segments to get total leg count and stops
         all_sequences = []
@@ -333,6 +391,18 @@ def route_stream(req: RouteRequest):
                                 event["from"] = from_ap.icao
                                 event["to"] = to_ap.icao
                                 seg_last_leg_dist = event.get("dist_nm", 0.0)
+                                # ── Attach helicopter performance for this leg ──
+                                if heli:
+                                    max_terr = event.get("max_terrain_ft", max(from_ap.elevation_ft, to_ap.elevation_ft))
+                                    leg_eval = helicopter_db.evaluate_leg(
+                                        heli.type_code,
+                                        dep_elev_ft=from_ap.elevation_ft,
+                                        arr_elev_ft=to_ap.elevation_ft,
+                                        max_enroute_elev_ft=max_terr + req.min_agl_ft,
+                                        oat_c=req.oat_c,
+                                        gross_weight_lb=req.gross_weight_lb if req.gross_weight_lb > 0 else None,
+                                    )
+                                    event["helicopter_perf"] = leg_eval
                             if event.get("type") == "no_path":
                                 blocked_pairs.add((from_ap.icao, to_ap.icao))
                                 leg_failed = True

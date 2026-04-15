@@ -92,7 +92,7 @@
 <body>
   <header>
     <div style="font-weight:600">Terrain + Fuel Route Planner (MVP)</div>
-    <div class="muted">S300C defaults prefilled • Fuel stops: public-use only • Fuel type: 100LL/Jet-A • Terrain avoidance via SRTM grid A*</div>
+    <div class="muted">S300C defaults prefilled • Select helicopter type for AFM-based performance • Fuel stops: public-use only</div>
   </header>
 
   <div class="wrap">
@@ -122,6 +122,29 @@
         <option value="100LL" selected>100LL</option>
         <option value="JETA">Jet-A</option>
       </select>
+
+      <label style="margin-top:10px; font-weight:600">Helicopter type</label>
+      <select id="heliType">
+        <option value="">— Manual entry —</option>
+      </select>
+      <div id="heliInfo" class="muted" style="margin-top:2px; font-size:11px"></div>
+
+      <div style="margin-top:8px; border:1px solid #e0e7ff; border-radius:8px; padding:8px; background:#f5f7ff">
+        <div style="font-weight:600; font-size:12px; color:#4338ca; margin-bottom:4px">My Aircraft</div>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <select id="savedAircraft" style="flex:1; margin:0; font-size:13px"><option value="">— Select saved aircraft —</option></select>
+          <button id="saveAircraftBtn" type="button" style="background:#4338ca; margin:0; padding:5px 10px; width:auto; font-size:11px; border-radius:6px; white-space:nowrap" title="Save current settings as aircraft">Save</button>
+          <button id="deleteAircraftBtn" type="button" style="background:transparent; border:1px solid #d1d5db; color:#6b7280; margin:0; padding:4px 8px; width:auto; font-size:13px; border-radius:6px; cursor:pointer" title="Delete selected aircraft">&times;</button>
+        </div>
+        <div id="aircraftDetail" class="muted" style="margin-top:3px; font-size:11px"></div>
+      </div>
+
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:4px 12px; font-size:0.85em; margin-top:6px">
+        <label style="margin:0">OAT (°C)</label>
+        <label style="margin:0">Gross weight (lb)</label>
+        <input id="oatC" type="number" value="15" step="1" title="Outside air temperature" />
+        <input id="grossWeightLb" type="number" value="0" min="0" step="10" placeholder="0 = max GW" title="0 = use max gross weight" />
+      </div>
 
       <label>Reserve (minutes)</label>
       <input id="reserveMin" type="number" value="30" min="0" step="1" />
@@ -515,6 +538,171 @@
 
     // Load airports on startup
     loadAirports();
+
+    // ── Load helicopter types ──
+    let helicopterData = {};
+    async function loadHelicopters() {
+      try {
+        const res = await fetch('/helicopters');
+        if (!res.ok) return;
+        const list = await res.json();
+        const sel = document.getElementById('heliType');
+        for (const h of list) {
+          helicopterData[h.type_code] = h;
+          const opt = document.createElement('option');
+          opt.value = h.type_code;
+          opt.textContent = `${h.name} (${h.engine_type})`;
+          sel.appendChild(opt);
+        }
+        // Pre-select S300C since defaults are S300C
+        if (helicopterData['S300C']) sel.value = 'S300C';
+        updateHeliInfo();
+      } catch(e) { /* silent */ }
+    }
+
+    function updateHeliInfo() {
+      const code = document.getElementById('heliType').value;
+      const info = document.getElementById('heliInfo');
+      if (!code || !helicopterData[code]) {
+        info.textContent = 'Manual mode — enter performance values below.';
+        return;
+      }
+      const h = helicopterData[code];
+      info.innerHTML = `${h.name} • ${h.engine_type} • ${h.fuel_type} • `
+        + `Max GW: ${h.max_gross_weight_lb} lb • Empty: ${h.empty_weight_lb} lb • `
+        + `Fuel: ${h.usable_fuel_gal} gal • Ceiling: ${h.service_ceiling_da_ft} ft DA • `
+        + `Payload (full fuel): ${h.max_payload_full_fuel_lb} lb`;
+    }
+
+    document.getElementById('heliType').addEventListener('change', function() {
+      const code = this.value;
+      updateHeliInfo();
+      if (!code || !helicopterData[code]) return;
+      const h = helicopterData[code];
+      const d = h.defaults;
+      document.getElementById('speedKt').value = d.cruise_speed_kt;
+      document.getElementById('usableFuel').value = d.usable_fuel_gal;
+      document.getElementById('burnGph').value = d.fuel_burn_gph;
+      document.getElementById('fuelType').value = h.fuel_type;
+      document.getElementById('grossWeightLb').value = 0;
+    });
+
+    loadHelicopters();
+
+    // ── My Aircraft (localStorage) ──
+    const AIRCRAFT_KEY = 'groundhog_my_aircraft';
+
+    function getSavedAircraft() {
+      try { return JSON.parse(localStorage.getItem(AIRCRAFT_KEY)) || {}; }
+      catch { return {}; }
+    }
+
+    function refreshAircraftDropdown() {
+      const sel = document.getElementById('savedAircraft');
+      const aircraft = getSavedAircraft();
+      sel.innerHTML = '<option value="">\u2014 Select saved aircraft \u2014</option>';
+      for (const reg of Object.keys(aircraft).sort()) {
+        const ac = aircraft[reg];
+        const opt = document.createElement('option');
+        opt.value = reg;
+        const base = ac.base_type ? ` (${ac.base_type})` : '';
+        opt.textContent = `${reg}${base}`;
+        sel.appendChild(opt);
+      }
+    }
+
+    function updateAircraftDetail() {
+      const reg = document.getElementById('savedAircraft').value;
+      const detail = document.getElementById('aircraftDetail');
+      if (!reg) { detail.textContent = ''; return; }
+      const ac = getSavedAircraft()[reg];
+      if (!ac) { detail.textContent = ''; return; }
+      const parts = [`Base: ${ac.base_type || 'Manual'}`];
+      if (ac.usable_fuel_gal) parts.push(`Fuel: ${ac.usable_fuel_gal} gal`);
+      if (ac.cruise_speed_kt) parts.push(`Cruise: ${ac.cruise_speed_kt} kt`);
+      if (ac.fuel_burn_gph) parts.push(`Burn: ${ac.fuel_burn_gph} gph`);
+      if (ac.empty_weight_lb) parts.push(`Empty: ${ac.empty_weight_lb} lb`);
+      if (ac.max_gross_weight_lb) parts.push(`Max GW: ${ac.max_gross_weight_lb} lb`);
+      if (ac.notes) parts.push(ac.notes);
+      detail.textContent = parts.join(' • ');
+    }
+
+    document.getElementById('saveAircraftBtn').addEventListener('click', () => {
+      const heliType = document.getElementById('heliType').value;
+      const defaultReg = heliType ? `N_____  (${heliType})` : 'N_____';
+      const reg = prompt('Aircraft registration (tail number):', defaultReg);
+      if (!reg) return;
+      const cleanReg = reg.trim().toUpperCase();
+      if (!cleanReg) return;
+
+      // Capture current form state as this aircraft's profile
+      const aircraft = getSavedAircraft();
+      aircraft[cleanReg] = {
+        base_type: heliType,
+        cruise_speed_kt: Number(document.getElementById('speedKt').value),
+        usable_fuel_gal: Number(document.getElementById('usableFuel').value),
+        fuel_burn_gph: Number(document.getElementById('burnGph').value),
+        reserve_min: Number(document.getElementById('reserveMin').value),
+        fuel_type: document.getElementById('fuelType').value,
+        max_msl_ft: Number(document.getElementById('maxMsl').value),
+        gross_weight_lb: Number(document.getElementById('grossWeightLb').value) || 0,
+        max_climb_fpm: Number(document.getElementById('maxClimb').value) || 0,
+        max_descent_fpm: Number(document.getElementById('maxDescent').value) || 0,
+        climb_speed_kt: Number(document.getElementById('climbSpeedKt').value) || 0,
+        descent_speed_kt: Number(document.getElementById('descentSpeedKt').value) || 0,
+        adsb_out: document.getElementById('adsbOut').checked,
+        notes: '',
+      };
+      localStorage.setItem(AIRCRAFT_KEY, JSON.stringify(aircraft));
+      refreshAircraftDropdown();
+      document.getElementById('savedAircraft').value = cleanReg;
+      updateAircraftDetail();
+    });
+
+    document.getElementById('deleteAircraftBtn').addEventListener('click', () => {
+      const sel = document.getElementById('savedAircraft');
+      const reg = sel.value;
+      if (!reg) return;
+      if (!confirm(`Delete saved aircraft "${reg}"?`)) return;
+      const aircraft = getSavedAircraft();
+      delete aircraft[reg];
+      localStorage.setItem(AIRCRAFT_KEY, JSON.stringify(aircraft));
+      refreshAircraftDropdown();
+      updateAircraftDetail();
+    });
+
+    document.getElementById('savedAircraft').addEventListener('change', function() {
+      const reg = this.value;
+      updateAircraftDetail();
+      if (!reg) return;
+      const ac = getSavedAircraft()[reg];
+      if (!ac) return;
+
+      // Set helicopter base type first (triggers default fill)
+      if (ac.base_type) {
+        document.getElementById('heliType').value = ac.base_type;
+        updateHeliInfo();
+      }
+
+      // Then overlay with saved overrides
+      if (ac.cruise_speed_kt) document.getElementById('speedKt').value = ac.cruise_speed_kt;
+      if (ac.usable_fuel_gal) document.getElementById('usableFuel').value = ac.usable_fuel_gal;
+      if (ac.fuel_burn_gph) document.getElementById('burnGph').value = ac.fuel_burn_gph;
+      if (ac.reserve_min != null) document.getElementById('reserveMin').value = ac.reserve_min;
+      if (ac.fuel_type) document.getElementById('fuelType').value = ac.fuel_type;
+      if (ac.max_msl_ft) document.getElementById('maxMsl').value = ac.max_msl_ft;
+      if (ac.gross_weight_lb) document.getElementById('grossWeightLb').value = ac.gross_weight_lb;
+      if (ac.max_climb_fpm) document.getElementById('maxClimb').value = ac.max_climb_fpm;
+      if (ac.max_descent_fpm) document.getElementById('maxDescent').value = ac.max_descent_fpm;
+      if (ac.climb_speed_kt) document.getElementById('climbSpeedKt').value = ac.climb_speed_kt;
+      if (ac.descent_speed_kt) document.getElementById('descentSpeedKt').value = ac.descent_speed_kt;
+      if (ac.adsb_out != null) {
+        document.getElementById('adsbOut').checked = ac.adsb_out;
+        document.getElementById('adsbOut').dispatchEvent(new Event('change'));
+      }
+    });
+
+    refreshAircraftDropdown();
 
     // ── Map declutter: auto-show/hide layers by zoom ──
     let routeMarkers = [];  // track route markers for label management
@@ -1553,6 +1741,35 @@
       html += '</tr>';
 
       html += '</tbody></table>';
+
+      // ── Helicopter performance warnings per leg ──
+      const heliLegs = legs.filter(l => l.heliPerf);
+      if (heliLegs.length > 0) {
+        let hasWarnings = false;
+        let perfHtml = '';
+        legs.forEach((leg, i) => {
+          if (!leg.heliPerf) return;
+          const hp = leg.heliPerf;
+          const all = (hp.warnings || []).concat(hp.blockers || []);
+          if (all.length === 0) return;
+          hasWarnings = true;
+          const isFlyable = hp.flyable !== false;
+          const icon = isFlyable ? '⚠️' : '🚫';
+          const color = isFlyable ? '#b45309' : '#b91c1c';
+          perfHtml += `<div style="color:${color}; margin:4px 0; font-size:0.85em">`
+            + `${icon} <b>Leg ${i+1}</b> (${leg.from} → ${leg.to}): `
+            + all.join(' | ')
+            + `</div>`;
+        });
+        if (hasWarnings) {
+          html += `<div style="margin-top:10px; border:1px solid #fbbf24; border-radius:8px; padding:8px; background:#fffbeb">`
+            + `<div style="font-weight:600; font-size:0.9em; margin-bottom:4px">🚁 Helicopter Performance Alerts</div>`
+            + perfHtml + `</div>`;
+        } else {
+          html += `<div style="margin-top:8px; color:#16a34a; font-size:0.85em">✅ Helicopter performance OK for all legs at current conditions.</div>`;
+        }
+      }
+
       resultsDiv.innerHTML = html;
     }
 
@@ -1588,6 +1805,9 @@
       return {
         dep_icao: dep,
         arr_icao: effectiveArr,
+        helicopter_type: document.getElementById('heliType').value,
+        oat_c: Number(document.getElementById('oatC').value) || 15,
+        gross_weight_lb: Number(document.getElementById('grossWeightLb').value) || 0,
         cruise_speed_kt: Number(document.getElementById('speedKt').value),
         usable_fuel_gal: Number(document.getElementById('usableFuel').value),
         fuel_burn_gph: Number(document.getElementById('burnGph').value),
@@ -1664,6 +1884,22 @@
               warnDiv.innerHTML = `<span style="color:#b45309">⚠️ ADS-B Out not equipped — the following airports are inside ADS-B required airspace:<br>${names.join('<br>')}</span>`;
               setPlanning(false);
               return;
+            }
+
+            if (event.type === 'helicopter_info') {
+              const h = event.helicopter;
+              const da_dep = event.departure.density_alt_ft;
+              const da_arr = event.arrival.density_alt_ft;
+              const isa_dev = event.departure.isa_deviation_c;
+              const statusEl = document.getElementById('status');
+              statusEl.innerHTML += `<br><span style="color:#6366f1">🚁 ${h.name} • OAT ${event.oat_c}°C (ISA${isa_dev >= 0 ? '+' : ''}${isa_dev}°C) • `
+                + `DA at dep: ${da_dep} ft • DA at arr: ${da_arr} ft</span>`;
+            }
+
+            if (event.type === 'helicopter_warning') {
+              const errDiv = document.getElementById('error');
+              const color = event.warnings.some(w => w.includes('Cannot hover') || w.includes('exceeds service ceiling')) ? '#b91c1c' : '#b45309';
+              errDiv.innerHTML += `<div style="color:${color}; margin-bottom:4px">⚠️ <b>${event.phase.toUpperCase()}</b> (${event.airport}): ${event.warnings.join('<br>')}</div>`;
             }
 
             if (event.type === 'reroute') {
@@ -1760,6 +1996,7 @@
                 fuelGal: legFuelGal,
                 cached: !!event.cached,
                 _coords: event.coords,  // stash for reroute recovery
+                heliPerf: event.helicopter_perf || null,
               });
 
               // fit to overall bounds
@@ -2032,6 +2269,10 @@
         dep: payload.dep_icao,
         arr: payload.arr_icao,
         waypoints: document.getElementById('waypoints').value,
+        aircraft_reg: document.getElementById('savedAircraft').value,
+        helicopter_type: payload.helicopter_type,
+        oat_c: payload.oat_c,
+        gross_weight_lb: payload.gross_weight_lb,
         cruise_speed_kt: payload.cruise_speed_kt,
         usable_fuel_gal: payload.usable_fuel_gal,
         fuel_burn_gph: payload.fuel_burn_gph,
@@ -2077,6 +2318,17 @@
       document.getElementById('dep').value = r.dep || '';
       document.getElementById('arr').value = r.arr || '';
       document.getElementById('waypoints').value = r.waypoints || '';
+      // Restore saved aircraft first (which sets heli type + overrides)
+      if (r.aircraft_reg) {
+        document.getElementById('savedAircraft').value = r.aircraft_reg;
+        document.getElementById('savedAircraft').dispatchEvent(new Event('change'));
+      } else {
+        document.getElementById('savedAircraft').value = '';
+        document.getElementById('heliType').value = r.helicopter_type || '';
+        updateHeliInfo();
+      }
+      document.getElementById('oatC').value = r.oat_c != null ? r.oat_c : 15;
+      document.getElementById('grossWeightLb').value = r.gross_weight_lb || 0;
       document.getElementById('speedKt').value = r.cruise_speed_kt || 75;
       document.getElementById('usableFuel').value = r.usable_fuel_gal || 48;
       document.getElementById('burnGph').value = r.fuel_burn_gph || 13;
