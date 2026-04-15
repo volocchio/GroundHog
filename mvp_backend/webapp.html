@@ -139,16 +139,22 @@
         <div id="aircraftDetail" class="muted" style="margin-top:3px; font-size:11px"></div>
       </div>
 
-      <label style="margin:0">OAT (°C)</label>
-      <input id="oatC" type="number" value="15" step="1" title="Outside air temperature" style="margin-bottom:4px" />
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:4px 12px; font-size:0.85em">
+        <label style="margin:0">OAT (°C)</label>
+        <label style="margin:0">OAT (°F)</label>
+        <input id="oatC" type="number" value="15" step="1" title="Outside air temperature in Celsius" />
+        <input id="oatF" type="number" value="59" step="1" title="Outside air temperature in Fahrenheit" />
+      </div>
 
       <div id="weightBuildUp" style="margin-top:6px; border:1px solid #d1d5db; border-radius:8px; padding:8px; background:#f9fafb">
         <div style="font-weight:600; font-size:12px; margin-bottom:6px">Weight Build-Up</div>
         <div style="display:grid; grid-template-columns:1fr auto; gap:3px 8px; font-size:0.85em; align-items:center">
           <label style="margin:0" title="Basic Empty Weight from AFM">BEW (lb)</label>
           <input id="bewLb" type="number" value="0" min="0" step="1" style="width:90px; text-align:right" title="Basic Empty Weight — auto-filled from helicopter type" />
-          <label style="margin:0">Pilot + Pax (lb)</label>
-          <input id="paxLb" type="number" value="170" min="0" step="1" style="width:90px; text-align:right" title="Combined weight of pilot and passengers" />
+          <label style="margin:0">Pilot (lb)</label>
+          <input id="pilotLb" type="number" value="170" min="0" step="1" style="width:90px; text-align:right" title="Pilot weight" />
+          <label style="margin:0">Passengers (lb)</label>
+          <input id="paxLb" type="number" value="0" min="0" step="1" style="width:90px; text-align:right" title="Total passenger weight" />
           <label style="margin:0">Cargo (lb)</label>
           <input id="cargoLb" type="number" value="0" min="0" step="1" style="width:90px; text-align:right" title="Baggage, tools, equipment" />
           <label style="margin:0">Fuel load (gal)</label>
@@ -667,6 +673,25 @@
         + `Payload (full fuel): ${h.max_payload_full_fuel_lb} lb`;
     }
 
+    // ── OAT °C / °F sync ──
+    let _oatSyncing = false;
+    document.getElementById('oatC').addEventListener('input', () => {
+      if (_oatSyncing) return;
+      _oatSyncing = true;
+      const c = Number(document.getElementById('oatC').value) || 0;
+      document.getElementById('oatF').value = Math.round(c * 9 / 5 + 32);
+      _oatSyncing = false;
+      updateWeightBuildUp();
+    });
+    document.getElementById('oatF').addEventListener('input', () => {
+      if (_oatSyncing) return;
+      _oatSyncing = true;
+      const f = Number(document.getElementById('oatF').value) || 0;
+      document.getElementById('oatC').value = Math.round((f - 32) * 5 / 9);
+      _oatSyncing = false;
+      updateWeightBuildUp();
+    });
+
     // ── Weight Build-Up ──
     let _higeCheckTimer = null;
 
@@ -674,6 +699,7 @@
       const code = document.getElementById('heliType').value;
       const h = (code && helicopterData[code]) ? helicopterData[code] : null;
       const bew = Number(document.getElementById('bewLb').value) || 0;
+      const pilot = Number(document.getElementById('pilotLb').value) || 0;
       const pax = Number(document.getElementById('paxLb').value) || 0;
       const cargo = Number(document.getElementById('cargoLb').value) || 0;
       let fuelGal = Number(document.getElementById('fuelLoadGal').value) || 0;
@@ -681,7 +707,7 @@
       if (fuelGal === 0 && usableFuelGal > 0) fuelGal = usableFuelGal;
       const fwPG = (h && h.fuel_weight_lb_per_gal) ? h.fuel_weight_lb_per_gal : 6.0;
       const fuelLb = fuelGal * fwPG;
-      const tow = bew + pax + cargo + fuelLb;
+      const tow = bew + pilot + pax + cargo + fuelLb;
 
       // Update hidden grossWeightLb
       document.getElementById('grossWeightLb').value = Math.round(tow);
@@ -710,7 +736,7 @@
         html += `<div style="color:#dc2626; font-weight:600; margin-top:3px">⚠ Over MTOW by ${Math.round(overAmt)} lb — reduce ${(overAmt / fwPG).toFixed(1)} gal fuel or ${Math.round(overAmt)} lb payload</div>`;
       }
       // Show zero-fuel weight
-      const zfw = bew + pax + cargo;
+      const zfw = bew + pilot + pax + cargo;
       html += `<div style="color:#6b7280; margin-top:2px">ZFW: ${Math.round(zfw)} lb &nbsp;|&nbsp; Fuel: ${fuelGal.toFixed(1)} gal (${Math.round(fuelLb)} lb) &nbsp;|&nbsp; Useful load: ${Math.round(tow - bew)} lb</div>`;
       bar.innerHTML = html;
 
@@ -744,7 +770,7 @@
     }
 
     // Wire weight inputs to live-update
-    ['bewLb', 'paxLb', 'cargoLb', 'fuelLoadGal', 'usableFuel', 'oatC'].forEach(id => {
+    ['bewLb', 'pilotLb', 'paxLb', 'cargoLb', 'fuelLoadGal', 'usableFuel'].forEach(id => {
       document.getElementById(id).addEventListener('input', updateWeightBuildUp);
     });
     document.getElementById('dep').addEventListener('change', updateWeightBuildUp);
@@ -830,6 +856,7 @@
         max_msl_ft: Number(document.getElementById('maxMsl').value),
         gross_weight_lb: Number(document.getElementById('grossWeightLb').value) || 0,
         bew_lb: Number(document.getElementById('bewLb').value) || 0,
+        pilot_lb: Number(document.getElementById('pilotLb').value) || 0,
         pax_lb: Number(document.getElementById('paxLb').value) || 0,
         cargo_lb: Number(document.getElementById('cargoLb').value) || 0,
         fuel_load_gal: Number(document.getElementById('fuelLoadGal').value) || 0,
@@ -879,6 +906,7 @@
       if (ac.fuel_type) document.getElementById('fuelType').value = ac.fuel_type;
       if (ac.max_msl_ft) document.getElementById('maxMsl').value = ac.max_msl_ft;
       if (ac.bew_lb) document.getElementById('bewLb').value = ac.bew_lb;
+      if (ac.pilot_lb != null) document.getElementById('pilotLb').value = ac.pilot_lb;
       if (ac.pax_lb != null) document.getElementById('paxLb').value = ac.pax_lb;
       if (ac.cargo_lb != null) document.getElementById('cargoLb').value = ac.cargo_lb;
       if (ac.fuel_load_gal != null) document.getElementById('fuelLoadGal').value = ac.fuel_load_gal;
@@ -2505,6 +2533,7 @@
         oat_c: payload.oat_c,
         gross_weight_lb: payload.gross_weight_lb,
         bew_lb: Number(document.getElementById('bewLb').value) || 0,
+        pilot_lb: Number(document.getElementById('pilotLb').value) || 0,
         pax_lb: Number(document.getElementById('paxLb').value) || 0,
         cargo_lb: Number(document.getElementById('cargoLb').value) || 0,
         fuel_load_gal: Number(document.getElementById('fuelLoadGal').value) || 0,
@@ -2563,8 +2592,10 @@
         updateHeliInfo();
       }
       document.getElementById('oatC').value = r.oat_c != null ? r.oat_c : 15;
+      document.getElementById('oatF').value = Math.round((r.oat_c != null ? r.oat_c : 15) * 9 / 5 + 32);
       document.getElementById('grossWeightLb').value = r.gross_weight_lb || 0;
       if (r.bew_lb) document.getElementById('bewLb').value = r.bew_lb;
+      if (r.pilot_lb != null) document.getElementById('pilotLb').value = r.pilot_lb;
       if (r.pax_lb != null) document.getElementById('paxLb').value = r.pax_lb;
       if (r.cargo_lb != null) document.getElementById('cargoLb').value = r.cargo_lb;
       if (r.fuel_load_gal != null) document.getElementById('fuelLoadGal').value = r.fuel_load_gal;
