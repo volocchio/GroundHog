@@ -1045,7 +1045,7 @@
         ctx.strokeStyle = '#e5e7eb'; ctx.lineWidth = 0.5;
         ctx.beginPath(); ctx.moveTo(xp, pad.top); ctx.lineTo(xp, H - pad.bottom); ctx.stroke();
         ctx.fillStyle = '#6b7280'; ctx.font = '10px system-ui';
-        ctx.fillText(Math.round(d) + ' NM', xp, H - pad.bottom + 4);
+        ctx.fillText(Math.round(d), xp, H - pad.bottom + 4);
       }
 
       // Clip to plot area for all zoomed drawing
