@@ -1681,7 +1681,14 @@
     function renderNavLog({legs, usableFuelGal, reserveMin, burnGph, depLabel, arrLabel, stops, failedLeg, nfStops, grossWeightLb, fuelWeightLbPerGal}) {
       const reserveGal = (reserveMin / 60) * burnGph;
       const fwPG = fuelWeightLbPerGal || 6.0;  // default avgas
-      const trackWeight = grossWeightLb > 0;
+      // Resolve GW: if 0, use max GW from selected helicopter
+      let effectiveGW = grossWeightLb || 0;
+      if (effectiveGW === 0) {
+        const code = document.getElementById('heliType').value;
+        const h = helicopterData[code];
+        if (h && h.max_gross_weight_lb) effectiveGW = h.max_gross_weight_lb;
+      }
+      const trackWeight = effectiveGW > 0;
       const resultsDiv = document.getElementById('results');
       const _nf = nfStops || new Set();
       // Build route header from legs to include NF waypoints
@@ -1725,7 +1732,7 @@
 
       let tripDist = 0, tripTime = 0, tripFuel = 0;
       let currentFuel = usableFuelGal;
-      let currentWeight = grossWeightLb || 0;
+      let currentWeight = effectiveGW;
       const stopSet = new Set((stops || []).map(s => s.toUpperCase()));
       legs.forEach((leg, i) => {
         tripDist += leg.distNm;
