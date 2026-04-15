@@ -586,14 +586,21 @@
 
     window.setCustomPoint = function(field, code) {
       document.getElementById(field).value = code;
-      // Show elevation next to the input
       const elevDiv = document.getElementById(field + 'Elev');
-      if (elevDiv) {
-        if (_lastClickElev != null) {
-          elevDiv.textContent = `Elev: ${Math.round(_lastClickElev)} ft MSL`;
-        } else {
-          elevDiv.textContent = 'Elevation: unknown';
-        }
+      if (elevDiv && _lastClickElev != null) {
+        elevDiv.textContent = `Elev: ${Math.round(_lastClickElev)} ft MSL`;
+      } else if (elevDiv && code.startsWith('@')) {
+        // Fetch elevation async if we don't have it
+        elevDiv.textContent = 'Loading elevation…';
+        const parts = code.slice(1).split(',');
+        fetch(`/elevation?lat=${parts[0]}&lon=${parts[1]}`)
+          .then(r => r.json())
+          .then(d => {
+            elevDiv.textContent = d.elev_ft != null
+              ? `Elev: ${Math.round(d.elev_ft)} ft MSL`
+              : 'Elevation data not available';
+          })
+          .catch(() => { elevDiv.textContent = 'Elevation data not available'; });
       }
       map.closePopup();
       updateWeightBuildUp();
