@@ -492,6 +492,29 @@ _register(HelicopterModel(
     notes="Enstrom 280FX POH. Lycoming HIO-360-F1AD, 225 HP.",
 ))
 
+# ── Bell UH-1H Iroquois (Huey) ──────────────────────────────────────────
+_register(HelicopterModel(
+    type_code="UH1H",
+    name="Bell UH-1H Iroquois (Huey)",
+    engine_type="turbine",
+    fuel_type="JETA",
+    max_gross_weight_lb=9500,
+    empty_weight_lb=5210,
+    usable_fuel_gal=209,
+    fuel_weight_lb_per_gal=6.7,
+    service_ceiling_da_ft=12600,
+    perf_table=[
+        PerfPoint(da_ft=0,    max_roc_fpm=1660, cruise_ktas=110, fuel_burn_gph=80.0, hoge_max_gw_lb=8500, hige_max_gw_lb=9500),
+        PerfPoint(da_ft=2000, max_roc_fpm=1420, cruise_ktas=108, fuel_burn_gph=78.0, hoge_max_gw_lb=8100, hige_max_gw_lb=9200),
+        PerfPoint(da_ft=4000, max_roc_fpm=1180, cruise_ktas=106, fuel_burn_gph=76.0, hoge_max_gw_lb=7650, hige_max_gw_lb=8800),
+        PerfPoint(da_ft=6000, max_roc_fpm=930,  cruise_ktas=103, fuel_burn_gph=74.0, hoge_max_gw_lb=7150, hige_max_gw_lb=8300),
+        PerfPoint(da_ft=8000, max_roc_fpm=670,  cruise_ktas=100, fuel_burn_gph=71.0, hoge_max_gw_lb=6600, hige_max_gw_lb=7750),
+        PerfPoint(da_ft=10000,max_roc_fpm=400,  cruise_ktas=96,  fuel_burn_gph=68.0, hoge_max_gw_lb=6000, hige_max_gw_lb=7100),
+        PerfPoint(da_ft=12000,max_roc_fpm=130,  cruise_ktas=91,  fuel_burn_gph=65.0, hoge_max_gw_lb=5350, hige_max_gw_lb=6400),
+    ],
+    notes="UH-1H Operator's Manual TM 55-1520-210-10. Lycoming T53-L-13B, 1,400 SHP.",
+))
+
 
 # ---------------------------------------------------------------------------
 # Public API
