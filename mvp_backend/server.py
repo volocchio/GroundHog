@@ -19,7 +19,7 @@ from typing import List
 
 logger = logging.getLogger("groundhog")
 
-from mvp_backend.planner import load_airports_solver, plan_route_multi_stop, terrain_avoid_leg, terrain_avoid_leg_streaming, leg_fuel_ok, plan_stop_sequence, plan_stop_sequences
+from mvp_backend.planner import load_airports_solver, plan_route_multi_stop, terrain_avoid_leg, terrain_avoid_leg_streaming, leg_fuel_ok, plan_stop_sequence, plan_stop_sequences, Airport
 from mvp_backend.srtm_local import SRTMProvider
 from mvp_backend.grid_astar import _haversine_nm
 from mvp_backend import route_cache
@@ -171,8 +171,8 @@ def helicopter_performance(
 @app.post("/route")
 def route(req: RouteRequest):
     airports = load_airports_solver()
-    dep = airports.get(req.dep_icao.strip().upper())
-    arr = airports.get(req.arr_icao.strip().upper())
+    dep = _resolve_airport(req.dep_icao, airports)
+    arr = _resolve_airport(req.arr_icao, airports)
     if not dep:
         raise HTTPException(404, f"Unknown dep_icao {req.dep_icao}")
     if not arr:
@@ -205,6 +205,33 @@ def route(req: RouteRequest):
     return result
 
 
+def _resolve_airport(code: str, airports: dict) -> Airport | None:
+    """Resolve an ICAO code or @lat,lon string to an Airport object."""
+    code = code.strip()
+    if code.startswith('@'):
+        # Custom lat/lon point: @lat,lon
+        try:
+            parts = code[1:].split(',')
+            lat, lon = float(parts[0]), float(parts[1])
+        except (ValueError, IndexError):
+            return None
+        from mvp_backend.terrain_provider import meters_to_feet
+        provider = SRTMProvider(cache_dir=os.path.join(ROOT, "mvp_backend", "srtm_cache"))
+        elev_m = provider.get_one_m(lat, lon)
+        elev_ft = meters_to_feet(elev_m) if elev_m == elev_m else 0.0
+        return Airport(
+            icao=code,
+            name=f"Custom ({lat:.4f}, {lon:.4f})",
+            lat=lat,
+            lon=lon,
+            elevation_ft=elev_ft,
+            facility_use="",
+            fuel_100ll=0,
+            fuel_jeta=0,
+        )
+    return airports.get(code.upper())
+
+
 @app.post("/route/stream")
 def route_stream(req: RouteRequest):
     """SSE endpoint that streams A* exploration events for visualization."""
@@ -214,8 +241,8 @@ def route_stream(req: RouteRequest):
                 req.max_detour_factor, req.max_climb_fpm, req.max_descent_fpm,
                 req.avoid_airspace, req.obstacle_radius_nm, req.obstacle_clearance_ft)
     airports = load_airports_solver()
-    dep = airports.get(req.dep_icao.strip().upper())
-    arr = airports.get(req.arr_icao.strip().upper())
+    dep = _resolve_airport(req.dep_icao, airports)
+    arr = _resolve_airport(req.arr_icao, airports)
     if not dep:
         raise HTTPException(404, f"Unknown dep_icao {req.dep_icao}")
     if not arr:
@@ -225,18 +252,18 @@ def route_stream(req: RouteRequest):
     waypoint_aps = []
     waypoint_fuel = {}  # icao → True (refuel) / False (no fuel)
     for wp_raw in (req.waypoints or []):
-        raw = wp_raw.strip().upper()
-        if raw.endswith('-NF'):
-            icao = raw[:-3].strip()
+        raw = wp_raw.strip()
+        if raw.upper().endswith('-NF'):
+            code = raw[:-3].strip()
             fuel = False
         else:
-            icao = raw
+            code = raw
             fuel = True
-        wp = airports.get(icao)
+        wp = _resolve_airport(code, airports)
         if not wp:
-            raise HTTPException(404, f"Unknown waypoint airport: {icao}")
+            raise HTTPException(404, f"Unknown waypoint: {code}")
         waypoint_aps.append(wp)
-        waypoint_fuel[icao] = fuel
+        waypoint_fuel[wp.icao] = fuel
 
     # Segments: dep → wp1, wp1 → wp2, ..., wpN → arr
     segment_endpoints = [dep] + waypoint_aps + [arr]
@@ -597,6 +624,16 @@ def elevation_profile(req: ProfileRequest):
         "min_agl_ft": req.min_agl_ft,
         "airspace_zones": airspace_zones,
     }
+
+
+@app.get("/elevation")
+def elevation_at_point(lat: float = Query(...), lon: float = Query(...)):
+    """Return ground elevation (ft MSL) at a single lat/lon point."""
+    from mvp_backend.terrain_provider import meters_to_feet
+    provider = SRTMProvider(cache_dir=os.path.join(ROOT, "mvp_backend", "srtm_cache"))
+    elev_m = provider.get_one_m(lat, lon)
+    elev_ft = meters_to_feet(elev_m) if elev_m == elev_m else 0.0
+    return {"lat": lat, "lon": lon, "elev_ft": round(elev_ft, 0)}
 
 
 # ── cache stats endpoint ─────────────────────────────────────────────

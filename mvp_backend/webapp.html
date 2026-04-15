@@ -489,6 +489,10 @@
     map.on('moveend', _debounce(loadAirspace, 300));
 
     function apLabel(icao) {
+      if (icao && icao.startsWith('@')) {
+        const parts = icao.slice(1).split(',');
+        return `${Number(parts[0]).toFixed(2)}°,${Number(parts[1]).toFixed(2)}°`;
+      }
       const ap = airportLookup[icao];
       return ap ? `${icao} (${Math.round(ap.elev)}')` : icao;
     }
@@ -535,6 +539,50 @@
         }
       } catch (e) { /* silent */ }
     }
+
+    // ── Map click → pick a landing spot ──
+    window.setCustomPoint = function(field, code) {
+      document.getElementById(field).value = code;
+      map.closePopup();
+    };
+    window.addCustomWaypoint = function(code, noFuel) {
+      const wpInput = document.getElementById('waypoints');
+      const suffix = noFuel ? '-NF' : '';
+      const token = code + suffix;
+      const existing = wpInput.value.trim();
+      wpInput.value = existing ? existing + ' ' + token : token;
+      map.closePopup();
+    };
+
+    map.on('click', async function(e) {
+      const lat = e.latlng.lat;
+      const lon = e.latlng.lng;
+      const code = `@${lat.toFixed(5)},${lon.toFixed(5)}`;
+
+      // Show loading popup immediately
+      const popup = L.popup().setLatLng(e.latlng).setContent('Loading elevation…').openOn(map);
+
+      try {
+        const res = await fetch(`/elevation?lat=${lat}&lon=${lon}`);
+        const data = await res.json();
+        const elevFt = Math.round(data.elev_ft);
+        const label = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
+
+        popup.setContent(
+          `<b>Custom Point</b><br>${label}<br>Elev: ${elevFt} ft (SRTM)`
+          + `<div style="margin-top:6px; display:flex; gap:4px; flex-wrap:wrap">`
+          + `<button onclick="setCustomPoint('dep','${code}')" style="padding:4px 8px; font-size:11px; border:1px solid #2563eb; background:#eff6ff; color:#2563eb; border-radius:4px; cursor:pointer">Set Departure</button>`
+          + `<button onclick="setCustomPoint('arr','${code}')" style="padding:4px 8px; font-size:11px; border:1px solid #16a34a; background:#f0fdf4; color:#16a34a; border-radius:4px; cursor:pointer">Set Arrival</button>`
+          + `</div>`
+          + `<div style="margin-top:4px; display:flex; gap:4px; flex-wrap:wrap">`
+          + `<button onclick="addCustomWaypoint('${code}',false)" style="padding:4px 8px; font-size:11px; border:1px solid #9333ea; background:#faf5ff; color:#9333ea; border-radius:4px; cursor:pointer">Add Stop (land &amp; fuel)</button>`
+          + `<button onclick="addCustomWaypoint('${code}',true)" style="padding:4px 8px; font-size:11px; border:1px solid #6b7280; background:#f9fafb; color:#6b7280; border-radius:4px; cursor:pointer">Add Stop (no fuel)</button>`
+          + `</div>`
+        );
+      } catch (err) {
+        popup.setContent(`<b>Custom Point</b><br>${lat.toFixed(4)}°, ${lon.toFixed(4)}°<br><i>Elevation unavailable</i>`);
+      }
+    });
 
     // Load airports on startup
     loadAirports();
@@ -1630,8 +1678,10 @@
       return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
-    function renderNavLog({legs, usableFuelGal, reserveMin, burnGph, depLabel, arrLabel, stops, failedLeg, nfStops}) {
+    function renderNavLog({legs, usableFuelGal, reserveMin, burnGph, depLabel, arrLabel, stops, failedLeg, nfStops, grossWeightLb, fuelWeightLbPerGal}) {
       const reserveGal = (reserveMin / 60) * burnGph;
+      const fwPG = fuelWeightLbPerGal || 6.0;  // default avgas
+      const trackWeight = grossWeightLb > 0;
       const resultsDiv = document.getElementById('results');
       const _nf = nfStops || new Set();
       // Build route header from legs to include NF waypoints
@@ -1663,6 +1713,10 @@
       html += '<th style="text-align:right;padding:2px 6px">Time<br>hrs</th>';
       html += '<th style="text-align:right;padding:2px 6px">Fuel<br>Burn</th>';
       html += '<th style="text-align:right;padding:2px 6px">Fuel<br>Rem</th>';
+      if (trackWeight) {
+        html += '<th style="text-align:right;padding:2px 6px">TO Wt<br>lb</th>';
+        html += '<th style="text-align:right;padding:2px 6px">LDG Wt<br>lb</th>';
+      }
       html += '<th style="text-align:right;padding:2px 6px;border-left:2px solid #888">Trip<br>Dist</th>';
       html += '<th style="text-align:right;padding:2px 6px">Trip<br>Time<br>min</th>';
       html += '<th style="text-align:right;padding:2px 6px">Trip<br>Time<br>hrs</th>';
@@ -1671,6 +1725,7 @@
 
       let tripDist = 0, tripTime = 0, tripFuel = 0;
       let currentFuel = usableFuelGal;
+      let currentWeight = grossWeightLb || 0;
       const stopSet = new Set((stops || []).map(s => s.toUpperCase()));
       legs.forEach((leg, i) => {
         tripDist += leg.distNm;
@@ -1698,6 +1753,13 @@
         html += `<td style="text-align:right;padding:2px 6px">${fmt(leg.timeHr, 1)}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${fmt(leg.fuelGal, 1)} gal</td>`;
         html += `<td style="text-align:right;padding:2px 6px;color:${fuelRem < reserveGal ? '#dc2626' : '#16a34a'}">${fmt(fuelRem, 1)} gal</td>`;
+        if (trackWeight) {
+          const toWt = currentWeight;
+          const ldgWt = currentWeight - leg.fuelGal * fwPG;
+          html += `<td style="text-align:right;padding:2px 6px">${Math.round(toWt)}</td>`;
+          html += `<td style="text-align:right;padding:2px 6px">${Math.round(ldgWt)}</td>`;
+          currentWeight = ldgWt;
+        }
         html += `<td style="text-align:right;padding:2px 6px;border-left:2px solid #888">${fmt(tripDist, 1)}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${tripMin}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${fmt(tripTime, 1)}</td>`;
@@ -1706,17 +1768,22 @@
 
         // Refuel at this stop unless it's NF or the final destination
         if (!isLastLeg && !isNF) {
+          if (trackWeight) {
+            // Weight goes back up by the fuel added
+            currentWeight += (usableFuelGal - currentFuel) * fwPG;
+          }
           currentFuel = usableFuelGal;
         }
       });
 
       // failed leg row (if route aborted mid-way)
+      const wtCols = trackWeight ? 2 : 0;
       if (failedLeg) {
         html += '<tr style="border-bottom:1px solid #ddd; background:#fef2f2; color:#dc2626">';
         html += `<td style="padding:2px 6px">${legs.length + 1} \u2716</td>`;
         html += `<td style="padding:2px 6px">${failedLeg.from ? apLabel(failedLeg.from) : '?'}</td>`;
         html += `<td style="padding:2px 6px">${failedLeg.to ? apLabel(failedLeg.to) : '?'}</td>`;
-        html += '<td colspan="5" style="padding:2px 6px">NO PATH FOUND</td>';
+        html += `<td colspan="${5 + wtCols}" style="padding:2px 6px">NO PATH FOUND</td>`;
         html += '<td colspan="4" style="border-left:2px solid #888"></td>';
         html += '</tr>';
       }
@@ -1730,13 +1797,14 @@
       html += `<td style="text-align:right;padding:2px 6px">${fmt(tripTime, 1)}</td>`;
       html += `<td style="text-align:right;padding:2px 6px">${fmt(tripFuel, 1)} gal</td>`;
       html += `<td style="text-align:right;padding:2px 6px;color:${lastFuelRem < reserveGal ? '#dc2626' : '#16a34a'}">${fmt(lastFuelRem, 1)} gal</td>`;
+      if (trackWeight) html += `<td colspan="2"></td>`;
       html += '<td colspan="4" style="border-left:2px solid #888"></td>';
       html += '</tr>';
 
       // reserve row
       html += '<tr style="font-size:0.9em; color:#666">';
       html += `<td colspan="6" style="padding:2px 6px">Reserve (${fmt(reserveMin, 0)} min)</td>`;
-      html += `<td colspan="2" style="text-align:right;padding:2px 6px">${fmt(reserveGal, 1)} gal</td>`;
+      html += `<td colspan="${2 + wtCols}" style="text-align:right;padding:2px 6px">${fmt(reserveGal, 1)} gal</td>`;
       html += '<td colspan="4" style="border-left:2px solid #888"></td>';
       html += '</tr>';
 
@@ -1788,6 +1856,12 @@
     }
 
     document.getElementById('abortBtn').addEventListener('click', abortPlanning);
+
+    function getFuelWeightLbPerGal() {
+      const code = document.getElementById('heliType').value;
+      const h = helicopterData[code];
+      return (h && h.fuel_weight_lb_per_gal) ? h.fuel_weight_lb_per_gal : 6.0;
+    }
 
     function getPayload() {
       const dep = document.getElementById('dep').value.trim().toUpperCase();
@@ -2021,6 +2095,8 @@
                   stops,
                   failedLeg: { from: event.from, to: event.to },
                   nfStops: new Set((payload.waypoints || []).filter(w => w.toUpperCase().endsWith('-NF')).map(w => w.slice(0, -3).toUpperCase())),
+                  grossWeightLb: payload.gross_weight_lb,
+                  fuelWeightLbPerGal: getFuelWeightLbPerGal(),
                 });
                 if (allCoords.length >= 2) {
                   fetchAndDrawProfile(allCoords, payload.max_msl_ft, payload.min_agl_ft, payload.max_agl_ft || 0, payload.dep_icao, payload.arr_icao,
@@ -2044,6 +2120,8 @@
                   arrLabel: payload.arr_icao,
                   stops,
                   nfStops: new Set((payload.waypoints || []).filter(w => w.toUpperCase().endsWith('-NF')).map(w => w.slice(0, -3).toUpperCase())),
+                  grossWeightLb: payload.gross_weight_lb,
+                  fuelWeightLbPerGal: getFuelWeightLbPerGal(),
                 });
 
                 const cachedCount = legsList.filter(l => l.cached).length;
@@ -2120,6 +2198,8 @@
           arrLabel: payload.arr_icao,
           stops: data.stops || [],
           nfStops: new Set((payload.waypoints || []).filter(w => w.toUpperCase().endsWith('-NF')).map(w => w.slice(0, -3).toUpperCase())),
+          grossWeightLb: payload.gross_weight_lb,
+          fuelWeightLbPerGal: getFuelWeightLbPerGal(),
         });
 
         document.getElementById('status').textContent = '';
