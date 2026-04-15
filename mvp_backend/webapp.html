@@ -384,10 +384,50 @@
     let airportsLoaded = false;
     let airportLookup = {};  // ICAO → {elev, name, ...}
 
+    // ── Field elevation + density altitude display ──
+    function daFromElev(elevFt) {
+      const oatC = Number(document.getElementById('oatC').value) || 15;
+      const isaTemp = 15 - 1.98 * (elevFt / 1000);
+      return Math.round(elevFt + 120 * (oatC - isaTemp));
+    }
+
+    function showElevInfo(field, elevFt) {
+      const div = document.getElementById(field + 'Elev');
+      if (!div) return;
+      if (elevFt == null) { div.textContent = ''; return; }
+      const da = daFromElev(elevFt);
+      div.textContent = `Field elev: ${Math.round(elevFt)} ft MSL  •  DA: ${da} ft`;
+    }
+
+    function updateFieldElevation(field) {
+      const val = document.getElementById(field).value.trim().toUpperCase();
+      const div = document.getElementById(field + 'Elev');
+      if (!val) { if (div) div.textContent = ''; return; }
+
+      // ICAO airport
+      const ap = airportLookup[val];
+      if (ap) { showElevInfo(field, ap.elev); return; }
+
+      // @lat,lon custom point
+      if (val.startsWith('@')) {
+        const parts = val.slice(1).split(',');
+        if (parts.length === 2) {
+          if (div) div.textContent = 'Loading…';
+          fetch(`/elevation?lat=${parts[0]}&lon=${parts[1]}`)
+            .then(r => r.json())
+            .then(d => showElevInfo(field, d.elev_ft))
+            .catch(() => { if (div) div.textContent = ''; });
+        }
+        return;
+      }
+      if (div) div.textContent = '';
+    }
+
     // Map click → set departure or arrival
     window.setAirportField = function(field, icao) {
       document.getElementById(field).value = icao;
       map.closePopup();
+      updateFieldElevation(field);
     };
 
     // Swap departure and arrival airports
@@ -397,12 +437,8 @@
       const tmp = dep.value;
       dep.value = arr.value;
       arr.value = tmp;
-      // Swap elevation labels too
-      const de = document.getElementById('depElev');
-      const ae = document.getElementById('arrElev');
-      const te = de.textContent;
-      de.textContent = ae.textContent;
-      ae.textContent = te;
+      updateFieldElevation('dep');
+      updateFieldElevation('arr');
     };
 
     // Add airport as intermediate waypoint (with or without fuel stop)
@@ -578,6 +614,9 @@
             direction: 'top', offset: [0, -6],
           }).bindPopup(popupHtml).addTo(targetGroup);
         }
+        // Show elevation for pre-filled dep/arr
+        updateFieldElevation('dep');
+        updateFieldElevation('arr');
       } catch (e) { /* silent */ }
     }
 
@@ -586,21 +625,10 @@
 
     window.setCustomPoint = function(field, code) {
       document.getElementById(field).value = code;
-      const elevDiv = document.getElementById(field + 'Elev');
-      if (elevDiv && _lastClickElev != null) {
-        elevDiv.textContent = `Elev: ${Math.round(_lastClickElev)} ft MSL`;
-      } else if (elevDiv && code.startsWith('@')) {
-        // Fetch elevation async if we don't have it
-        elevDiv.textContent = 'Loading elevation…';
-        const parts = code.slice(1).split(',');
-        fetch(`/elevation?lat=${parts[0]}&lon=${parts[1]}`)
-          .then(r => r.json())
-          .then(d => {
-            elevDiv.textContent = d.elev_ft != null
-              ? `Elev: ${Math.round(d.elev_ft)} ft MSL`
-              : 'Elevation data not available';
-          })
-          .catch(() => { elevDiv.textContent = 'Elevation data not available'; });
+      if (_lastClickElev != null) {
+        showElevInfo(field, _lastClickElev);
+      } else {
+        updateFieldElevation(field);
       }
       map.closePopup();
       updateWeightBuildUp();
@@ -614,14 +642,24 @@
       map.closePopup();
     };
 
-    // Clear elevation labels when user manually edits dep/arr
+    // Update elevation labels when user edits dep/arr
+    let _depElevTimer = null, _arrElevTimer = null;
     document.getElementById('dep').addEventListener('input', () => {
-      const v = document.getElementById('dep').value;
-      if (!v.startsWith('@')) document.getElementById('depElev').textContent = '';
+      clearTimeout(_depElevTimer);
+      _depElevTimer = setTimeout(() => updateFieldElevation('dep'), 300);
     });
     document.getElementById('arr').addEventListener('input', () => {
-      const v = document.getElementById('arr').value;
-      if (!v.startsWith('@')) document.getElementById('arrElev').textContent = '';
+      clearTimeout(_arrElevTimer);
+      _arrElevTimer = setTimeout(() => updateFieldElevation('arr'), 300);
+    });
+    // Update DA when OAT changes
+    document.getElementById('oatC').addEventListener('input', () => {
+      updateFieldElevation('dep');
+      updateFieldElevation('arr');
+    });
+    document.getElementById('oatF').addEventListener('input', () => {
+      updateFieldElevation('dep');
+      updateFieldElevation('arr');
     });
 
     map.on('click', async function(e) {
