@@ -101,6 +101,7 @@
 
       <label>Departure ICAO</label>
       <input id="dep" value="KSZT" />
+      <div id="depElev" class="muted" style="font-size:11px; margin-top:-2px"></div>
 
       <div style="display:flex; justify-content:center; margin:4px 0 -4px 0;">
         <button type="button" id="swapBtn" onclick="swapDepArr()" style="width:auto; margin:0; padding:4px 18px; font-size:13px; background:#f3f4f6; color:#374151; border:1px solid #d1d5db; border-radius:8px; cursor:pointer; display:inline-flex; align-items:center; gap:4px;" title="Swap departure &amp; arrival">&#x21C5; Swap</button>
@@ -108,6 +109,7 @@
 
       <label>Arrival ICAO</label>
       <input id="arr" value="E60" />
+      <div id="arrElev" class="muted" style="font-size:11px; margin-top:-2px"></div>
 
       <div class="watch-row" style="margin-top:6px">
         <input type="checkbox" id="roundTrip" style="width:auto" />
@@ -395,6 +397,12 @@
       const tmp = dep.value;
       dep.value = arr.value;
       arr.value = tmp;
+      // Swap elevation labels too
+      const de = document.getElementById('depElev');
+      const ae = document.getElementById('arrElev');
+      const te = de.textContent;
+      de.textContent = ae.textContent;
+      ae.textContent = te;
     };
 
     // Add airport as intermediate waypoint (with or without fuel stop)
@@ -574,9 +582,21 @@
     }
 
     // ── Map click → pick a landing spot ──
+    let _lastClickElev = null; // elevation from last map click
+
     window.setCustomPoint = function(field, code) {
       document.getElementById(field).value = code;
+      // Show elevation next to the input
+      const elevDiv = document.getElementById(field + 'Elev');
+      if (elevDiv) {
+        if (_lastClickElev != null) {
+          elevDiv.textContent = `Elev: ${Math.round(_lastClickElev)} ft MSL`;
+        } else {
+          elevDiv.textContent = 'Elevation: unknown';
+        }
+      }
       map.closePopup();
+      updateWeightBuildUp();
     };
     window.addCustomWaypoint = function(code, noFuel) {
       const wpInput = document.getElementById('waypoints');
@@ -586,6 +606,16 @@
       wpInput.value = existing ? existing + ' ' + token : token;
       map.closePopup();
     };
+
+    // Clear elevation labels when user manually edits dep/arr
+    document.getElementById('dep').addEventListener('input', () => {
+      const v = document.getElementById('dep').value;
+      if (!v.startsWith('@')) document.getElementById('depElev').textContent = '';
+    });
+    document.getElementById('arr').addEventListener('input', () => {
+      const v = document.getElementById('arr').value;
+      if (!v.startsWith('@')) document.getElementById('arrElev').textContent = '';
+    });
 
     map.on('click', async function(e) {
       const lat = e.latlng.lat;
@@ -598,6 +628,7 @@
       try {
         const res = await fetch(`/elevation?lat=${lat}&lon=${lon}`);
         const data = await res.json();
+        _lastClickElev = data.elev_ft;
         const label = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
         const elevLine = data.elev_ft != null
           ? `Elev: ${Math.round(data.elev_ft)} ft (SRTM)`
@@ -615,6 +646,7 @@
           + `</div>`
         );
       } catch (err) {
+        _lastClickElev = null;
         const label = `${lat.toFixed(4)}°, ${lon.toFixed(4)}°`;
         popup.setContent(
           `<b>Custom Point</b><br>${label}<br><i>Elevation data not available</i>`

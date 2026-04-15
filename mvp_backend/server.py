@@ -217,7 +217,7 @@ def _resolve_airport(code: str, airports: dict) -> Airport | None:
             return None
         from mvp_backend.terrain_provider import meters_to_feet
         provider = SRTMProvider(cache_dir=os.path.join(ROOT, "mvp_backend", "srtm_cache"))
-        elev_m = provider.get_one_m(lat, lon)
+        elev_m = provider.get_many_m([(lat, lon)])[0]
         elev_ft = meters_to_feet(elev_m) if elev_m == elev_m else 0.0
         return Airport(
             icao=code,
