@@ -173,6 +173,8 @@ class HelicopterModel:
         hoge_gw = self.hoge_max_gw(da)
         hige_gw = self.hige_max_gw(da)
 
+        gw_note = f" (max GW for {self.type_code})" if gross_weight_lb is None else ""
+
         warnings: List[str] = []
         if da >= self.service_ceiling_da_ft:
             warnings.append(
@@ -187,8 +189,8 @@ class HelicopterModel:
         if gw > hige_gw:
             hige_deficit = gw - hige_gw
             warnings.append(
-                f"DA {da:.0f} ft is too high to hover at your landing weight — "
-                f"exceeds HIGE limit by {hige_deficit:.0f} lb.  "
+                f"At {gw:.0f} lb{gw_note}, DA {da:.0f} ft exceeds HIGE limit "
+                f"by {hige_deficit:.0f} lb (max HIGE: {hige_gw:.0f} lb).  "
                 f"Plan for a run-on landing and takeoff.  "
                 f"Reduce {hige_deficit / self.fuel_weight_lb_per_gal:.1f} gal fuel "
                 f"or {hige_deficit:.0f} lb payload to regain hover capability."
@@ -196,8 +198,8 @@ class HelicopterModel:
         elif gw > hoge_gw:
             hoge_deficit = gw - hoge_gw
             warnings.append(
-                f"Cannot hover OGE at DA {da:.0f} ft — "
-                f"exceeds HOGE limit by {hoge_deficit:.0f} lb.  "
+                f"At {gw:.0f} lb{gw_note}, cannot hover OGE at DA {da:.0f} ft — "
+                f"exceeds HOGE limit by {hoge_deficit:.0f} lb (max HOGE: {hoge_gw:.0f} lb).  "
                 f"Stay in ground effect or reduce "
                 f"{hoge_deficit / self.fuel_weight_lb_per_gal:.1f} gal fuel / "
                 f"{hoge_deficit:.0f} lb payload.  "
@@ -512,9 +514,13 @@ def evaluate_leg(
     max_enroute_elev_ft: float,
     oat_c: float,
     gross_weight_lb: float | None = None,
+    fuel_burn_gal: float = 0.0,
 ) -> Dict:
     """
     Evaluate whether a helicopter can fly a leg given the conditions.
+
+    Uses takeoff weight for departure/enroute and landing weight
+    (takeoff weight minus fuel burned) for arrival.
 
     Returns a dict with per-phase performance and any warnings/blockers.
     """
@@ -523,27 +529,30 @@ def evaluate_leg(
         return {"error": f"Unknown helicopter type: {type_code}"}
 
     gw = gross_weight_lb or heli.max_gross_weight_lb
+    ldg_wt = gw - fuel_burn_gal * heli.fuel_weight_lb_per_gal
     results: Dict = {
         "type_code": heli.type_code,
         "gross_weight_lb": round(gw),
+        "landing_weight_lb": round(ldg_wt),
         "oat_c": oat_c,
         "phases": {},
         "warnings": [],
         "blockers": [],
     }
 
-    # Evaluate three phases: departure, enroute (max terrain), arrival
+    # Evaluate three phases: departure at takeoff weight,
+    # enroute at takeoff weight, arrival at landing weight
     phases = [
-        ("departure", dep_elev_ft),
-        ("enroute_max", max_enroute_elev_ft),
-        ("arrival", arr_elev_ft),
+        ("departure", dep_elev_ft, gw),
+        ("enroute_max", max_enroute_elev_ft, gw),
+        ("arrival", arr_elev_ft, ldg_wt),
     ]
-    for phase_name, pa in phases:
-        perf = heli.performance_at(pa, oat_c, gw)
+    for phase_name, pa, phase_gw in phases:
+        perf = heli.performance_at(pa, oat_c, phase_gw)
         results["phases"][phase_name] = perf
         for w in perf["warnings"]:
             tagged = f"[{phase_name}] {w}"
-            if perf.get("at_service_ceiling") or "Cannot hover" in w:
+            if perf.get("at_service_ceiling") or "cannot hover" in w.lower():
                 results["blockers"].append(tagged)
             else:
                 results["warnings"].append(tagged)

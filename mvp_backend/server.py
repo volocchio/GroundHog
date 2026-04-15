@@ -421,6 +421,9 @@ def route_stream(req: RouteRequest):
                                 # ── Attach helicopter performance for this leg ──
                                 if heli:
                                     max_terr = event.get("max_terrain_ft", max(from_ap.elevation_ft, to_ap.elevation_ft))
+                                    leg_dist = event.get("dist_nm", 0.0)
+                                    leg_time_hr = leg_dist / req.cruise_speed_kt if req.cruise_speed_kt > 0 else 0
+                                    leg_fuel_gal = leg_time_hr * req.fuel_burn_gph
                                     leg_eval = helicopter_db.evaluate_leg(
                                         heli.type_code,
                                         dep_elev_ft=from_ap.elevation_ft,
@@ -428,6 +431,7 @@ def route_stream(req: RouteRequest):
                                         max_enroute_elev_ft=max_terr + req.min_agl_ft,
                                         oat_c=req.oat_c,
                                         gross_weight_lb=req.gross_weight_lb if req.gross_weight_lb > 0 else None,
+                                        fuel_burn_gal=leg_fuel_gal,
                                     )
                                     event["helicopter_perf"] = leg_eval
                             if event.get("type") == "no_path":
