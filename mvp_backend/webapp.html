@@ -244,6 +244,11 @@
       </select>
       <div id="glideInfo" class="muted" style="font-size:11px; margin:2px 0"></div>
 
+      <div style="display:flex; align-items:center; gap:6px; margin:4px 0 0">
+        <label for="autorotSpeedKt" style="margin:0; font-size:13px">Autorotation speed (KIAS)</label>
+        <input id="autorotSpeedKt" type="number" value="60" min="30" max="150" step="1" style="width:60px; text-align:right" title="Best autorotation glide speed" />
+      </div>
+
       <div style="display:flex; align-items:center; gap:6px; margin:6px 0 0">
         <input type="checkbox" id="avoidBorders" checked style="width:auto" />
         <label for="avoidBorders" style="margin:0; display:inline; font-size:13px">Avoid international border crossings</label>
@@ -784,6 +789,7 @@
         // Populate weight build-up with S300C defaults
         if (helicopterData['S300C']) {
           document.getElementById('bewLb').value = helicopterData['S300C'].empty_weight_lb;
+          document.getElementById('autorotSpeedKt').value = helicopterData['S300C'].autorotation_speed_kt || 60;
           updateWeightBuildUp();
         }
       } catch(e) { /* silent */ }
@@ -916,6 +922,7 @@
       document.getElementById('fuelType').value = h.fuel_type;
       document.getElementById('bewLb').value = h.empty_weight_lb;
       document.getElementById('fuelLoadGal').value = d.usable_fuel_gal; // default to full tanks
+      document.getElementById('autorotSpeedKt').value = h.autorotation_speed_kt || 60;
       document.getElementById('grossWeightLb').value = 0;
       updateWeightBuildUp();
       // Re-filter My Aircraft to match the new type
@@ -1015,6 +1022,7 @@
           document.getElementById('burnGph').value = h.defaults.fuel_burn_gph;
           document.getElementById('fuelType').value = h.fuel_type;
           document.getElementById('fuelLoadGal').value = h.defaults.usable_fuel_gal;
+          document.getElementById('autorotSpeedKt').value = h.autorotation_speed_kt || 60;
         }
       }
 
@@ -1786,7 +1794,11 @@
         }
       }
 
-      // ── Autorotation glide slope over water crossings ──
+      // ── Autorotation glide cone over water crossings ──
+      // Shows triangular glide envelopes from BOTH shores:
+      //   Forward cone: from entry altitude descending toward exit
+      //   Backward cone: from exit altitude descending toward entry
+      // Green fill = reachable zone, red fill = dead zone (can't reach either shore)
       if (fa && isWater.length === dist.length) {
         const code = document.getElementById('heliType').value;
         const heli = typeof helicopterData !== 'undefined' ? helicopterData[code] : null;
@@ -1804,51 +1816,90 @@
           }
           if (ws >= 0) waterSections.push({ start: ws, end: dist.length - 1 });
 
+          const descentPerNm = 6076.12 / glideRatio; // ft lost per NM
+
           for (const sec of waterSections) {
-            // Entry: last land point before water (or water start)
             const entryIdx = sec.start > 0 ? sec.start - 1 : sec.start;
-            // Exit: first land point after water (or water end)
             const exitIdx = sec.end < dist.length - 1 ? sec.end + 1 : sec.end;
             const entryAlt = fa[entryIdx];
             const exitAlt = fa[exitIdx];
-            const entryDist = dist[entryIdx];
-            const exitDist = dist[exitIdx];
-            const crossingNm = exitDist - entryDist;
+            const entryD = dist[entryIdx];
+            const exitD = dist[exitIdx];
+            const crossingNm = exitD - entryD;
             if (crossingNm <= 0) continue;
 
-            // Glide range from entry altitude (AGL over water surface)
-            const waterElev = ground[sec.start]; // water surface elevation
+            const waterElev = ground[sec.start];
+
+            // Forward glide: entry → exit direction
             const aglEntry = entryAlt - waterElev;
-            const glideNm = (aglEntry * glideRatio) / 6076.12;
-            const canGlide = glideNm >= crossingNm;
+            const fwdRangeNm = (aglEntry * glideRatio) / 6076.12;
+            const fwdEndD = Math.min(entryD + fwdRangeNm, exitD);
+            const fwdEndAlt = entryAlt - (fwdEndD - entryD) * descentPerNm;
 
-            // Draw glide slope line from entry point descending at glide ratio
-            // glide_ratio = horizontal_ft / vertical_ft, so descent per NM = 6076.12 / glideRatio ft
-            const descentPerNm = 6076.12 / glideRatio;
-            const glideDist = Math.min(entryDist + glideNm, exitDist);
-            const glideEndAlt = entryAlt - (glideDist - entryDist) * descentPerNm;
+            // Backward glide: exit → entry direction
+            const aglExit = exitAlt - waterElev;
+            const bwdRangeNm = (aglExit * glideRatio) / 6076.12;
+            const bwdEndD = Math.max(exitD - bwdRangeNm, entryD);
+            const bwdEndAlt = exitAlt - (exitD - bwdEndD) * descentPerNm;
 
-            ctx.strokeStyle = canGlide ? 'rgba(34, 197, 94, 0.7)' : 'rgba(239, 68, 68, 0.7)';
+            // Forward triangle: entry top → glide end → entry base
+            ctx.fillStyle = 'rgba(34, 197, 94, 0.15)';
+            ctx.beginPath();
+            ctx.moveTo(x(entryD), y(entryAlt));
+            ctx.lineTo(x(fwdEndD), y(Math.max(fwdEndAlt, waterElev)));
+            ctx.lineTo(x(entryD), y(waterElev));
+            ctx.closePath();
+            ctx.fill();
+
+            // Forward glide line
+            ctx.strokeStyle = 'rgba(34, 197, 94, 0.7)';
             ctx.lineWidth = 1.5;
             ctx.setLineDash([6, 3]);
             ctx.beginPath();
-            ctx.moveTo(x(entryDist), y(entryAlt));
-            ctx.lineTo(x(glideDist), y(Math.max(glideEndAlt, waterElev)));
+            ctx.moveTo(x(entryD), y(entryAlt));
+            ctx.lineTo(x(fwdEndD), y(Math.max(fwdEndAlt, waterElev)));
             ctx.stroke();
             ctx.setLineDash([]);
 
-            // If can't glide across, draw a small X or splash marker at glide end
-            if (!canGlide) {
-              const splashX = x(glideDist);
-              const splashY = y(waterElev);
-              ctx.strokeStyle = 'rgba(239, 68, 68, 0.8)';
-              ctx.lineWidth = 2;
+            // Backward triangle: exit top → glide end → exit base
+            ctx.fillStyle = 'rgba(59, 130, 246, 0.15)';
+            ctx.beginPath();
+            ctx.moveTo(x(exitD), y(exitAlt));
+            ctx.lineTo(x(bwdEndD), y(Math.max(bwdEndAlt, waterElev)));
+            ctx.lineTo(x(exitD), y(waterElev));
+            ctx.closePath();
+            ctx.fill();
+
+            // Backward glide line
+            ctx.strokeStyle = 'rgba(59, 130, 246, 0.7)';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([6, 3]);
+            ctx.beginPath();
+            ctx.moveTo(x(exitD), y(exitAlt));
+            ctx.lineTo(x(bwdEndD), y(Math.max(bwdEndAlt, waterElev)));
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Dead zone: gap between forward reach and backward reach
+            if (fwdEndD < bwdEndD) {
+              // There's a gap — can't reach either shore from this zone
+              ctx.fillStyle = 'rgba(239, 68, 68, 0.18)';
               ctx.beginPath();
-              ctx.moveTo(splashX - 4, splashY - 4);
-              ctx.lineTo(splashX + 4, splashY + 4);
-              ctx.moveTo(splashX + 4, splashY - 4);
-              ctx.lineTo(splashX - 4, splashY + 4);
-              ctx.stroke();
+              ctx.moveTo(x(fwdEndD), y(waterElev));
+              ctx.lineTo(x(fwdEndD), y(Math.max(fwdEndAlt, waterElev)));
+              // Connect across the top of the dead zone at water elev (both glide lines end at water)
+              ctx.lineTo(x(bwdEndD), y(Math.max(bwdEndAlt, waterElev)));
+              ctx.lineTo(x(bwdEndD), y(waterElev));
+              ctx.closePath();
+              ctx.fill();
+
+              // Dead zone label
+              const midDead = (fwdEndD + bwdEndD) / 2;
+              ctx.fillStyle = 'rgba(239, 68, 68, 0.8)';
+              ctx.font = '10px system-ui';
+              ctx.textAlign = 'center';
+              const deadNm = (bwdEndD - fwdEndD).toFixed(1);
+              ctx.fillText(`${deadNm} NM`, x(midDead), y(waterElev) - 6);
             }
           }
         }
@@ -2295,6 +2346,7 @@
         avoid_borders: document.getElementById('avoidBorders').checked,
         water_risk: Number(document.getElementById('waterRisk').value),
         glide_ratio: (helicopterData[document.getElementById('heliType').value] || {}).autorotation_glide_ratio || 4.0,
+        fuel_load_gal: Number(document.getElementById('fuelLoadGal').value) || 0,
         waypoints,
       };
     }
@@ -2789,6 +2841,7 @@
         avoid_airspace: payload.avoid_airspace,
         avoid_borders: payload.avoid_borders,
         water_risk: payload.water_risk,
+        autorotation_speed_kt: Number(document.getElementById('autorotSpeedKt').value) || 60,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(routes));
       refreshSavedDropdown();
@@ -2863,6 +2916,7 @@
       document.getElementById('adsbOut').dispatchEvent(new Event('change'));
       document.getElementById('avoidBorders').checked = r.avoid_borders !== false;
       document.getElementById('waterRisk').value = r.water_risk != null ? r.water_risk : 0;
+      if (r.autorotation_speed_kt) document.getElementById('autorotSpeedKt').value = r.autorotation_speed_kt;
       updateGlideInfo();
       if (r.avoid_airspace) {
         document.querySelectorAll('#avoidChecks input[type="checkbox"]:not(:disabled)').forEach(cb => {

@@ -82,6 +82,9 @@ class RouteRequest(BaseModel):
     glide_ratio: float = Field(default=4.0, ge=0, le=20,
                                description="Autorotation glide ratio (horizontal:vertical).")
 
+    fuel_load_gal: float = Field(default=0, ge=0,
+                                 description="Actual fuel on board at departure (gal). 0 = use usable_fuel_gal.")
+
     waypoints: list[str] = Field(default_factory=list)
 
 
@@ -333,7 +336,8 @@ def route_stream(req: RouteRequest):
 
             # Determine starting fuel: full if first segment or if we refuel here
             if si == 0 or waypoint_fuel.get(seg_dep.icao, True):
-                start_fuel = req.usable_fuel_gal
+                start_fuel = (req.fuel_load_gal if si == 0 and req.fuel_load_gal > 0
+                              else req.usable_fuel_gal)
             else:
                 # No fuel at this waypoint — estimate remaining from last leg
                 last_leg_time = seg_last_leg_dist / req.cruise_speed_kt if req.cruise_speed_kt > 0 else 0
