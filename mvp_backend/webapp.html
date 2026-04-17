@@ -1003,10 +1003,19 @@
       const ac = getSavedAircraft()[reg];
       if (!ac) return;
 
-      // Set helicopter base type first (triggers default fill)
+      // Set helicopter base type first and apply defaults
       if (ac.base_type) {
         document.getElementById('heliType').value = ac.base_type;
         updateHeliInfo();
+        updateGlideInfo();
+        const h = helicopterData[ac.base_type];
+        if (h && h.defaults) {
+          document.getElementById('speedKt').value = h.defaults.cruise_speed_kt;
+          document.getElementById('usableFuel').value = h.defaults.usable_fuel_gal;
+          document.getElementById('burnGph').value = h.defaults.fuel_burn_gph;
+          document.getElementById('fuelType').value = h.fuel_type;
+          document.getElementById('fuelLoadGal').value = h.defaults.usable_fuel_gal;
+        }
       }
 
       // Overlay with saved BEW & pilot weight
