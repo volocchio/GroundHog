@@ -1794,17 +1794,15 @@
         }
       }
 
-      // ── Autorotation glide cone over water crossings ──
-      // Shows triangular glide envelopes from BOTH shores:
-      //   Forward cone: from entry altitude descending toward exit
-      //   Backward cone: from exit altitude descending toward entry
-      // Green fill = reachable zone, red fill = dead zone (can't reach either shore)
+      // ── Autorotation glide safety over water crossings ──
+      // V-curve: at each point over water, the minimum altitude needed to
+      // glide to the nearest shore.  Green where flight alt > V (safe),
+      // red where flight alt < V (dead zone — can't reach either shore).
       if (fa && isWater.length === dist.length) {
         const code = document.getElementById('heliType').value;
         const heli = typeof helicopterData !== 'undefined' ? helicopterData[code] : null;
         const glideRatio = heli ? heli.autorotation_glide_ratio : 0;
         if (glideRatio > 0) {
-          // Find contiguous water sections
           const waterSections = [];
           let ws = -1;
           for (let i = 0; i < dist.length; i++) {
@@ -1816,90 +1814,81 @@
           }
           if (ws >= 0) waterSections.push({ start: ws, end: dist.length - 1 });
 
-          const descentPerNm = 6076.12 / glideRatio; // ft lost per NM
+          const descentPerNm = 6076.12 / glideRatio;
 
           for (const sec of waterSections) {
             const entryIdx = sec.start > 0 ? sec.start - 1 : sec.start;
             const exitIdx = sec.end < dist.length - 1 ? sec.end + 1 : sec.end;
-            const entryAlt = fa[entryIdx];
-            const exitAlt = fa[exitIdx];
             const entryD = dist[entryIdx];
             const exitD = dist[exitIdx];
-            const crossingNm = exitD - entryD;
-            if (crossingNm <= 0) continue;
-
+            if (exitD - entryD <= 0) continue;
             const waterElev = ground[sec.start];
 
-            // Forward glide: entry → exit direction
-            const aglEntry = entryAlt - waterElev;
-            const fwdRangeNm = (aglEntry * glideRatio) / 6076.12;
-            const fwdEndD = Math.min(entryD + fwdRangeNm, exitD);
-            const fwdEndAlt = entryAlt - (fwdEndD - entryD) * descentPerNm;
+            // Build sample points with V-curve (min safe alt) and flight alt
+            const pts = [];
+            for (let i = entryIdx; i <= exitIdx; i++) {
+              const d = dist[i];
+              const toEntry = Math.max(0, d - entryD);
+              const toExit = Math.max(0, exitD - d);
+              const reqAlt = waterElev + Math.min(toEntry, toExit) * descentPerNm;
+              pts.push({ d, reqAlt, fa: fa[i] });
+            }
 
-            // Backward glide: exit → entry direction
-            const aglExit = exitAlt - waterElev;
-            const bwdRangeNm = (aglExit * glideRatio) / 6076.12;
-            const bwdEndD = Math.max(exitD - bwdRangeNm, entryD);
-            const bwdEndAlt = exitAlt - (exitD - bwdEndD) * descentPerNm;
+            // Shade safe (green) and dead (red) segments
+            for (let j = 0; j < pts.length - 1; j++) {
+              const a = pts[j], b = pts[j + 1];
+              const safeA = a.fa >= a.reqAlt, safeB = b.fa >= b.reqAlt;
+              if (safeA && safeB) {
+                // Safe: green fill between flight alt and V-curve
+                ctx.fillStyle = 'rgba(34, 197, 94, 0.13)';
+                ctx.beginPath();
+                ctx.moveTo(x(a.d), y(a.fa));
+                ctx.lineTo(x(b.d), y(b.fa));
+                ctx.lineTo(x(b.d), y(b.reqAlt));
+                ctx.lineTo(x(a.d), y(a.reqAlt));
+                ctx.closePath();
+                ctx.fill();
+              } else if (!safeA && !safeB) {
+                // Dead: red fill between V-curve and flight alt
+                ctx.fillStyle = 'rgba(239, 68, 68, 0.18)';
+                ctx.beginPath();
+                ctx.moveTo(x(a.d), y(a.reqAlt));
+                ctx.lineTo(x(b.d), y(b.reqAlt));
+                ctx.lineTo(x(b.d), y(b.fa));
+                ctx.lineTo(x(a.d), y(a.fa));
+                ctx.closePath();
+                ctx.fill();
+              }
+              // Transition segments (one safe, one not) — skip for clarity
+            }
 
-            // Forward triangle: entry top → glide end → entry base
-            ctx.fillStyle = 'rgba(34, 197, 94, 0.15)';
+            // Draw V-curve line
+            ctx.strokeStyle = 'rgba(180, 80, 0, 0.55)';
+            ctx.lineWidth = 1.2;
+            ctx.setLineDash([4, 3]);
             ctx.beginPath();
-            ctx.moveTo(x(entryD), y(entryAlt));
-            ctx.lineTo(x(fwdEndD), y(Math.max(fwdEndAlt, waterElev)));
-            ctx.lineTo(x(entryD), y(waterElev));
-            ctx.closePath();
-            ctx.fill();
-
-            // Forward glide line
-            ctx.strokeStyle = 'rgba(34, 197, 94, 0.7)';
-            ctx.lineWidth = 1.5;
-            ctx.setLineDash([6, 3]);
-            ctx.beginPath();
-            ctx.moveTo(x(entryD), y(entryAlt));
-            ctx.lineTo(x(fwdEndD), y(Math.max(fwdEndAlt, waterElev)));
+            for (let j = 0; j < pts.length; j++) {
+              if (j === 0) ctx.moveTo(x(pts[j].d), y(pts[j].reqAlt));
+              else ctx.lineTo(x(pts[j].d), y(pts[j].reqAlt));
+            }
             ctx.stroke();
             ctx.setLineDash([]);
 
-            // Backward triangle: exit top → glide end → exit base
-            ctx.fillStyle = 'rgba(59, 130, 246, 0.15)';
-            ctx.beginPath();
-            ctx.moveTo(x(exitD), y(exitAlt));
-            ctx.lineTo(x(bwdEndD), y(Math.max(bwdEndAlt, waterElev)));
-            ctx.lineTo(x(exitD), y(waterElev));
-            ctx.closePath();
-            ctx.fill();
-
-            // Backward glide line
-            ctx.strokeStyle = 'rgba(59, 130, 246, 0.7)';
-            ctx.lineWidth = 1.5;
-            ctx.setLineDash([6, 3]);
-            ctx.beginPath();
-            ctx.moveTo(x(exitD), y(exitAlt));
-            ctx.lineTo(x(bwdEndD), y(Math.max(bwdEndAlt, waterElev)));
-            ctx.stroke();
-            ctx.setLineDash([]);
-
-            // Dead zone: gap between forward reach and backward reach
-            if (fwdEndD < bwdEndD) {
-              // There's a gap — can't reach either shore from this zone
-              ctx.fillStyle = 'rgba(239, 68, 68, 0.18)';
-              ctx.beginPath();
-              ctx.moveTo(x(fwdEndD), y(waterElev));
-              ctx.lineTo(x(fwdEndD), y(Math.max(fwdEndAlt, waterElev)));
-              // Connect across the top of the dead zone at water elev (both glide lines end at water)
-              ctx.lineTo(x(bwdEndD), y(Math.max(bwdEndAlt, waterElev)));
-              ctx.lineTo(x(bwdEndD), y(waterElev));
-              ctx.closePath();
-              ctx.fill();
-
-              // Dead zone label
-              const midDead = (fwdEndD + bwdEndD) / 2;
-              ctx.fillStyle = 'rgba(239, 68, 68, 0.8)';
+            // Dead zone label
+            let deadMinD = Infinity, deadMaxD = -Infinity;
+            for (const p of pts) {
+              if (p.fa < p.reqAlt) {
+                deadMinD = Math.min(deadMinD, p.d);
+                deadMaxD = Math.max(deadMaxD, p.d);
+              }
+            }
+            if (deadMaxD > deadMinD) {
+              const deadNm = (deadMaxD - deadMinD).toFixed(1);
+              const midD = (deadMinD + deadMaxD) / 2;
+              ctx.fillStyle = 'rgba(239, 68, 68, 0.85)';
               ctx.font = '10px system-ui';
               ctx.textAlign = 'center';
-              const deadNm = (bwdEndD - fwdEndD).toFixed(1);
-              ctx.fillText(`${deadNm} NM`, x(midDead), y(waterElev) - 6);
+              ctx.fillText(`\u2620 ${deadNm} NM`, x(midD), y(waterElev) - 6);
             }
           }
         }
