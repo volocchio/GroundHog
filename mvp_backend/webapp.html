@@ -2152,8 +2152,9 @@
       html += '<th style="text-align:left;padding:2px 6px">From</th>';
       html += '<th style="text-align:left;padding:2px 6px">To</th>';
       html += '<th style="text-align:right;padding:2px 6px">Dep<br>Elev</th>';
+      html += '<th style="text-align:right;padding:2px 6px">Dep<br>DA</th>';
       html += '<th style="text-align:right;padding:2px 6px">Arr<br>Elev</th>';
-      html += '<th style="text-align:right;padding:2px 6px">Max<br>DA</th>';
+      html += '<th style="text-align:right;padding:2px 6px">Arr<br>DA</th>';
       html += '<th style="text-align:right;padding:2px 6px">Dist<br>NM</th>';
       html += '<th style="text-align:right;padding:2px 6px">Time<br>min</th>';
       html += '<th style="text-align:right;padding:2px 6px">Time<br>hrs</th>';
@@ -2197,11 +2198,13 @@
         // Altitude & DA from helicopter performance data
         const hp = leg.heliPerf;
         const depElev = hp ? Math.round(hp.phases.departure.pressure_alt_ft) : '';
+        const depDA = hp ? Math.round(hp.phases.departure.density_alt_ft) : '';
         const arrElev = hp ? Math.round(hp.phases.arrival.pressure_alt_ft) : '';
-        const maxDA = hp ? Math.max(hp.phases.departure.density_alt_ft, hp.phases.enroute_max.density_alt_ft, hp.phases.arrival.density_alt_ft) : '';
+        const arrDA = hp ? Math.round(hp.phases.arrival.density_alt_ft) : '';
         html += `<td style="text-align:right;padding:2px 6px">${depElev ? depElev + "'" : ''}</td>`;
+        html += `<td style="text-align:right;padding:2px 6px">${depDA ? depDA + "'" : ''}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${arrElev ? arrElev + "'" : ''}</td>`;
-        html += `<td style="text-align:right;padding:2px 6px">${maxDA ? maxDA + "'" : ''}</td>`;
+        html += `<td style="text-align:right;padding:2px 6px">${arrDA ? arrDA + "'" : ''}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${fmt(leg.distNm, 1)}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${legMin}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${fmt(leg.timeHr, 1)}</td>`;
@@ -2237,7 +2240,7 @@
         html += `<td style="padding:2px 6px">${legs.length + 1} \u2716</td>`;
         html += `<td style="padding:2px 6px">${failedLeg.from ? apLabel(failedLeg.from) : '?'}</td>`;
         html += `<td style="padding:2px 6px">${failedLeg.to ? apLabel(failedLeg.to) : '?'}</td>`;
-        html += `<td colspan="${8 + wtCols}" style="padding:2px 6px">NO PATH FOUND</td>`;
+        html += `<td colspan="${9 + wtCols}" style="padding:2px 6px">NO PATH FOUND</td>`;
         html += '<td colspan="4" style="border-left:2px solid #888"></td>';
         html += '</tr>';
       }
@@ -2245,7 +2248,7 @@
       // totals row
       const lastFuelRem = currentFuel;
       html += '<tr style="border-top:2px solid #888; font-weight:600">';
-      html += `<td colspan="6" style="padding:2px 6px">Total</td>`;
+      html += `<td colspan="7" style="padding:2px 6px">Total</td>`;
       html += `<td style="text-align:right;padding:2px 6px">${fmt(tripDist, 1)}</td>`;
       html += `<td style="text-align:right;padding:2px 6px">${Math.round(tripTime * 60)}</td>`;
       html += `<td style="text-align:right;padding:2px 6px">${fmt(tripTime, 1)}</td>`;
@@ -2257,7 +2260,7 @@
 
       // reserve row
       html += '<tr style="font-size:0.9em; color:#666">';
-      html += `<td colspan="9" style="padding:2px 6px">Reserve (${fmt(reserveMin, 0)} min)</td>`;
+      html += `<td colspan="10" style="padding:2px 6px">Reserve (${fmt(reserveMin, 0)} min)</td>`;
       html += `<td colspan="${2 + wtCols}" style="text-align:right;padding:2px 6px">${fmt(reserveGal, 1)} gal</td>`;
       html += '<td colspan="4" style="border-left:2px solid #888"></td>';
       html += '</tr>';

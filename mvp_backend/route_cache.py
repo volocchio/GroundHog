@@ -268,3 +268,12 @@ def cache_stats() -> Dict:
         "failed_legs": failed,
         "routes_logged": routes_logged,
     }
+
+
+def clear_cache() -> Dict:
+    """Delete all cached legs. Returns count of deleted rows."""
+    c = _conn()
+    count = c.execute("SELECT COUNT(*) FROM leg_cache").fetchone()[0]
+    c.execute("DELETE FROM leg_cache")
+    c.commit()
+    return {"deleted": count}

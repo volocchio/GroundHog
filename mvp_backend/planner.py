@@ -1072,7 +1072,7 @@ def _detect_water_grid(n_lat: int, n_lon: int, elev_ft: list) -> list[list[bool]
 
 def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
                       glide_ratio: float, max_msl_ft: float,
-                      water_risk: float) -> list[list[float]] | None:
+                      water_risk: float) -> tuple:
     """Build a 2D cost grid penalizing water cells beyond autorotation glide range.
 
     Water is detected via _detect_water_grid (ocean voids AND inland lakes).
@@ -1084,6 +1084,8 @@ def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
     Returns (full_cost, smoother_cost) or (None, None).
       full_cost      — used by A* (mild penalty on within-glide, heavy beyond)
       smoother_cost  — used by path smoother (zero within-glide, heavy beyond)
+    Also modifies passable in-place: marks beyond-glide water cells impassable
+    when water_risk <= 25 (strict modes).
     """
     if water_risk >= 100:
         return None, None
@@ -1173,6 +1175,10 @@ def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
                 cost[i][j] = WATER_BASE + beyond
                 # smoother gets the same heavy penalty — blocks dangerous shortcuts
                 smooth_cost[i][j] = WATER_BASE + beyond
+                # For strict avoidance, mark beyond-glide cells impassable
+                # so A* is forced to route around the water body entirely.
+                if water_risk <= 25:
+                    passable[i][j] = False
             has_cost = True
 
     return (cost, smooth_cost) if has_cost else (None, None)
@@ -1269,6 +1275,11 @@ def terrain_avoid_leg_streaming(
     direct_nm = _direct_nm(a, b)
     direct_km = direct_nm * 1.852
     detour_limit_nm = max_detour_factor * direct_nm
+    # Water avoidance may force long detours around large water bodies;
+    # relax the detour limit so the planner can find a viable path.
+    if water_risk < 100 and glide_ratio > 0:
+        water_detour = max(max_detour_factor * 2.0, 4.0)
+        detour_limit_nm = max(detour_limit_nm, water_detour * direct_nm)
     ceiling_ft = max_msl_ft - min_agl_ft
 
     mid_lat = 0.5 * (a.lat + b.lat)
@@ -1286,13 +1297,11 @@ def terrain_avoid_leg_streaming(
     # Scale initial margin so the grid captures alternate routes around
     # large obstacles (e.g. mountain ranges perpendicular to the track).
     margin_km = max(initial_margin_km, direct_km * 0.55)
+    # When avoiding water, widen the initial search margin so the grid
+    # can encompass routes around large water bodies.
+    if water_risk < 100 and glide_ratio > 0:
+        margin_km = max(margin_km, direct_km * 1.0)
     while margin_km <= max_margin_km:
-        # Include prev_point in grid extent so approach direction is captured
-        lats = [a.lat, b.lat]
-        lons = [a.lon, b.lon]
-        if prev_point is not None:
-            lats.append(prev_point[0])
-            lons.append(prev_point[1])
         min_lat = min(lats) - margin_km * _deg_per_km_lat()
         max_lat = max(lats) + margin_km * _deg_per_km_lat()
         min_lon = min(lons) - margin_km * _deg_per_km_lon(mid_lat)

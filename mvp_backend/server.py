@@ -717,6 +717,12 @@ def cache_stats():
     return route_cache.cache_stats()
 
 
+@app.post("/cache/clear")
+def cache_clear():
+    """Clear all cached route legs."""
+    return route_cache.clear_cache()
+
+
 # ── terrain intelligence endpoints ───────────────────────────────────
 
 @app.get("/terrain-intel/summary")
