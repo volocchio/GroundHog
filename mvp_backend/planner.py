@@ -994,12 +994,88 @@ def _rasterize_obstacles(grid: GridSpec, passable: list[list[bool]],
                     passable[i][j] = False
 
 
+def _detect_water_grid(n_lat: int, n_lon: int, elev_ft: list) -> list[list[bool]]:
+    """Detect water cells in a flat elevation array.
+
+    Water is detected two ways:
+    1. Ocean/void: elevation <= 0 or inf (SRTM void).
+    2. Inland water (lakes/reservoirs): SRTM fills water bodies with a
+       single constant value.  A cell whose elevation exactly matches ALL
+       cardinal neighbors is almost certainly water (land always has ≥1 m
+       SRTM noise).  We require a 3-cell connected flood from seeds to
+       avoid flagging isolated flat pixels.
+    """
+    # Build 2D elevation view
+    e2d = [[0.0] * n_lon for _ in range(n_lat)]
+    k = 0
+    for i in range(n_lat):
+        for j in range(n_lon):
+            e2d[i][j] = elev_ft[k]
+            k += 1
+
+    is_water = [[False] * n_lon for _ in range(n_lat)]
+
+    # Pass 1: ocean/void
+    for i in range(n_lat):
+        for j in range(n_lon):
+            e = e2d[i][j]
+            if e <= 0 or e == float("inf"):
+                is_water[i][j] = True
+
+    # Pass 2: inland water — cells matching ALL cardinal neighbors exactly
+    flat = [[False] * n_lon for _ in range(n_lat)]
+    for i in range(n_lat):
+        for j in range(n_lon):
+            if is_water[i][j]:
+                continue
+            e = e2d[i][j]
+            match_count = 0
+            neighbour_count = 0
+            for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                ni, nj = i + di, j + dj
+                if 0 <= ni < n_lat and 0 <= nj < n_lon:
+                    neighbour_count += 1
+                    if e2d[ni][nj] == e:
+                        match_count += 1
+            # Must match all available cardinal neighbors (at least 2)
+            if neighbour_count >= 2 and match_count == neighbour_count:
+                flat[i][j] = True
+
+    # Flood-fill from flat seeds: only keep connected clusters ≥ 3 cells
+    from collections import deque
+    visited = [[False] * n_lon for _ in range(n_lat)]
+    for i in range(n_lat):
+        for j in range(n_lon):
+            if not flat[i][j] or visited[i][j]:
+                continue
+            # BFS to find connected component of same-elevation flat cells
+            cluster = []
+            q = deque()
+            q.append((i, j))
+            visited[i][j] = True
+            ref_e = e2d[i][j]
+            while q:
+                ci, cj = q.popleft()
+                cluster.append((ci, cj))
+                for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    ni, nj = ci + di, cj + dj
+                    if 0 <= ni < n_lat and 0 <= nj < n_lon and not visited[ni][nj]:
+                        if flat[ni][nj] and e2d[ni][nj] == ref_e:
+                            visited[ni][nj] = True
+                            q.append((ni, nj))
+            if len(cluster) >= 3:
+                for ci, cj in cluster:
+                    is_water[ci][cj] = True
+
+    return is_water
+
+
 def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
                       glide_ratio: float, max_msl_ft: float,
                       water_risk: float) -> list[list[float]] | None:
     """Build a 2D cost grid penalizing water cells beyond autorotation glide range.
 
-    Water is detected as elevation <= 0 or NaN/inf (SRTM void = ocean).
+    Water is detected via _detect_water_grid (ocean voids AND inland lakes).
     Uses multi-source BFS from all land cells to compute distance-to-shore
     for each water cell, then applies cost based on whether the cell is
     within glide range.
@@ -1034,18 +1110,8 @@ def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
 
     glide_range_cells = glide_range_nm / cell_nm if cell_nm > 0 else 0
 
-    # Identify water vs land
-    # Water: elev <= 0 or inf (SRTM void/ocean)
-    is_water = [[False] * n_lon for _ in range(n_lat)]
-    has_water = False
-    k = 0
-    for i in range(n_lat):
-        for j in range(n_lon):
-            e = elev_ft[k]
-            if e <= 0 or e == float("inf"):
-                is_water[i][j] = True
-                has_water = True
-            k += 1
+    is_water = _detect_water_grid(n_lat, n_lon, elev_ft)
+    has_water = any(is_water[i][j] for i in range(n_lat) for j in range(n_lon))
 
     if not has_water:
         return None

@@ -631,6 +631,35 @@ def elevation_profile(req: ProfileRequest):
     elev_m = provider.get_many_m(coords)
     elev_ft = [meters_to_feet(m) if m == m else 0.0 for m in elev_m]
 
+    # Detect water at each profile sample.
+    # For each point, sample 4 cardinal neighbours (~100 m offset) and check
+    # if all have the exact same SRTM elevation — the signature of SRTM
+    # water-fill (both ocean voids at 0 and inland lakes at surface elev).
+    _OFFSET = 0.001  # ~111 m
+    water_probe_pts = []
+    for lat, lon in coords:
+        for dlat, dlon in ((-_OFFSET, 0), (_OFFSET, 0), (0, -_OFFSET), (0, _OFFSET)):
+            water_probe_pts.append((lat + dlat, lon + dlon))
+    probe_elev = provider.get_many_m(water_probe_pts)
+    is_water = []
+    for idx, (lat, lon) in enumerate(coords):
+        e = elev_m[idx]
+        if e != e:  # NaN → void → ocean
+            is_water.append(True)
+            continue
+        if e <= 0:
+            is_water.append(True)
+            continue
+        base = idx * 4
+        e_ft = meters_to_feet(e)
+        neighbours = [meters_to_feet(probe_elev[base + k])
+                      if probe_elev[base + k] == probe_elev[base + k] else None
+                      for k in range(4)]
+        if all(n == e_ft for n in neighbours if n is not None) and sum(1 for n in neighbours if n is not None) >= 3:
+            is_water.append(True)
+        else:
+            is_water.append(False)
+
     # Build cumulative distance
     dist_nm = [0.0]
     for i in range(1, len(coords)):
@@ -645,6 +674,7 @@ def elevation_profile(req: ProfileRequest):
     return {
         "dist_nm": [round(d, 2) for d in dist_nm],
         "ground_ft": [round(e, 0) for e in elev_ft],
+        "is_water": is_water,
         "max_msl_ft": req.max_msl_ft,
         "min_agl_ft": req.min_agl_ft,
         "airspace_zones": airspace_zones,
@@ -656,7 +686,7 @@ def elevation_at_point(lat: float = Query(...), lon: float = Query(...)):
     """Return ground elevation (ft MSL) at a single lat/lon point."""
     from mvp_backend.terrain_provider import meters_to_feet
     provider = SRTMProvider(cache_dir=os.path.join(ROOT, "mvp_backend", "srtm_cache"))
-    elev_m = provider.get_one_m(lat, lon)
+    elev_m = provider.get_many_m([(lat, lon)])[0]
     if elev_m != elev_m:  # NaN
         return {"lat": lat, "lon": lon, "elev_ft": None}
     return {"lat": lat, "lon": lon, "elev_ft": round(meters_to_feet(elev_m), 0)}
