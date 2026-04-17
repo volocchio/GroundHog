@@ -1529,6 +1529,7 @@
       }
 
       // ── Flight altitude trace (airspace-aware) ──
+      let fa = null;  // flight altitude array, filled by either branch
       if (terrainFollow && cruiseKt > 0 && (maxClimbFpm > 0 || maxDescentFpm > 0)) {
         const climbKt = climbSpeedKt > 0 ? climbSpeedKt : cruiseKt;
         const descentKt = descentSpeedKt > 0 ? descentSpeedKt : cruiseKt;
@@ -1598,10 +1599,9 @@
           ba[i] = Math.min(Math.max(alt, terrainMin), baCeiling);
         }
 
-        // Forward pass: rate-limited from start, pulled toward backward-pass altitudes
         let faCeiling0 = maxMsl;
         if (maxAgl > 0) faCeiling0 = Math.min(faCeiling0, ground[0] + maxAgl);
-        const fa = [Math.min(Math.max(ba[0], ground[0] + minAgl), faCeiling0)];
+        fa = [Math.min(Math.max(ba[0], ground[0] + minAgl), faCeiling0)];
         for (let i = 1; i < dist.length; i++) {
           const segDist = dist[i] - dist[i - 1];
           const prev = fa[i - 1];
@@ -1629,7 +1629,7 @@
       } else {
         // Max MSL mode — cruise at maxMsl, but duck under airspace and
         // descend to land / climb from each airport
-        const fa = new Array(dist.length);
+        fa = new Array(dist.length);
 
         // Build list of sample indices where we must be at ground level (airports)
         // Scale cumulative leg distances to match profile path distance
@@ -1783,6 +1783,74 @@
         if (zoomFactor >= 1.5) {
           ctx.fillStyle = '#2563eb'; ctx.font = '10px system-ui'; ctx.textAlign = 'left';
           ctx.fillText('Flight alt (est.)', pad.left + 4, y(fa[Math.min(5, fa.length - 1)]) - 8);
+        }
+      }
+
+      // ── Autorotation glide slope over water crossings ──
+      if (fa && isWater.length === dist.length) {
+        const code = document.getElementById('heliType').value;
+        const heli = typeof helicopterData !== 'undefined' ? helicopterData[code] : null;
+        const glideRatio = heli ? heli.autorotation_glide_ratio : 0;
+        if (glideRatio > 0) {
+          // Find contiguous water sections
+          const waterSections = [];
+          let ws = -1;
+          for (let i = 0; i < dist.length; i++) {
+            if (isWater[i] && ws < 0) ws = i;
+            if (!isWater[i] && ws >= 0) {
+              waterSections.push({ start: ws, end: i - 1 });
+              ws = -1;
+            }
+          }
+          if (ws >= 0) waterSections.push({ start: ws, end: dist.length - 1 });
+
+          for (const sec of waterSections) {
+            // Entry: last land point before water (or water start)
+            const entryIdx = sec.start > 0 ? sec.start - 1 : sec.start;
+            // Exit: first land point after water (or water end)
+            const exitIdx = sec.end < dist.length - 1 ? sec.end + 1 : sec.end;
+            const entryAlt = fa[entryIdx];
+            const exitAlt = fa[exitIdx];
+            const entryDist = dist[entryIdx];
+            const exitDist = dist[exitIdx];
+            const crossingNm = exitDist - entryDist;
+            if (crossingNm <= 0) continue;
+
+            // Glide range from entry altitude (AGL over water surface)
+            const waterElev = ground[sec.start]; // water surface elevation
+            const aglEntry = entryAlt - waterElev;
+            const glideNm = (aglEntry * glideRatio) / 6076.12;
+            const canGlide = glideNm >= crossingNm;
+
+            // Draw glide slope line from entry point descending at glide ratio
+            // glide_ratio = horizontal_ft / vertical_ft, so descent per NM = 6076.12 / glideRatio ft
+            const descentPerNm = 6076.12 / glideRatio;
+            const glideDist = Math.min(entryDist + glideNm, exitDist);
+            const glideEndAlt = entryAlt - (glideDist - entryDist) * descentPerNm;
+
+            ctx.strokeStyle = canGlide ? 'rgba(34, 197, 94, 0.7)' : 'rgba(239, 68, 68, 0.7)';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([6, 3]);
+            ctx.beginPath();
+            ctx.moveTo(x(entryDist), y(entryAlt));
+            ctx.lineTo(x(glideDist), y(Math.max(glideEndAlt, waterElev)));
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // If can't glide across, draw a small X or splash marker at glide end
+            if (!canGlide) {
+              const splashX = x(glideDist);
+              const splashY = y(waterElev);
+              ctx.strokeStyle = 'rgba(239, 68, 68, 0.8)';
+              ctx.lineWidth = 2;
+              ctx.beginPath();
+              ctx.moveTo(splashX - 4, splashY - 4);
+              ctx.lineTo(splashX + 4, splashY + 4);
+              ctx.moveTo(splashX + 4, splashY - 4);
+              ctx.lineTo(splashX - 4, splashY + 4);
+              ctx.stroke();
+            }
+          }
         }
       }
 
