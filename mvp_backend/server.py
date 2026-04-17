@@ -322,6 +322,11 @@ def route_stream(req: RouteRequest):
         all_sequences = []
         blocked_pairs = set()
         seg_last_leg_dist = 0.0  # actual A* distance of last leg in prev segment
+        # Track weight across legs for helicopter performance checks
+        initial_weight = req.gross_weight_lb if req.gross_weight_lb > 0 else (
+            heli.max_gross_weight_lb if heli else 0)
+        current_weight = initial_weight
+        fw_per_gal = heli.fuel_weight_lb_per_gal if heli else 6.0
         for si in range(len(segment_endpoints) - 1):
             seg_dep = segment_endpoints[si]
             seg_arr = segment_endpoints[si + 1]
@@ -451,10 +456,17 @@ def route_stream(req: RouteRequest):
                                         arr_elev_ft=to_ap.elevation_ft,
                                         max_enroute_elev_ft=max_terr + req.min_agl_ft,
                                         oat_c=req.oat_c,
-                                        gross_weight_lb=req.gross_weight_lb if req.gross_weight_lb > 0 else None,
+                                        gross_weight_lb=current_weight if current_weight > 0 else None,
                                         fuel_burn_gal=leg_fuel_gal,
                                     )
                                     event["helicopter_perf"] = leg_eval
+                                    # Update running weight: subtract fuel burned this leg
+                                    current_weight -= leg_fuel_gal * fw_per_gal
+                                    # Refuel at destination unless it's NF or final destination
+                                    is_final_dest = (to_ap.icao == arr.icao and si == len(segment_endpoints) - 2 and i == seg_num_legs - 1)
+                                    can_refuel = waypoint_fuel.get(to_ap.icao, True) and not is_final_dest
+                                    if can_refuel:
+                                        current_weight = initial_weight  # topped off → back to departure weight
                             if event.get("type") == "no_path":
                                 blocked_pairs.add((from_ap.icao, to_ap.icao))
                                 leg_failed = True
