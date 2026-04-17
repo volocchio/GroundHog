@@ -160,7 +160,7 @@
           <label style="margin:0">Cargo (lb)</label>
           <input id="cargoLb" type="number" value="0" min="0" step="1" style="width:90px; text-align:right" title="Baggage, tools, equipment" />
           <label style="margin:0">Fuel load (gal)</label>
-          <input id="fuelLoadGal" type="number" value="0" min="0" step="0.1" style="width:90px; text-align:right" title="Fuel on board at departure — 0 = full tanks" />
+          <input id="fuelLoadGal" type="number" value="0" min="0" step="0.1" style="width:90px; text-align:right" title="Fuel on board at departure (gal)" />
         </div>
         <div id="towBar" style="margin-top:8px; font-size:0.82em"></div>
       </div>
@@ -833,8 +833,6 @@
       const pax = Number(document.getElementById('paxLb').value) || 0;
       const cargo = Number(document.getElementById('cargoLb').value) || 0;
       let fuelGal = Number(document.getElementById('fuelLoadGal').value) || 0;
-      const usableFuelGal = Number(document.getElementById('usableFuel').value) || 0;
-      if (fuelGal === 0 && usableFuelGal > 0) fuelGal = usableFuelGal;
       const fwPG = (h && h.fuel_weight_lb_per_gal) ? h.fuel_weight_lb_per_gal : 6.0;
       const fuelLb = fuelGal * fwPG;
       const tow = bew + pilot + pax + cargo + fuelLb;
@@ -917,7 +915,7 @@
       document.getElementById('burnGph').value = d.fuel_burn_gph;
       document.getElementById('fuelType').value = h.fuel_type;
       document.getElementById('bewLb').value = h.empty_weight_lb;
-      document.getElementById('fuelLoadGal').value = 0; // 0 = full tanks
+      document.getElementById('fuelLoadGal').value = d.usable_fuel_gal; // default to full tanks
       document.getElementById('grossWeightLb').value = 0;
       updateWeightBuildUp();
       // Re-filter My Aircraft to match the new type
@@ -2729,9 +2727,14 @@
       if (r.pilot_lb != null) document.getElementById('pilotLb').value = r.pilot_lb;
       if (r.pax_lb != null) document.getElementById('paxLb').value = r.pax_lb;
       if (r.cargo_lb != null) document.getElementById('cargoLb').value = r.cargo_lb;
-      if (r.fuel_load_gal != null) document.getElementById('fuelLoadGal').value = r.fuel_load_gal;
       document.getElementById('speedKt').value = r.cruise_speed_kt || 75;
       document.getElementById('usableFuel').value = r.usable_fuel_gal || 48;
+      // Restore fuel load — legacy saved routes may have 0 meaning "full tanks"
+      if (r.fuel_load_gal != null && r.fuel_load_gal > 0) {
+        document.getElementById('fuelLoadGal').value = r.fuel_load_gal;
+      } else {
+        document.getElementById('fuelLoadGal').value = r.usable_fuel_gal || document.getElementById('usableFuel').value || 48;
+      }
       document.getElementById('burnGph').value = r.fuel_burn_gph || 13;
       document.getElementById('reserveMin').value = r.reserve_min || 30;
       document.getElementById('maxMsl').value = r.max_msl_ft || 7000;
