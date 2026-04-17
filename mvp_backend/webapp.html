@@ -2621,6 +2621,14 @@
         }
       }
 
+      // Pre-flight check: fuel must be > 0
+      const fuelLoad = Number(document.getElementById('fuelLoadGal').value) || 0;
+      if (fuelLoad <= 0) {
+        document.getElementById('error').textContent =
+          'Fuel load is 0 — enter a fuel quantity before planning a route.';
+        return;
+      }
+
       // Scroll so the map is visible
       document.getElementById('map').scrollIntoView({ behavior: 'smooth', block: 'start' });
 
