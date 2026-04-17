@@ -1084,8 +1084,6 @@ def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
     Returns (full_cost, smoother_cost) or (None, None).
       full_cost      — used by A* (mild penalty on within-glide, heavy beyond)
       smoother_cost  — used by path smoother (zero within-glide, heavy beyond)
-    Also modifies passable in-place: marks beyond-glide water cells impassable
-    when water_risk <= 25 (strict modes).
     """
     if water_risk >= 100:
         return None, None
@@ -1155,7 +1153,7 @@ def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
 
     # Build cost grids
     WATER_BASE = 2.0       # mild cost for any water cell (A* only)
-    WATER_BEYOND = 30.0    # heavy cost for cells beyond glide range
+    WATER_BEYOND = 200.0   # very heavy cost for cells beyond glide range
     cost = [[0.0] * n_lon for _ in range(n_lat)]
     smooth_cost = [[0.0] * n_lon for _ in range(n_lat)]
     has_cost = False
@@ -1175,10 +1173,6 @@ def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
                 cost[i][j] = WATER_BASE + beyond
                 # smoother gets the same heavy penalty — blocks dangerous shortcuts
                 smooth_cost[i][j] = WATER_BASE + beyond
-                # For strict avoidance, mark beyond-glide cells impassable
-                # so A* is forced to route around the water body entirely.
-                if water_risk <= 25:
-                    passable[i][j] = False
             has_cost = True
 
     return (cost, smooth_cost) if has_cost else (None, None)
