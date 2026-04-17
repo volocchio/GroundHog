@@ -1081,10 +1081,12 @@ def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
     within glide range.
 
     water_risk: 0=strict (glide to shore), 25/50/75=relaxed, 100=ignore.
-    Returns None if no penalty needed.
+    Returns (full_cost, smoother_cost) or (None, None).
+      full_cost      — used by A* (mild penalty on within-glide, heavy beyond)
+      smoother_cost  — used by path smoother (zero within-glide, heavy beyond)
     """
     if water_risk >= 100:
-        return None
+        return None, None
 
     n_lat = grid.n_lat
     n_lon = grid.n_lon
@@ -1114,7 +1116,7 @@ def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
     has_water = any(is_water[i][j] for i in range(n_lat) for j in range(n_lon))
 
     if not has_water:
-        return None
+        return None, None
 
     # BFS from all land cells to compute distance-to-shore for water cells
     from collections import deque
@@ -1149,10 +1151,11 @@ def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
                     dist[ni][nj] = nd
                     q.append((ni, nj))
 
-    # Build cost grid
-    WATER_BASE = 2.0       # mild cost for any water cell
+    # Build cost grids
+    WATER_BASE = 2.0       # mild cost for any water cell (A* only)
     WATER_BEYOND = 30.0    # heavy cost for cells beyond glide range
     cost = [[0.0] * n_lon for _ in range(n_lat)]
+    smooth_cost = [[0.0] * n_lon for _ in range(n_lat)]
     has_cost = False
     for i in range(n_lat):
         for j in range(n_lon):
@@ -1161,13 +1164,18 @@ def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
             d = dist[i][j]
             if d <= glide_range_cells:
                 cost[i][j] = WATER_BASE
+                # smoother: zero cost within glide range — safe to shortcut
+                smooth_cost[i][j] = 0.0
             else:
                 # Scale penalty by how far beyond glide range
                 excess = (d - glide_range_cells) / max(1.0, glide_range_cells)
-                cost[i][j] = WATER_BASE + WATER_BEYOND * min(excess, 3.0)
+                beyond = WATER_BEYOND * min(excess, 3.0)
+                cost[i][j] = WATER_BASE + beyond
+                # smoother gets the same heavy penalty — blocks dangerous shortcuts
+                smooth_cost[i][j] = WATER_BASE + beyond
             has_cost = True
 
-    return cost if has_cost else None
+    return (cost, smooth_cost) if has_cost else (None, None)
 
 
 def terrain_avoid_leg_streaming(
@@ -1363,7 +1371,7 @@ def terrain_avoid_leg_streaming(
 
         # ── Water avoidance cost ──
         if glide_ratio > 0 and water_risk < 100:
-            water_cost_2d = _build_water_cost(
+            water_cost_2d, smooth_water_cost_2d = _build_water_cost(
                 grid, elev_ft, passable,
                 glide_ratio=glide_ratio, max_msl_ft=max_msl_ft,
                 water_risk=water_risk,
@@ -1375,6 +1383,15 @@ def terrain_avoid_leg_streaming(
                     for i in range(n_lat):
                         for j in range(n_lon):
                             airspace_cost_2d[i][j] += water_cost_2d[i][j]
+            # Merge beyond-glide water cost into the smoother grid so
+            # it can't shortcut across dangerous water crossings.
+            if smooth_water_cost_2d is not None:
+                if airspace_only_cost_2d is None:
+                    airspace_only_cost_2d = smooth_water_cost_2d
+                else:
+                    for i in range(n_lat):
+                        for j in range(n_lon):
+                            airspace_only_cost_2d[i][j] += smooth_water_cost_2d[i][j]
 
         # ── Gentle backtrack avoidance ──
         # When prev_point is given (multi-leg route), add a light cost to

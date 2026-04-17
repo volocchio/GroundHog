@@ -1795,9 +1795,9 @@
       }
 
       // ── Autorotation glide safety over water crossings ──
-      // V-curve: at each point over water, the minimum altitude needed to
-      // glide to the nearest shore.  Green where flight alt > V (safe),
-      // red where flight alt < V (dead zone — can't reach either shore).
+      // Pilot's perspective: from flight altitude at each shore, draw
+      // a descending glide line toward the opposite shore.  Where both
+      // lines drop below water = dead zone (can't reach either shore).
       if (fa && isWater.length === dist.length) {
         const code = document.getElementById('heliType').value;
         const heli = typeof helicopterData !== 'undefined' ? helicopterData[code] : null;
@@ -1823,72 +1823,83 @@
             const exitD = dist[exitIdx];
             if (exitD - entryD <= 0) continue;
             const waterElev = ground[sec.start];
+            const entryAlt = fa[entryIdx];
+            const exitAlt = fa[exitIdx];
 
-            // Build sample points with V-curve (min safe alt) and flight alt
-            const pts = [];
-            for (let i = entryIdx; i <= exitIdx; i++) {
-              const d = dist[i];
-              const toEntry = Math.max(0, d - entryD);
-              const toExit = Math.max(0, exitD - d);
-              const reqAlt = waterElev + Math.min(toEntry, toExit) * descentPerNm;
-              pts.push({ d, reqAlt, fa: fa[i] });
-            }
+            // Forward glide from entry: descends toward exit
+            const fwdRangeNm = (entryAlt - waterElev) / descentPerNm;
+            const fwdEndD = Math.min(entryD + fwdRangeNm, exitD);
+            const fwdEndAlt = entryAlt - (fwdEndD - entryD) * descentPerNm;
+            const fwdReaches = fwdEndD >= exitD;
 
-            // Shade safe (green) and dead (red) segments
-            for (let j = 0; j < pts.length - 1; j++) {
-              const a = pts[j], b = pts[j + 1];
-              const safeA = a.fa >= a.reqAlt, safeB = b.fa >= b.reqAlt;
-              if (safeA && safeB) {
-                // Safe: green fill between flight alt and V-curve
-                ctx.fillStyle = 'rgba(34, 197, 94, 0.13)';
-                ctx.beginPath();
-                ctx.moveTo(x(a.d), y(a.fa));
-                ctx.lineTo(x(b.d), y(b.fa));
-                ctx.lineTo(x(b.d), y(b.reqAlt));
-                ctx.lineTo(x(a.d), y(a.reqAlt));
-                ctx.closePath();
-                ctx.fill();
-              } else if (!safeA && !safeB) {
-                // Dead: red fill between V-curve and flight alt
-                ctx.fillStyle = 'rgba(239, 68, 68, 0.18)';
-                ctx.beginPath();
-                ctx.moveTo(x(a.d), y(a.reqAlt));
-                ctx.lineTo(x(b.d), y(b.reqAlt));
-                ctx.lineTo(x(b.d), y(b.fa));
-                ctx.lineTo(x(a.d), y(a.fa));
-                ctx.closePath();
-                ctx.fill();
-              }
-              // Transition segments (one safe, one not) — skip for clarity
-            }
+            // Backward glide from exit: descends toward entry
+            const bwdRangeNm = (exitAlt - waterElev) / descentPerNm;
+            const bwdEndD = Math.max(exitD - bwdRangeNm, entryD);
+            const bwdEndAlt = exitAlt - (exitD - bwdEndD) * descentPerNm;
+            const bwdReaches = bwdEndD <= entryD;
 
-            // Draw V-curve line
-            ctx.strokeStyle = 'rgba(180, 80, 0, 0.55)';
-            ctx.lineWidth = 1.2;
-            ctx.setLineDash([4, 3]);
+            // Draw forward glide line (green)
+            ctx.strokeStyle = 'rgba(34, 197, 94, 0.8)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([6, 3]);
             ctx.beginPath();
-            for (let j = 0; j < pts.length; j++) {
-              if (j === 0) ctx.moveTo(x(pts[j].d), y(pts[j].reqAlt));
-              else ctx.lineTo(x(pts[j].d), y(pts[j].reqAlt));
-            }
+            ctx.moveTo(x(entryD), y(entryAlt));
+            ctx.lineTo(x(fwdEndD), y(Math.max(fwdEndAlt, waterElev)));
             ctx.stroke();
             ctx.setLineDash([]);
 
-            // Dead zone label
-            let deadMinD = Infinity, deadMaxD = -Infinity;
-            for (const p of pts) {
-              if (p.fa < p.reqAlt) {
-                deadMinD = Math.min(deadMinD, p.d);
-                deadMaxD = Math.max(deadMaxD, p.d);
+            // Draw backward glide line (blue)
+            ctx.strokeStyle = 'rgba(59, 130, 246, 0.8)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([6, 3]);
+            ctx.beginPath();
+            ctx.moveTo(x(exitD), y(exitAlt));
+            ctx.lineTo(x(bwdEndD), y(Math.max(bwdEndAlt, waterElev)));
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Dead zone: where neither glide line reaches
+            if (!fwdReaches && !bwdReaches && fwdEndD < bwdEndD) {
+              // Red fill over the gap
+              ctx.fillStyle = 'rgba(239, 68, 68, 0.22)';
+              ctx.beginPath();
+              ctx.moveTo(x(fwdEndD), y(Math.max(fwdEndAlt, waterElev)));
+              ctx.lineTo(x(fwdEndD), y(waterElev));
+              ctx.lineTo(x(bwdEndD), y(waterElev));
+              ctx.lineTo(x(bwdEndD), y(Math.max(bwdEndAlt, waterElev)));
+              ctx.closePath();
+              ctx.fill();
+
+              // Red hatching at water level
+              ctx.strokeStyle = 'rgba(239, 68, 68, 0.5)';
+              ctx.lineWidth = 1;
+              const deadX1 = x(fwdEndD), deadX2 = x(bwdEndD);
+              const waterY = y(waterElev);
+              for (let hx = deadX1; hx < deadX2; hx += 8) {
+                ctx.beginPath();
+                ctx.moveTo(hx, waterY);
+                ctx.lineTo(Math.min(hx + 6, deadX2), waterY - 6);
+                ctx.stroke();
               }
-            }
-            if (deadMaxD > deadMinD) {
-              const deadNm = (deadMaxD - deadMinD).toFixed(1);
-              const midD = (deadMinD + deadMaxD) / 2;
-              ctx.fillStyle = 'rgba(239, 68, 68, 0.85)';
-              ctx.font = '10px system-ui';
+
+              // Label
+              const deadNm = (bwdEndD - fwdEndD).toFixed(1);
+              const midD = (fwdEndD + bwdEndD) / 2;
+              ctx.fillStyle = 'rgba(239, 68, 68, 0.9)';
+              ctx.font = 'bold 11px system-ui';
               ctx.textAlign = 'center';
-              ctx.fillText(`\u2620 ${deadNm} NM`, x(midD), y(waterElev) - 6);
+              ctx.fillText(`\u2620 ${deadNm} NM`, x(midD), y(waterElev) - 10);
+            } else if (fwdReaches && bwdReaches) {
+              // Both lines reach the opposite shore — fully safe
+              // Light green fill over water
+              ctx.fillStyle = 'rgba(34, 197, 94, 0.08)';
+              ctx.beginPath();
+              ctx.moveTo(x(entryD), y(waterElev));
+              ctx.lineTo(x(exitD), y(waterElev));
+              ctx.lineTo(x(exitD), y(Math.min(entryAlt, exitAlt)));
+              ctx.lineTo(x(entryD), y(Math.min(entryAlt, exitAlt)));
+              ctx.closePath();
+              ctx.fill();
             }
           }
         }
@@ -2140,6 +2151,9 @@
       html += '<th style="text-align:left;padding:2px 6px">#</th>';
       html += '<th style="text-align:left;padding:2px 6px">From</th>';
       html += '<th style="text-align:left;padding:2px 6px">To</th>';
+      html += '<th style="text-align:right;padding:2px 6px">Dep<br>Elev</th>';
+      html += '<th style="text-align:right;padding:2px 6px">Arr<br>Elev</th>';
+      html += '<th style="text-align:right;padding:2px 6px">Max<br>DA</th>';
       html += '<th style="text-align:right;padding:2px 6px">Dist<br>NM</th>';
       html += '<th style="text-align:right;padding:2px 6px">Time<br>min</th>';
       html += '<th style="text-align:right;padding:2px 6px">Time<br>hrs</th>';
@@ -2180,6 +2194,14 @@
         html += `<td style="padding:2px 6px">${i + 1}${leg.cached ? ' \u26A1' : ''}</td>`;
         html += `<td style="padding:2px 6px">${apLabel(leg.from)}</td>`;
         html += `<td style="padding:2px 6px">${apLabel(leg.to)}${toIcon}</td>`;
+        // Altitude & DA from helicopter performance data
+        const hp = leg.heliPerf;
+        const depElev = hp ? Math.round(hp.phases.departure.pressure_alt_ft) : '';
+        const arrElev = hp ? Math.round(hp.phases.arrival.pressure_alt_ft) : '';
+        const maxDA = hp ? Math.max(hp.phases.departure.density_alt_ft, hp.phases.enroute_max.density_alt_ft, hp.phases.arrival.density_alt_ft) : '';
+        html += `<td style="text-align:right;padding:2px 6px">${depElev ? depElev + "'" : ''}</td>`;
+        html += `<td style="text-align:right;padding:2px 6px">${arrElev ? arrElev + "'" : ''}</td>`;
+        html += `<td style="text-align:right;padding:2px 6px">${maxDA ? maxDA + "'" : ''}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${fmt(leg.distNm, 1)}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${legMin}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${fmt(leg.timeHr, 1)}</td>`;
@@ -2215,7 +2237,7 @@
         html += `<td style="padding:2px 6px">${legs.length + 1} \u2716</td>`;
         html += `<td style="padding:2px 6px">${failedLeg.from ? apLabel(failedLeg.from) : '?'}</td>`;
         html += `<td style="padding:2px 6px">${failedLeg.to ? apLabel(failedLeg.to) : '?'}</td>`;
-        html += `<td colspan="${5 + wtCols}" style="padding:2px 6px">NO PATH FOUND</td>`;
+        html += `<td colspan="${8 + wtCols}" style="padding:2px 6px">NO PATH FOUND</td>`;
         html += '<td colspan="4" style="border-left:2px solid #888"></td>';
         html += '</tr>';
       }
@@ -2223,7 +2245,7 @@
       // totals row
       const lastFuelRem = currentFuel;
       html += '<tr style="border-top:2px solid #888; font-weight:600">';
-      html += `<td colspan="3" style="padding:2px 6px">Total</td>`;
+      html += `<td colspan="6" style="padding:2px 6px">Total</td>`;
       html += `<td style="text-align:right;padding:2px 6px">${fmt(tripDist, 1)}</td>`;
       html += `<td style="text-align:right;padding:2px 6px">${Math.round(tripTime * 60)}</td>`;
       html += `<td style="text-align:right;padding:2px 6px">${fmt(tripTime, 1)}</td>`;
@@ -2235,7 +2257,7 @@
 
       // reserve row
       html += '<tr style="font-size:0.9em; color:#666">';
-      html += `<td colspan="6" style="padding:2px 6px">Reserve (${fmt(reserveMin, 0)} min)</td>`;
+      html += `<td colspan="9" style="padding:2px 6px">Reserve (${fmt(reserveMin, 0)} min)</td>`;
       html += `<td colspan="${2 + wtCols}" style="text-align:right;padding:2px 6px">${fmt(reserveGal, 1)} gal</td>`;
       html += '<td colspan="4" style="border-left:2px solid #888"></td>';
       html += '</tr>';
