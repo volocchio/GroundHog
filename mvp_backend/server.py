@@ -647,6 +647,7 @@ def elevation_profile(req: ProfileRequest):
     # For each point, sample 4 cardinal neighbours (~100 m offset) and check
     # if all have the exact same SRTM elevation — the signature of SRTM
     # water-fill (both ocean voids at 0 and inland lakes at surface elev).
+    # Compare in raw meters (SRTM stores integers) to avoid float drift.
     _OFFSET = 0.001  # ~111 m
     water_probe_pts = []
     for lat, lon in coords:
@@ -663,11 +664,11 @@ def elevation_profile(req: ProfileRequest):
             is_water.append(True)
             continue
         base = idx * 4
-        e_ft = meters_to_feet(e)
-        neighbours = [meters_to_feet(probe_elev[base + k])
-                      if probe_elev[base + k] == probe_elev[base + k] else None
-                      for k in range(4)]
-        if all(n == e_ft for n in neighbours if n is not None) and sum(1 for n in neighbours if n is not None) >= 3:
+        # Compare in meters (integer values from SRTM) — more robust
+        neighbours = [probe_elev[base + k]
+                      for k in range(4)
+                      if probe_elev[base + k] == probe_elev[base + k]]  # skip NaN
+        if len(neighbours) >= 3 and all(n == e for n in neighbours):
             is_water.append(True)
         else:
             is_water.append(False)

@@ -168,6 +168,7 @@ def _line_of_sight(
     climb_speed_kt: float = 0,
     descent_speed_kt: float = 0,
     airspace_cost: Optional[List[List[float]]] = None,
+    smooth_airspace_cost: Optional[List[List[float]]] = None,
     max_airspace_cost: float = 0.5,
     max_ridge_excess_ft: float = 1500.0,
 ) -> bool:
@@ -179,10 +180,15 @@ def _line_of_sight(
     cutting straight over mountain ridges that A* originally routed around.
     """
     cells = _bresenham_cells(a[0], a[1], b[0], b[1])
+    # Use smooth_airspace_cost (airspace-only, no water) if provided,
+    # otherwise fall back to airspace_cost.  This lets the smoother
+    # straighten paths over water while still respecting restricted
+    # airspace boundaries.
+    los_cost = smooth_airspace_cost if smooth_airspace_cost is not None else airspace_cost
     for ci, cj in cells:
         if not passable[ci][cj]:
             return False
-        if airspace_cost is not None and airspace_cost[ci][cj] > max_airspace_cost:
+        if los_cost is not None and los_cost[ci][cj] > max_airspace_cost:
             return False
 
     # Reject shortcuts that cross ridges much higher than endpoints
@@ -229,6 +235,7 @@ def smooth_path(
     climb_speed_kt: float = 0,
     descent_speed_kt: float = 0,
     airspace_cost: Optional[List[List[float]]] = None,
+    smooth_airspace_cost: Optional[List[List[float]]] = None,
 ) -> List[tuple[int, int]]:
     """Greedy line-of-sight shortcutting ('string-pulling') on an A* path.
 
@@ -248,7 +255,7 @@ def smooth_path(
             if _line_of_sight(grid, passable, path[i], path[j],
                               elev_ft, max_climb_fpm, max_descent_fpm,
                               cruise_kt, climb_speed_kt, descent_speed_kt,
-                              airspace_cost):
+                              airspace_cost, smooth_airspace_cost):
                 best_j = j
                 break
         smoothed.append(path[best_j])
@@ -302,6 +309,7 @@ def astar_path_streaming(
     climb_speed_kt: float = 0,
     descent_speed_kt: float = 0,
     airspace_cost: Optional[List[List[float]]] = None,
+    smooth_airspace_cost: Optional[List[List[float]]] = None,
 ) -> Generator[dict, None, None]:
     """A* that yields progress dicts as it explores.
 
@@ -357,7 +365,8 @@ def astar_path_streaming(
                                    cruise_kt=cruise_kt,
                                    climb_speed_kt=climb_speed_kt,
                                    descent_speed_kt=descent_speed_kt,
-                                   airspace_cost=airspace_cost)
+                                   airspace_cost=airspace_cost,
+                                   smooth_airspace_cost=smooth_airspace_cost)
             # Re-densify so the path has enough points for profile rendering
             path_idx = densify_path(grid, path_idx)
             coords = [list(grid.idx_to_latlon(i, j)) for i, j in path_idx]

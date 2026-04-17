@@ -1339,11 +1339,16 @@ def terrain_avoid_leg_streaming(
 
         # rasterize avoided airspace into cost grid (and block Prohibited)
         airspace_cost_2d = None
+        airspace_only_cost_2d = None   # for smoother (excludes water cost)
         if avoid_airspace:
             airspace_cost_2d = _rasterize_airspace(
                 grid, avoid_airspace, passable,
                 elev_ft=elev_ft, max_msl_ft=max_msl_ft, min_agl_ft=min_agl_ft,
             )
+            # Keep a copy of airspace-only costs for the smoother so it
+            # respects restricted airspace but can straighten over water.
+            if airspace_cost_2d is not None:
+                airspace_only_cost_2d = [row[:] for row in airspace_cost_2d]
             # re-check start/goal after Prohibited marking
             if not passable[start[0]][start[1]] or not passable[goal[0]][goal[1]]:
                 margin_km += margin_step_km
@@ -1407,7 +1412,8 @@ def terrain_avoid_leg_streaming(
                                            cruise_kt=cruise_speed_kt,
                                            climb_speed_kt=climb_speed_kt,
                                            descent_speed_kt=descent_speed_kt,
-                                           airspace_cost=airspace_cost_2d):
+                                           airspace_cost=airspace_cost_2d,
+                                           smooth_airspace_cost=airspace_only_cost_2d):
             if event["type"] == "path" and event["dist_nm"] > detour_limit_nm:
                 break  # too long, try wider margin
             if event["type"] == "no_path":
