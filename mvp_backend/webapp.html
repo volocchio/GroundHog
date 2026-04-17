@@ -1354,14 +1354,21 @@
         ctx.fillText('Max AGL ' + maxAgl.toLocaleString() + ' ft', pad.left + 4, y(ground[Math.min(5, ground.length - 1)] + maxAgl) - 4);
       }
 
-      // Water fill — blue shading for detected water areas
+      // Terrain fill
+      ctx.fillStyle = 'rgba(180, 140, 100, 0.35)';
+      ctx.beginPath();
+      ctx.moveTo(x(dist[0]), y(0));
+      for (let i = 0; i < dist.length; i++) ctx.lineTo(x(dist[i]), y(ground[i]));
+      ctx.lineTo(x(dist[dist.length-1]), y(0));
+      ctx.closePath(); ctx.fill();
+
+      // Water fill — blue shading over terrain for detected water areas
       const isWater = data.is_water || [];
       if (isWater.length === dist.length) {
-        ctx.fillStyle = 'rgba(59, 130, 246, 0.25)';
+        ctx.fillStyle = 'rgba(30, 100, 220, 0.45)';
         let inWater = false;
         for (let i = 0; i < dist.length; i++) {
           if (isWater[i] && !inWater) {
-            // start water region
             ctx.beginPath();
             ctx.moveTo(x(dist[i]), y(0));
             ctx.lineTo(x(dist[i]), y(ground[i]));
@@ -1369,7 +1376,6 @@
           } else if (isWater[i] && inWater) {
             ctx.lineTo(x(dist[i]), y(ground[i]));
           } else if (!isWater[i] && inWater) {
-            // close water region at previous point
             ctx.lineTo(x(dist[i - 1]), y(0));
             ctx.closePath();
             ctx.fill();
@@ -1382,14 +1388,6 @@
           ctx.fill();
         }
       }
-
-      // Terrain fill
-      ctx.fillStyle = 'rgba(180, 140, 100, 0.35)';
-      ctx.beginPath();
-      ctx.moveTo(x(dist[0]), y(0));
-      for (let i = 0; i < dist.length; i++) ctx.lineTo(x(dist[i]), y(ground[i]));
-      ctx.lineTo(x(dist[dist.length-1]), y(0));
-      ctx.closePath(); ctx.fill();
 
       // Terrain line
       ctx.strokeStyle = '#92400e';
