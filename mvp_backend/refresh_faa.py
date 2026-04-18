@@ -157,17 +157,24 @@ def _build_obstacles_db():
     """)
 
     count = 0
+    def _first(row: dict, *keys: str):
+        for k in keys:
+            if k in row and row.get(k) not in (None, ""):
+                return row.get(k)
+        return ""
+
     with open(csv_path, "r", encoding="latin-1", errors="ignore") as f:
         reader = csv.DictReader(f)
         batch = []
         for row in reader:
             try:
-                lat = float(row.get("LATITUDE", "") or 0)
-                lon = float(row.get("LONGITUDE", "") or 0)
-                agl = int(float(row.get("AGL_HT", "") or 0))
-                amsl = int(float(row.get("AMSL_HT", "") or 0))
-                otype = (row.get("TYPE_CODE", "") or "").strip()
-                lit = 1 if (row.get("LIGHTING", "") or "").strip().upper() in ("R", "Y", "M", "H", "S", "F") else 0
+                lat = float(_first(row, "LATDEC", "LATITUDE", "LAT") or 0)
+                lon = float(_first(row, "LONDEC", "LONGITUDE", "LON") or 0)
+                agl = int(float(_first(row, "AGL", "AGL_HT") or 0))
+                amsl = int(float(_first(row, "AMSL", "AMSL_HT") or 0))
+                otype = (_first(row, "TYPE", "TYPE_CODE") or "").strip()
+                lighting = (_first(row, "LIGHTING") or "").strip().upper()
+                lit = 1 if lighting in ("R", "Y", "M", "H", "S", "F") else 0
             except (ValueError, TypeError):
                 continue
             if lat == 0 or lon == 0:
