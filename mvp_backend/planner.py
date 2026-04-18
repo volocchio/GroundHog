@@ -287,6 +287,9 @@ def terrain_avoid_leg(
             # Convert smoothed waypoints to lat/lon, then interpolate
             # at ~2 NM intervals using true lat/lon (not grid-snapped)
             smoothed_latlon = [grid.idx_to_latlon(i, j) for i, j in path_idx]
+            if smoothed_latlon:
+                smoothed_latlon[0] = (a.lat, a.lon)
+                smoothed_latlon[-1] = (b.lat, b.lon)
             path_latlon = _densify_latlon(smoothed_latlon, max_step_nm=2.0)
             route_cache.put_leg(a.icao, b.icao, max_msl_ft, min_agl_ft, max_detour_factor, dist_nm, path_latlon,
                                 max_climb_fpm, max_descent_fpm,
@@ -1471,6 +1474,9 @@ def terrain_avoid_leg_streaming(
                 break  # no path in this margin, try wider
             yield event
             if event["type"] == "path":
+                if event["coords"]:
+                    event["coords"][0] = [a.lat, a.lon]
+                    event["coords"][-1] = [b.lat, b.lon]
                 route_cache.put_leg(a.icao, b.icao, max_msl_ft, min_agl_ft, max_detour_factor, event["dist_nm"], event["coords"],
                                     max_climb_fpm, max_descent_fpm,
                                     climb_speed_kt, descent_speed_kt,

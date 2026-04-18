@@ -527,6 +527,27 @@ class ProfileRequest(BaseModel):
 
 _ALL_DISPLAY_CLASSES = ["B", "C", "D", "R", "P", "W", "MOA", "A", "DA"]
 
+
+def _resample_profile_path(path: list[list[float]], max_step_nm: float = 0.25) -> list[list[float]]:
+    """Densify short route segments so profile water/obstacle sampling is stable."""
+    if len(path) <= 1:
+        return list(path)
+
+    result = [path[0]]
+    for idx in range(len(path) - 1):
+        lat0, lon0 = path[idx]
+        lat1, lon1 = path[idx + 1]
+        seg_nm = _haversine_nm(lat0, lon0, lat1, lon1)
+        n_sub = max(1, int(math.ceil(seg_nm / max_step_nm)))
+        for step in range(1, n_sub):
+            t = step / n_sub
+            result.append([
+                lat0 + (lat1 - lat0) * t,
+                lon0 + (lon1 - lon0) * t,
+            ])
+        result.append(path[idx + 1])
+    return result
+
 def _profile_airspace_zones(
     coords: list, elev_ft: list, avoid_classes: list[str], min_agl_ft: float,
 ) -> list[dict]:
@@ -636,8 +657,9 @@ def elevation_profile(req: ProfileRequest):
     if len(req.path) < 2:
         raise HTTPException(400, "Path must have at least 2 points")
 
+    pts = _resample_profile_path(req.path)
+
     # Subsample if path has too many points (keep it fast)
-    pts = req.path
     max_samples = 300
     if len(pts) > max_samples:
         step = len(pts) / max_samples

@@ -108,11 +108,11 @@
       </div>
 
       <label>Arrival ICAO</label>
-      <input id="arr" value="E60" />
+      <input id="arr" value="@48.07700,-116.43215" />
       <div id="arrElev" class="muted" style="font-size:11px; margin-top:-2px"></div>
 
       <div class="watch-row" style="margin-top:6px">
-        <input type="checkbox" id="roundTrip" style="width:auto" />
+        <input type="checkbox" id="roundTrip" checked style="width:auto" />
         <label for="roundTrip" style="margin:0; display:inline; font-size:13px">Round trip (no refuel at destination)</label>
       </div>
 
@@ -144,8 +144,8 @@
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:4px 12px; font-size:0.85em">
         <label style="margin:0">OAT (°C)</label>
         <label style="margin:0">OAT (°F)</label>
-        <input id="oatC" type="number" value="15" step="1" title="Outside air temperature in Celsius" />
-        <input id="oatF" type="number" value="59" step="1" title="Outside air temperature in Fahrenheit" />
+        <input id="oatC" type="number" value="30" step="1" title="Outside air temperature in Celsius" />
+        <input id="oatF" type="number" value="86" step="1" title="Outside air temperature in Fahrenheit" />
       </div>
 
       <div id="weightBuildUp" style="margin-top:6px; border:1px solid #d1d5db; border-radius:8px; padding:8px; background:#f9fafb">
@@ -154,13 +154,13 @@
           <label style="margin:0" title="Basic Empty Weight from AFM">BEW (lb)</label>
           <input id="bewLb" type="number" value="0" min="0" step="1" style="width:90px; text-align:right" title="Basic Empty Weight — auto-filled from helicopter type" />
           <label style="margin:0">Pilot (lb)</label>
-          <input id="pilotLb" type="number" value="170" min="0" step="1" style="width:90px; text-align:right" title="Pilot weight" />
+          <input id="pilotLb" type="number" value="200" min="0" step="1" style="width:90px; text-align:right" title="Pilot weight" />
           <label style="margin:0">Passengers (lb)</label>
-          <input id="paxLb" type="number" value="0" min="0" step="1" style="width:90px; text-align:right" title="Total passenger weight" />
+          <input id="paxLb" type="number" value="200" min="0" step="1" style="width:90px; text-align:right" title="Total passenger weight" />
           <label style="margin:0">Cargo (lb)</label>
           <input id="cargoLb" type="number" value="0" min="0" step="1" style="width:90px; text-align:right" title="Baggage, tools, equipment" />
           <label style="margin:0">Fuel load (gal)</label>
-          <input id="fuelLoadGal" type="number" value="0" min="0" step="0.1" style="width:90px; text-align:right" title="Fuel on board at departure (gal)" />
+          <input id="fuelLoadGal" type="number" value="30" min="0" step="0.1" style="width:90px; text-align:right" title="Fuel on board at departure (gal)" />
         </div>
         <div id="towBar" style="margin-top:8px; font-size:0.82em"></div>
       </div>
