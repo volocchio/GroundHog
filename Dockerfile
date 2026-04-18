@@ -13,6 +13,11 @@ RUN pip install -r requirements.txt
 
 COPY . ./
 
+# Keep optional seed data outside mounted volumes so startup can repopulate
+# empty volumes (for example obstacles.sqlite built from DOF.CSV).
+RUN mkdir -p /app_seed/obstacle_data \
+  && if [ -f /app/mvp_backend/obstacle_data/DOF.CSV ]; then cp /app/mvp_backend/obstacle_data/DOF.CSV /app_seed/obstacle_data/DOF.CSV; fi
+
 RUN chmod +x /app/entrypoint.sh
 
 # Persistent data directories (mount as Docker volumes)

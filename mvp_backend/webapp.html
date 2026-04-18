@@ -883,7 +883,7 @@
       try {
         const depIcao = document.getElementById('dep').value.trim().toUpperCase();
         const depAp = airportLookup[depIcao];
-        const pa = depAp ? depAp.elev_ft : 0;
+        const pa = Number(depAp ? (depAp.elev_ft ?? depAp.elev) : 0) || 0;
         const oat = Number(document.getElementById('oatC').value) || 15;
         const res = await fetch(`/helicopters/${typeCode}/performance?pressure_alt_ft=${pa}&oat_c=${oat}&gross_weight_lb=${tow}`);
         if (!res.ok) return;
