@@ -253,10 +253,12 @@ def terrain_avoid_leg(
 
         water_cost_2d = None
         if glide_ratio > 0 and water_risk < 100:
+            water_alt_ft = min(max_msl_ft, max(a.elevation_ft + min_agl_ft,
+                                               b.elevation_ft + min_agl_ft))
             water_cost_2d, _ = _build_water_cost(
                 grid, elev_ft, passable,
                 glide_ratio=glide_ratio,
-                max_msl_ft=max_msl_ft,
+                cruise_alt_ft=water_alt_ft,
                 water_risk=water_risk,
             )
 
@@ -1103,7 +1105,7 @@ def _detect_water_grid(n_lat: int, n_lon: int, elev_ft: list) -> list[list[bool]
 
 
 def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
-                      glide_ratio: float, max_msl_ft: float,
+                      glide_ratio: float, cruise_alt_ft: float,
                       water_risk: float) -> tuple:
     """Build a 2D cost grid penalizing water cells beyond autorotation glide range.
 
@@ -1133,8 +1135,8 @@ def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
     else:
         glide_mult = 3.0
 
-    # Glide range in NM from cruise altitude (over water, terrain ~ 0)
-    glide_range_nm = max_msl_ft * glide_ratio / 6076.12 * glide_mult
+    # Glide range in NM from a conservative crossing altitude.
+    glide_range_nm = max(0.0, cruise_alt_ft) * glide_ratio / 6076.12 * glide_mult
 
     # Cell size in NM (approximate)
     mid_lat = grid.lat0 + (n_lat / 2) * grid.dlat
@@ -1184,7 +1186,20 @@ def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
                     q.append((ni, nj))
 
     # Build cost grids
-    WATER_BASE = 2.0       # mild cost for any water cell (A* only)
+    # Within-glide water still gets a risk-dependent penalty so strict mode
+    # prefers hugging shore instead of crossing broad water directly.
+    if water_risk <= 0:
+        WATER_BASE = 80.0
+        SMOOTH_WITHIN = 80.0
+    elif water_risk <= 25:
+        WATER_BASE = 25.0
+        SMOOTH_WITHIN = 12.0
+    elif water_risk <= 50:
+        WATER_BASE = 8.0
+        SMOOTH_WITHIN = 2.0
+    else:
+        WATER_BASE = 2.0
+        SMOOTH_WITHIN = 0.0
     WATER_BEYOND = 200.0   # very heavy cost for cells beyond glide range
     cost = [[0.0] * n_lon for _ in range(n_lat)]
     smooth_cost = [[0.0] * n_lon for _ in range(n_lat)]
@@ -1196,8 +1211,7 @@ def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
             d = dist[i][j]
             if d <= glide_range_cells:
                 cost[i][j] = WATER_BASE
-                # smoother: zero cost within glide range — safe to shortcut
-                smooth_cost[i][j] = 0.0
+                smooth_cost[i][j] = SMOOTH_WITHIN
             else:
                 # Scale penalty by how far beyond glide range
                 excess = (d - glide_range_cells) / max(1.0, glide_range_cells)
@@ -1408,9 +1422,11 @@ def terrain_avoid_leg_streaming(
 
         # ── Water avoidance cost ──
         if glide_ratio > 0 and water_risk < 100:
+            water_alt_ft = min(max_msl_ft, max(a.elevation_ft + min_agl_ft,
+                                               b.elevation_ft + min_agl_ft))
             water_cost_2d, smooth_water_cost_2d = _build_water_cost(
                 grid, elev_ft, passable,
-                glide_ratio=glide_ratio, max_msl_ft=max_msl_ft,
+                glide_ratio=glide_ratio, cruise_alt_ft=water_alt_ft,
                 water_risk=water_risk,
             )
             if water_cost_2d is not None:
