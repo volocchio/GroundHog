@@ -209,6 +209,8 @@ def route(req: RouteRequest):
         max_descent_fpm=req.max_descent_fpm,
         climb_speed_kt=req.climb_speed_kt,
         descent_speed_kt=req.descent_speed_kt,
+        glide_ratio=req.glide_ratio,
+        water_risk=req.water_risk,
     )
     return result
 

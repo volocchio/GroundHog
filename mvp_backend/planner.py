@@ -129,6 +129,8 @@ def terrain_avoid_leg(
     cruise_speed_kt: float = 0,
     climb_speed_kt: float = 0,
     descent_speed_kt: float = 0,
+    glide_ratio: float = 0,
+    water_risk: float = 100,
     timeout_s: float = 90.0,
 ) -> Optional[LegResult]:
     """Find terrain-avoiding path between airports using grid A*.
@@ -138,6 +140,9 @@ def terrain_avoid_leg(
     limits per grid edge (terrain-following constraint).
     """
     _deadline = time.monotonic() + timeout_s
+    avoidance_tag = ""
+    if water_risk < 100 and glide_ratio > 0:
+        avoidance_tag = f"W{water_risk:.0f}G{glide_ratio:.1f}"
     # ── terrain intelligence quick-reject ──
     # Only hard-reject when the precomputed data found a *specific* minimum
     # viable altitude (proving the data covers the corridor).  When
@@ -153,13 +158,15 @@ def terrain_avoid_leg(
             route_cache.put_leg(a.icao, b.icao, max_msl_ft, min_agl_ft,
                                 max_detour_factor, None, None,
                                 max_climb_fpm, max_descent_fpm,
-                                climb_speed_kt, descent_speed_kt)
+                                climb_speed_kt, descent_speed_kt,
+                                avoidance_tag=avoidance_tag)
             return None
 
     # ── persistent cache lookup ──
     cached = route_cache.get_leg(a.icao, b.icao, max_msl_ft, min_agl_ft, max_detour_factor,
                                  max_climb_fpm, max_descent_fpm,
-                                 climb_speed_kt, descent_speed_kt)
+                                 climb_speed_kt, descent_speed_kt,
+                                 avoidance_tag=avoidance_tag)
     if cached is not None:
         if cached.dist_nm == float("inf"):
             return None
@@ -170,6 +177,9 @@ def terrain_avoid_leg(
     direct_nm = _direct_nm(a, b)
     direct_km = direct_nm * 1.852
     detour_limit_nm = max_detour_factor * direct_nm
+    if water_risk < 100 and glide_ratio > 0:
+        water_detour = max(max_detour_factor * 2.0, 4.0)
+        detour_limit_nm = max(detour_limit_nm, water_detour * direct_nm)
 
     ceiling_ft = max_msl_ft - min_agl_ft
 
@@ -188,6 +198,8 @@ def terrain_avoid_leg(
     # Scale initial margin so the grid captures alternate routes around
     # large obstacles (e.g. mountain ranges perpendicular to the track).
     margin_km = max(initial_margin_km, direct_km * 0.55)
+    if water_risk < 100 and glide_ratio > 0:
+        margin_km = max(margin_km, direct_km * 1.0)
     while margin_km <= max_margin_km:
         if time.monotonic() > _deadline:
             break  # timeout — treat as failure
@@ -239,13 +251,23 @@ def terrain_avoid_leg(
             margin_km += margin_step_km
             continue
 
+        water_cost_2d = None
+        if glide_ratio > 0 and water_risk < 100:
+            water_cost_2d, _ = _build_water_cost(
+                grid, elev_ft, passable,
+                glide_ratio=glide_ratio,
+                max_msl_ft=max_msl_ft,
+                water_risk=water_risk,
+            )
+
         path_idx = astar_path(grid, passable, start, goal,
                               elev_ft=elev_ft_2d,
                               max_climb_fpm=max_climb_fpm,
                               max_descent_fpm=max_descent_fpm,
                               cruise_kt=cruise_speed_kt,
                               climb_speed_kt=climb_speed_kt,
-                              descent_speed_kt=descent_speed_kt)
+                              descent_speed_kt=descent_speed_kt,
+                              airspace_cost=water_cost_2d)
         if not path_idx:
             margin_km += margin_step_km
             continue
@@ -257,7 +279,8 @@ def terrain_avoid_leg(
                                max_descent_fpm=max_descent_fpm,
                                cruise_kt=cruise_speed_kt,
                                climb_speed_kt=climb_speed_kt,
-                               descent_speed_kt=descent_speed_kt)
+                               descent_speed_kt=descent_speed_kt,
+                               airspace_cost=water_cost_2d)
 
         dist_nm = path_nm(grid, path_idx)
         if dist_nm <= detour_limit_nm:
@@ -267,7 +290,8 @@ def terrain_avoid_leg(
             path_latlon = _densify_latlon(smoothed_latlon, max_step_nm=2.0)
             route_cache.put_leg(a.icao, b.icao, max_msl_ft, min_agl_ft, max_detour_factor, dist_nm, path_latlon,
                                 max_climb_fpm, max_descent_fpm,
-                                climb_speed_kt, descent_speed_kt)
+                                climb_speed_kt, descent_speed_kt,
+                                avoidance_tag=avoidance_tag)
             return LegResult(dist_nm=dist_nm, path_latlon=path_latlon)
 
         # Found path but too long: expand margin (sometimes finds a shorter corridor)
@@ -275,7 +299,8 @@ def terrain_avoid_leg(
 
     route_cache.put_leg(a.icao, b.icao, max_msl_ft, min_agl_ft, max_detour_factor, None, None,
                         max_climb_fpm, max_descent_fpm,
-                        climb_speed_kt, descent_speed_kt)
+                        climb_speed_kt, descent_speed_kt,
+                        avoidance_tag=avoidance_tag)
     return None
 
 
@@ -599,6 +624,8 @@ def plan_route_multi_stop(
     max_descent_fpm: float = 0,
     climb_speed_kt: float = 0,
     descent_speed_kt: float = 0,
+    glide_ratio: float = 0,
+    water_risk: float = 100,
 ) -> dict:
     """Multi-stop route planner (unbounded stops) minimizing total time.
 
@@ -704,7 +731,9 @@ def plan_route_multi_stop(
                                         max_climb_fpm=max_climb_fpm, max_descent_fpm=max_descent_fpm,
                                         cruise_speed_kt=cruise_speed_kt,
                                         climb_speed_kt=climb_speed_kt,
-                                        descent_speed_kt=descent_speed_kt)
+                                        descent_speed_kt=descent_speed_kt,
+                                        glide_ratio=glide_ratio,
+                                        water_risk=water_risk)
                 if not leg:
                     leg_cache[key] = (float("inf"), float("inf"), float("inf"), [])
                     continue
