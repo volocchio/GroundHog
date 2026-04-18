@@ -1298,6 +1298,8 @@ def terrain_avoid_leg_streaming(
     direct_nm = _direct_nm(a, b)
     direct_km = direct_nm * 1.852
     detour_limit_nm = max_detour_factor * direct_nm
+    lats = [a.lat, b.lat]
+    lons = [a.lon, b.lon]
     # Water avoidance may force long detours around large water bodies;
     # relax the detour limit so the planner can find a viable path.
     if water_risk < 100 and glide_ratio > 0:
