@@ -955,7 +955,7 @@
       document.getElementById('burnGph').value = d.fuel_burn_gph;
       document.getElementById('fuelType').value = h.fuel_type;
       document.getElementById('bewLb').value = h.empty_weight_lb;
-      document.getElementById('fuelLoadGal').value = d.usable_fuel_gal; // default to full tanks
+      document.getElementById('fuelLoadGal').value = Math.min(30, Number(d.usable_fuel_gal) || 30);
       document.getElementById('autorotSpeedKt').value = h.autorotation_speed_kt || 60;
       document.getElementById('grossWeightLb').value = 0;
       updateWeightBuildUp();
@@ -1055,7 +1055,7 @@
           document.getElementById('usableFuel').value = h.defaults.usable_fuel_gal;
           document.getElementById('burnGph').value = h.defaults.fuel_burn_gph;
           document.getElementById('fuelType').value = h.fuel_type;
-          document.getElementById('fuelLoadGal').value = h.defaults.usable_fuel_gal;
+          document.getElementById('fuelLoadGal').value = Math.min(30, Number(h.defaults.usable_fuel_gal) || 30);
           document.getElementById('autorotSpeedKt').value = h.autorotation_speed_kt || 60;
         }
       }
