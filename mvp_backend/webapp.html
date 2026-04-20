@@ -261,11 +261,14 @@
         <span class="muted" style="font-size:12px">° (green &lt;5°, yellow 5–15°, red &gt;15°)</span>
       </div>
 
-      <label>Check slope for:</label>
+      <label>Apply landing-slope check to:</label>
       <div class="radio-group" style="margin-top:4px">
         <label><input type="radio" name="slopeCheck" value="water" checked /> Water crossings only</label>
-        <label><input type="radio" name="slopeCheck" value="land" /> Land landing zones only</label>
-        <label><input type="radio" name="slopeCheck" value="both" /> All landing zones</label>
+        <label><input type="radio" name="slopeCheck" value="land" /> Ignore shore slope on water crossings</label>
+        <label><input type="radio" name="slopeCheck" value="both" /> Same as water crossings today</label>
+      </div>
+      <div class="muted" style="font-size:11px; margin-top:4px">
+        Current behavior: the colored glide corridor is only drawn for detected water segments. Green means reachable shore with gentle slope, yellow means reachable but steep, and red means unreachable or steeper than the selected threshold.
       </div>
 
       <div style="display:flex; align-items:center; gap:6px; margin:8px 0 0">
@@ -302,6 +305,7 @@
       <div id="map"></div>
       <div id="profileWrap">
         <div class="profile-title">Elevation Profile (side view)
+          <span class="muted" style="font-size:11px; font-weight:normal; margin-left:8px">Blue = detected water, green/yellow/red tint = autorotation landing status for that water segment</span>
           <span class="profile-controls">
             <label style="font-size:11px; font-weight:normal; margin:0 4px 0 0">Corridor:</label>
             <input id="profileCorridorNm" type="number" value="2" min="0.5" max="10" step="0.5" style="width:50px; padding:2px 4px; font-size:11px; border:1px solid #ccc; border-radius:4px; margin-right:6px" title="Obstacle display corridor width (NM each side)" />
@@ -2070,6 +2074,14 @@
             ctx.lineTo(x(dist[endIdx]), y(0));
             ctx.closePath();
             ctx.fill();
+
+            // Keep water identity visible even when the safety tint is drawn on top.
+            ctx.strokeStyle = 'rgba(30, 100, 220, 0.85)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(x(dist[startIdx]), y(ground[startIdx]));
+            for (let i = startIdx + 1; i <= endIdx; i++) ctx.lineTo(x(dist[i]), y(ground[i]));
+            ctx.stroke();
 
             // Add label: distance, slope info if relevant
             if (!overallSafe) {
