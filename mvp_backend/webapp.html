@@ -401,6 +401,7 @@
 
     const obstacleGroup = L.layerGroup().addTo(map);
     const airspaceGroup = L.layerGroup().addTo(map);
+    const glideCorridorGroup = L.layerGroup().addTo(map);
 
     openTopo.addTo(map);  // default to OpenTopoMap
 
@@ -414,6 +415,7 @@
     }, {
       '<span class="layer-swatch" style="background:#2060cc"></span> Airspace': airspaceGroup,
       '<span class="layer-swatch" style="background:#cc3300"></span> Obstacles (FAA)': obstacleGroup,
+      '<span class="layer-swatch" style="background:#16a34a"></span> Glide Corridor': glideCorridorGroup,
     }, { position: 'topright', collapsed: true }).addTo(map);
 
     let exploreGroup = L.layerGroup().addTo(map);
@@ -632,6 +634,7 @@
     function clearMap() {
       layerGroup.clearLayers();
       exploreGroup.clearLayers();
+      glideCorridorGroup.clearLayers();
       routeMarkers = [];
       document.getElementById('profileWrap').classList.remove('visible');
       lastProfileArgs = null;
@@ -1953,9 +1956,12 @@
 
           const descentPerNm = 6076.12 / glideRatio;
 
+          const minUnsafeRunNm = 0.25;
           function drawWaterInterval(startIdx, endIdx, safe) {
             if (endIdx < startIdx) return;
-            ctx.fillStyle = safe ? 'rgba(34, 197, 94, 0.10)' : 'rgba(239, 68, 68, 0.22)';
+            const spanNm = Math.max(0, dist[endIdx] - dist[startIdx]);
+            const effectiveSafe = safe || spanNm < minUnsafeRunNm;
+            ctx.fillStyle = effectiveSafe ? 'rgba(34, 197, 94, 0.10)' : 'rgba(239, 68, 68, 0.22)';
             ctx.beginPath();
             ctx.moveTo(x(dist[startIdx]), y(0));
             for (let i = startIdx; i <= endIdx; i++) ctx.lineTo(x(dist[i]), y(ground[i]));
@@ -1963,9 +1969,9 @@
             ctx.closePath();
             ctx.fill();
 
-            if (!safe) {
+            if (!effectiveSafe) {
               const midIdx = Math.floor((startIdx + endIdx) / 2);
-              const deadNm = Math.max(0, dist[endIdx] - dist[startIdx]).toFixed(1);
+              const deadNm = spanNm.toFixed(1);
               const labelY = y(ground[midIdx]) - 10;
               ctx.fillStyle = 'rgba(239, 68, 68, 0.9)';
               ctx.font = 'bold 11px system-ui';
@@ -2034,7 +2040,13 @@
             }
             drawWaterInterval(runStart, sec.end, runSafe);
           }
+
+          renderMapGlideCorridor(lastProfilePath, dist, isWater, fa, ground, descentPerNm);
+        } else {
+          glideCorridorGroup.clearLayers();
         }
+      } else {
+        glideCorridorGroup.clearLayers();
       }
 
       // ── Airport markers at each leg boundary (drawn last, on top) ──
@@ -2228,6 +2240,130 @@
       const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
       const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2)**2;
       return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    function bearingDeg(lat1, lon1, lat2, lon2) {
+      const toRad = d => d * Math.PI / 180;
+      const toDeg = r => r * 180 / Math.PI;
+      const p1 = toRad(lat1);
+      const p2 = toRad(lat2);
+      const dLon = toRad(lon2 - lon1);
+      const y = Math.sin(dLon) * Math.cos(p2);
+      const x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dLon);
+      return (toDeg(Math.atan2(y, x)) + 360) % 360;
+    }
+
+    function destinationPoint(lat, lon, bearing, distNm) {
+      const R = 3440.065;
+      const toRad = d => d * Math.PI / 180;
+      const toDeg = r => r * 180 / Math.PI;
+      const br = toRad(bearing);
+      const ang = distNm / R;
+      const p1 = toRad(lat);
+      const l1 = toRad(lon);
+
+      const sinP1 = Math.sin(p1), cosP1 = Math.cos(p1);
+      const sinAng = Math.sin(ang), cosAng = Math.cos(ang);
+      const sinP2 = sinP1 * cosAng + cosP1 * sinAng * Math.cos(br);
+      const p2 = Math.asin(Math.max(-1, Math.min(1, sinP2)));
+      const y = Math.sin(br) * sinAng * cosP1;
+      const x = cosAng - sinP1 * Math.sin(p2);
+      const l2 = l1 + Math.atan2(y, x);
+
+      return [toDeg(p2), ((toDeg(l2) + 540) % 360) - 180];
+    }
+
+    function samplePathAtDistances(path, sampleDistNm) {
+      if (!path || path.length < 2 || !sampleDistNm || sampleDistNm.length < 2) return [];
+      const cum = [0];
+      for (let i = 1; i < path.length; i++) {
+        cum.push(cum[i - 1] + haversineNm(path[i - 1][0], path[i - 1][1], path[i][0], path[i][1]));
+      }
+      const totalNm = cum[cum.length - 1] || 1;
+      const pts = [];
+      let seg = 0;
+      for (const rawD of sampleDistNm) {
+        const d = Math.max(0, Math.min(totalNm, Number(rawD) || 0));
+        while (seg < cum.length - 2 && cum[seg + 1] < d) seg++;
+        const a = path[seg];
+        const b = path[Math.min(path.length - 1, seg + 1)];
+        const segNm = cum[Math.min(cum.length - 1, seg + 1)] - cum[seg];
+        const t = segNm > 0 ? (d - cum[seg]) / segNm : 0;
+        pts.push([
+          a[0] + (b[0] - a[0]) * t,
+          a[1] + (b[1] - a[1]) * t,
+        ]);
+      }
+      return pts;
+    }
+
+    function renderMapGlideCorridor(path, dist, isWater, fa, ground, descentPerNm) {
+      glideCorridorGroup.clearLayers();
+      if (!path || path.length < 2 || !dist || !fa || !ground || !isWater) return;
+      if (dist.length !== fa.length || dist.length !== ground.length || dist.length !== isWater.length) return;
+      if (!(descentPerNm > 0)) return;
+
+      const centers = samplePathAtDistances(path, dist);
+      if (centers.length !== dist.length) return;
+
+      const waterSections = [];
+      let ws = -1;
+      for (let i = 0; i < dist.length; i++) {
+        if (isWater[i] && ws < 0) ws = i;
+        if (!isWater[i] && ws >= 0) {
+          waterSections.push({ start: ws, end: i - 1 });
+          ws = -1;
+        }
+      }
+      if (ws >= 0) waterSections.push({ start: ws, end: dist.length - 1 });
+
+      for (const sec of waterSections) {
+        const entryIdx = sec.start > 0 ? sec.start - 1 : sec.start;
+        const exitIdx = sec.end < dist.length - 1 ? sec.end + 1 : sec.end;
+        const entryD = dist[entryIdx];
+        const exitD = dist[exitIdx];
+
+        const left = [];
+        const right = [];
+        const unsafeCenter = [];
+
+        for (let i = sec.start; i <= sec.end; i++) {
+          const c = centers[i];
+          if (!c) continue;
+          const prev = centers[Math.max(sec.start, i - 1)] || c;
+          const next = centers[Math.min(sec.end, i + 1)] || c;
+          let brg = bearingDeg(prev[0], prev[1], next[0], next[1]);
+          if (!Number.isFinite(brg)) brg = 0;
+
+          const reachNm = Math.max(0, Math.min(15, (fa[i] - ground[i]) / descentPerNm));
+          left.push(destinationPoint(c[0], c[1], brg - 90, reachNm));
+          right.push(destinationPoint(c[0], c[1], brg + 90, reachNm));
+
+          const leftNeedNm = Math.max(0, dist[i] - entryD);
+          const rightNeedNm = Math.max(0, exitD - dist[i]);
+          if (!(leftNeedNm <= reachNm || rightNeedNm <= reachNm)) unsafeCenter.push(c);
+        }
+
+        if (left.length >= 2 && right.length >= 2) {
+          const polyPts = left.concat(right.reverse());
+          L.polygon(polyPts, {
+            color: '#16a34a',
+            weight: 1.5,
+            opacity: 0.85,
+            fillColor: '#22c55e',
+            fillOpacity: 0.12,
+          }).bindTooltip('Safe glide corridor (engine-out reach band)').addTo(glideCorridorGroup);
+        }
+
+        if (unsafeCenter.length >= 2) {
+          L.polyline(unsafeCenter, {
+            color: '#ef4444',
+            weight: 3,
+            opacity: 0.9,
+            dashArray: '6 6',
+          }).bindTooltip('Unreachable water segment at current profile altitude').addTo(glideCorridorGroup);
+        }
+      }
     }
 
     function renderNavLog({legs, usableFuelGal, reserveMin, burnGph, depLabel, arrLabel, stops, failedLeg, nfStops, grossWeightLb, fuelWeightLbPerGal, heliInfo}) {

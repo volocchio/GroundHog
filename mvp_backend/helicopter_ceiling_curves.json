@@ -1,0 +1,20 @@
+{
+  "_schema": {
+    "description": "Optional chart-digitized enroute ceiling DA curves by gross weight. Add one object per helicopter type code.",
+    "entry_format": {
+      "S300C": {
+        "source": "AFM/RFM figure reference",
+        "points": [
+          {
+            "gross_weight_lb": 2050,
+            "ceiling_da_ft": 10600
+          },
+          {
+            "gross_weight_lb": 1700,
+            "ceiling_da_ft": 11100
+          }
+        ]
+      }
+    }
+  }
+}

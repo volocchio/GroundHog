@@ -1,0 +1,166 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "publish-groundhog-fix",
+			"type": "shell",
+			"command": "git -C c:/Users/honeybadger/Dev/Repos/GroudHog status --short; c:/Users/honeybadger/Dev/Repos/GroudHog/.venv/Scripts/python.exe -m unittest test_water_risk_forwarding.py; git -C c:/Users/honeybadger/Dev/Repos/GroudHog add mvp_backend/planner.py; git -C c:/Users/honeybadger/Dev/Repos/GroudHog commit -m \"Fix streaming planner route bounds\"; git -C c:/Users/honeybadger/Dev/Repos/GroudHog push origin main",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "commit-push-groundhog-planner-fix",
+			"type": "shell",
+			"command": "git -C c:/Users/honeybadger/Dev/Repos/GroudHog add mvp_backend/planner.py; git -C c:/Users/honeybadger/Dev/Repos/GroudHog commit -m fix-streaming-planner-route-bounds; git -C c:/Users/honeybadger/Dev/Repos/GroudHog push origin main",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "deploy-groundhog-direct-vps",
+			"type": "shell",
+			"command": "wsl ssh -i /home/honeybadger/.ssh/id_ed25519 root@185.164.110.65 \"cd /root/.openclaw/workspace-volo_coding/GroundHog && git fetch origin && git reset --hard origin/main && docker compose up --build -d && docker compose ps\"",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "deploy-groundhog-direct-vps-2",
+			"type": "shell",
+			"command": "wsl ssh -i /home/honeybadger/.ssh/id_ed25519 root@185.164.110.65 'cd /root/.openclaw/workspace-volo_coding/GroundHog; git fetch origin; git reset --hard origin/main; docker compose up --build -d; docker compose ps'",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "verify-groundhog-public",
+			"type": "shell",
+			"command": "curl.exe -s https://groundhog.voloaltro.tech/health; echo ---; curl.exe -s \"https://groundhog.voloaltro.tech/obstacles?south=47.62&north=47.70&west=-122.38&east=-122.20&min_agl=0\"; echo ---; wsl ssh -i /home/honeybadger/.ssh/id_ed25519 root@185.164.110.65 \"cd /root/.openclaw/workspace-volo_coding/GroundHog; git rev-parse --short HEAD; docker compose ps\"",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "verify-groundhog-public-2",
+			"type": "shell",
+			"command": "curl.exe -s 'https://groundhog.voloaltro.tech/health'; echo ---; curl.exe -s 'https://groundhog.voloaltro.tech/obstacles?south=47.62&north=47.70&west=-122.38&east=-122.20&min_agl=0'; echo ---; wsl ssh -i /home/honeybadger/.ssh/id_ed25519 root@185.164.110.65 'cd /root/.openclaw/workspace-volo_coding/GroundHog; git rev-parse --short HEAD; docker compose ps'",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "audit-groundhog-vps-features",
+			"type": "shell",
+			"command": "$airports = Invoke-RestMethod 'https://groundhog.voloaltro.tech/airports'; Write-Host \"airports=$($airports.Count)\"; $helis = Invoke-RestMethod 'https://groundhog.voloaltro.tech/helicopters'; Write-Host \"helicopters=$($helis.Count)\"; $intel = Invoke-RestMethod 'https://groundhog.voloaltro.tech/terrain-intel/summary'; Write-Host (\"terrain_intel=\" + ($intel | ConvertTo-Json -Compress)); $airspace = Invoke-RestMethod 'https://groundhog.voloaltro.tech/airspace?south=47.50&north=47.75&west=-122.50&east=-122.15&classes=B,C,D,R,P,W,MOA,A'; Write-Host \"airspace=$($airspace.Count)\"; $obstacles = Invoke-RestMethod 'https://groundhog.voloaltro.tech/obstacles?south=33.80&north=34.25&west=-118.60&east=-117.90&min_agl=200'; Write-Host \"obstacles=$($obstacles.Count)\"; wsl ssh -i /home/honeybadger/.ssh/id_ed25519 root@185.164.110.65 'cd /root/.openclaw/workspace-volo_coding/GroundHog; docker compose logs --tail=80 groundhog'",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "inspect-groundhog-vps-data",
+			"type": "shell",
+			"command": "wsl ssh -i /home/honeybadger/.ssh/id_ed25519 root@185.164.110.65 'cd /root/.openclaw/workspace-volo_coding/GroundHog; echo REPO_DATA; ls -lah mvp_backend/obstacle_data mvp_backend/airspace_data; python3 - <<\"PY\"\nimport os, sqlite3\nfor p in [\"mvp_backend/obstacle_data/obstacles.sqlite\", \"mvp_backend/airspace_data/airspace.sqlite\"]:\n    print(p, os.path.exists(p), os.path.getsize(p) if os.path.exists(p) else 0)\n    if os.path.exists(p):\n        conn = sqlite3.connect(p)\n        table = \"obstacles\" if \"obstacle\" in p else \"airspace\"\n        print(table, conn.execute(f\"select count(*) from {table}\").fetchone()[0])\n        conn.close()\nPY\n'",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "check-groundhog-other-data",
+			"type": "shell",
+			"command": "$intel = Invoke-RestMethod 'https://groundhog.voloaltro.tech/terrain-intel/summary'; $intel | ConvertTo-Json -Compress; wsl ssh -i /home/honeybadger/.ssh/id_ed25519 root@185.164.110.65 'cd /root/.openclaw/workspace-volo_coding/GroundHog; echo FAA_DATA; ls -lah faa_nasr faa_nasr/extract 2>/dev/null; echo SRTM_CACHE; ls /var/lib/docker/volumes 2>/dev/null | grep groundhog | sed -n \"1,20p\"'",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "inspect-obstacle-volume",
+			"type": "shell",
+			"command": "wsl ssh -i /home/honeybadger/.ssh/id_ed25519 root@185.164.110.65 'for d in /var/lib/docker/volumes/groundhog_groundhog-obstacles/_data /var/lib/docker/volumes/groundhog_groundhog-airspace/_data; do echo === $d ===; ls -lah $d; done; python3 - <<\"PY\"\nimport os, sqlite3\npaths = [\n    (\"/var/lib/docker/volumes/groundhog_groundhog-obstacles/_data/obstacles.sqlite\", \"obstacles\"),\n    (\"/var/lib/docker/volumes/groundhog_groundhog-airspace/_data/airspace.sqlite\", \"airspace\"),\n]\nfor path, table in paths:\n    print(path, os.path.exists(path), os.path.getsize(path) if os.path.exists(path) else 0)\n    if os.path.exists(path):\n        conn = sqlite3.connect(path)\n        print(table, conn.execute(f\"select count(*) from {table}\").fetchone()[0])\n        conn.close()\nPY'",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "publish-groundhog-water-debug-fix",
+			"type": "shell",
+			"command": "git -C c:/Users/honeybadger/Dev/Repos/GroudHog add mvp_backend/planner.py mvp_backend/server.py mvp_backend/webapp.html; git -C c:/Users/honeybadger/Dev/Repos/GroudHog commit -m water-profile-debug-defaults; git -C c:/Users/honeybadger/Dev/Repos/GroudHog push origin main",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "deploy-and-clear-groundhog-cache",
+			"type": "shell",
+			"command": "wsl ssh -i /home/honeybadger/.ssh/id_ed25519 root@185.164.110.65 'cd /root/.openclaw/workspace-volo_coding/GroundHog; git fetch origin; git reset --hard origin/main; docker compose up --build -d; docker compose ps'; Invoke-RestMethod -Method Post 'https://groundhog.voloaltro.tech/cache/clear' | ConvertTo-Json -Compress; Invoke-RestMethod 'https://groundhog.voloaltro.tech/health' | ConvertTo-Json -Compress",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "verify-groundhog-after-redeploy",
+			"type": "shell",
+			"command": "Invoke-RestMethod 'https://groundhog.voloaltro.tech/health' | ConvertTo-Json -Compress; Invoke-RestMethod -Method Post 'https://groundhog.voloaltro.tech/cache/clear' | ConvertTo-Json -Compress; wsl ssh -i /home/honeybadger/.ssh/id_ed25519 root@185.164.110.65 'cd /root/.openclaw/workspace-volo_coding/GroundHog; git rev-parse --short HEAD; docker compose ps'",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "publish-obstacle-and-pa-fix",
+			"type": "shell",
+			"command": "git -C c:/Users/honeybadger/Dev/Repos/GroudHog add Dockerfile entrypoint.sh mvp_backend/webapp.html; git -C c:/Users/honeybadger/Dev/Repos/GroudHog commit -m vps-obstacles-and-pressure-alt-fix; git -C c:/Users/honeybadger/Dev/Repos/GroudHog push origin main",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "deploy-obstacle-and-pa-fix",
+			"type": "shell",
+			"command": "wsl ssh -i /home/honeybadger/.ssh/id_ed25519 root@185.164.110.65 'cd /root/.openclaw/workspace-volo_coding/GroundHog; git fetch origin; git reset --hard origin/main; docker compose up --build -d; sleep 8; docker compose logs --tail=120 groundhog; docker compose ps'",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "inspect-dof-format",
+			"type": "shell",
+			"command": "wsl ssh -i /home/honeybadger/.ssh/id_ed25519 root@185.164.110.65 'cd /root/.openclaw/workspace-volo_coding/GroundHog; docker compose exec -T groundhog sh -lc \"ls -lah /app/mvp_backend/obstacle_data; python3 - <<\\\"PY\\\"\nimport csv\np = '/app/mvp_backend/obstacle_data/DOF.CSV'\nwith open(p, 'r', encoding='latin-1', errors='ignore') as f:\n    r = csv.DictReader(f)\n    print('headers:', r.fieldnames)\n    for i,row in enumerate(r):\n        if i>=3: break\n        print('row', i, {k: row.get(k) for k in r.fieldnames[:12]})\nPY\"'",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "inspect-dof-header-simple",
+			"type": "shell",
+			"command": "wsl ssh -i /home/honeybadger/.ssh/id_ed25519 root@185.164.110.65 \"cd /root/.openclaw/workspace-volo_coding/GroundHog; docker compose exec -T groundhog sh -lc 'head -n 2 /app/mvp_backend/obstacle_data/DOF.CSV'\"",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "print-local-dof-header",
+			"type": "shell",
+			"command": "c:/Users/honeybadger/Dev/Repos/GroudHog/.venv/Scripts/python.exe -c \"import csv; p='c:/Users/honeybadger/Dev/Repos/GroudHog/mvp_backend/obstacle_data/DOF.CSV'; f=open(p,'r',encoding='latin-1',errors='ignore'); r=csv.reader(f); print(next(r)); print(next(r)); f.close()\"",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "publish-dof-parser-fix",
+			"type": "shell",
+			"command": "git -C c:/Users/honeybadger/Dev/Repos/GroudHog add mvp_backend/refresh_faa.py; git -C c:/Users/honeybadger/Dev/Repos/GroudHog commit -m fix-dof-parser-current-schema; git -C c:/Users/honeybadger/Dev/Repos/GroudHog push origin main",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "deploy-and-verify-obstacles-pa",
+			"type": "shell",
+			"command": "wsl ssh -i /home/honeybadger/.ssh/id_ed25519 root@185.164.110.65 'cd /root/.openclaw/workspace-volo_coding/GroundHog; git fetch origin; git reset --hard origin/main; docker compose up --build -d; sleep 10; docker compose logs --tail=160 groundhog; docker compose ps'; Invoke-RestMethod 'https://groundhog.voloaltro.tech/obstacles?south=30.10&north=30.30&west=-88.20&east=-87.90&min_agl=200' | ConvertTo-Json -Depth 2 -Compress; wsl ssh -i /home/honeybadger/.ssh/id_ed25519 root@185.164.110.65 'cd /root/.openclaw/workspace-volo_coding/GroundHog; docker compose logs --since=5m groundhog | grep -n \"pressure_alt_ft=undefined\" || true'",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "final-verify-obstacles-pa",
+			"type": "shell",
+			"command": "Invoke-RestMethod 'https://groundhog.voloaltro.tech/health' | ConvertTo-Json -Compress; ($obs = Invoke-RestMethod 'https://groundhog.voloaltro.tech/obstacles?south=30.10&north=30.30&west=-88.20&east=-87.90&min_agl=200'); Write-Host \"obs_count=$($obs.Count)\"; wsl ssh -i /home/honeybadger/.ssh/id_ed25519 root@185.164.110.65 'cd /root/.openclaw/workspace-volo_coding/GroundHog; git rev-parse --short HEAD; docker compose ps; docker compose logs --since=10m groundhog | grep -n \"pressure_alt_ft=undefined\" || true'",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "publish-water-penalty-fix",
+			"type": "shell",
+			"command": "git -C c:/Users/honeybadger/Dev/Repos/GroudHog add mvp_backend/planner.py; git -C c:/Users/honeybadger/Dev/Repos/GroudHog commit -m strengthen-water-avoidance-risk-model; git -C c:/Users/honeybadger/Dev/Repos/GroudHog push origin main",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "deploy-water-penalty-fix",
+			"type": "shell",
+			"command": "wsl ssh -i /home/honeybadger/.ssh/id_ed25519 root@185.164.110.65 'cd /root/.openclaw/workspace-volo_coding/GroundHog; git fetch origin; git reset --hard origin/main; docker compose up --build -d; sleep 8; docker compose ps'; Invoke-RestMethod -Method Post 'https://groundhog.voloaltro.tech/cache/clear' | ConvertTo-Json -Compress; Invoke-RestMethod 'https://groundhog.voloaltro.tech/health' | ConvertTo-Json -Compress",
+			"isBackground": false,
+			"group": "build"
+		}
+	]
+}

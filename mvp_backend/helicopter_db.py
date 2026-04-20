@@ -24,8 +24,10 @@ aircraft is at or beyond its ceiling.
 """
 
 from __future__ import annotations
+import json
 import math
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
@@ -81,6 +83,10 @@ class HelicopterModel:
     service_ceiling_da_ft: float # density-altitude service ceiling
     autorotation_glide_ratio: float = 4.0  # horizontal:vertical glide ratio in autorotation
     autorotation_speed_kt: float = 60.0      # best autorotation glide speed (KIAS)
+    # Optional chart-derived envelope: [(gross_weight_lb, ceiling_da_ft), ...]
+    # If present, this is preferred over proxy estimation.
+    enroute_ceiling_curve: List[Tuple[float, float]] = field(default_factory=list)
+    enroute_ceiling_curve_source: str = ""
     # Performance breakpoints (sorted ascending by da_ft)
     perf_table: List[PerfPoint] = field(default_factory=list)
     notes: str = ""              # source / caveats
@@ -125,6 +131,23 @@ class HelicopterModel:
                 return v0 + t * (v1 - v0)
         return getattr(pts[-1], field_name)
 
+    def _interp_curve_by_weight(self, gross_weight_lb: float) -> Optional[float]:
+        """Linear interpolation on optional chart-derived ceiling curve."""
+        if not self.enroute_ceiling_curve:
+            return None
+        pts = sorted(self.enroute_ceiling_curve, key=lambda p: p[0])
+        if gross_weight_lb <= pts[0][0]:
+            return pts[0][1]
+        if gross_weight_lb >= pts[-1][0]:
+            return pts[-1][1]
+        for i in range(len(pts) - 1):
+            w0, c0 = pts[i]
+            w1, c1 = pts[i + 1]
+            if w0 <= gross_weight_lb <= w1 and w1 > w0:
+                t = (gross_weight_lb - w0) / (w1 - w0)
+                return c0 + t * (c1 - c0)
+        return pts[-1][1]
+
     def max_roc_fpm(self, da: float) -> float:
         """Max rate of climb at a given density altitude."""
         v = self._interp(da, "max_roc_fpm")
@@ -159,6 +182,49 @@ class HelicopterModel:
         da = density_altitude_ft(pressure_alt_ft, oat_c)
         return da < self.service_ceiling_da_ft
 
+    def estimated_enroute_ceiling_da_ft(self, gross_weight_lb: float | None = None) -> float:
+        """
+        Estimate weight-adjusted enroute ceiling in density altitude.
+
+        This uses the published service ceiling as the max-gross baseline and
+        scales additional high-altitude margin from the HIGE degradation visible
+        in the highest tabulated performance point. It is intentionally a
+        conservative planning proxy, not a serial-number-specific AFM result.
+        """
+        gw = gross_weight_lb or self.max_gross_weight_lb
+        gw = max(1.0, min(gw, self.max_gross_weight_lb))
+
+        chart_ceiling_da = self._interp_curve_by_weight(gw)
+        if chart_ceiling_da is not None:
+            return max(0.0, chart_ceiling_da)
+
+        if not self.perf_table:
+            return self.service_ceiling_da_ft
+
+        top = self.perf_table[-1]
+        top_gap_da = max(0.0, self.service_ceiling_da_ft - top.da_ft)
+        if top_gap_da <= 0:
+            return self.service_ceiling_da_ft
+
+        ref_relief = (self.max_gross_weight_lb - top.hige_max_gw_lb) / self.max_gross_weight_lb
+        if ref_relief <= 0:
+            return self.service_ceiling_da_ft
+
+        weight_relief = (self.max_gross_weight_lb - gw) / self.max_gross_weight_lb
+        boost_da = (weight_relief / ref_relief) * top_gap_da if weight_relief > 0 else 0.0
+        boost_da = min(boost_da, self.service_ceiling_da_ft * 0.20)
+        return self.service_ceiling_da_ft + max(0.0, boost_da)
+
+    def estimated_enroute_ceiling_msl_ft(
+        self,
+        oat_c: float,
+        gross_weight_lb: float | None = None,
+    ) -> float:
+        """Convert estimated enroute ceiling DA to an estimated pressure altitude."""
+        ceiling_da = self.estimated_enroute_ceiling_da_ft(gross_weight_lb)
+        denom = 1.0 + (120.0 * 1.98 / 1000.0)
+        return (ceiling_da - 120.0 * (oat_c - 15.0)) / denom
+
     def performance_at(
         self,
         pressure_alt_ft: float,
@@ -174,6 +240,13 @@ class HelicopterModel:
         burn = self.fuel_burn_gph(da)
         hoge_gw = self.hoge_max_gw(da)
         hige_gw = self.hige_max_gw(da)
+        est_ceiling_da = self.estimated_enroute_ceiling_da_ft(gw)
+        est_ceiling_msl = self.estimated_enroute_ceiling_msl_ft(oat_c, gw)
+        ceiling_basis = (
+            "Chart-derived gross-weight to ceiling DA curve"
+            if self.enroute_ceiling_curve
+            else "Published service ceiling baseline plus HIGE-envelope-derived weight adjustment."
+        )
 
         gw_note = f" (max GW for {self.type_code})" if gross_weight_lb is None else ""
 
@@ -225,6 +298,9 @@ class HelicopterModel:
             "can_hover_oge": gw <= hoge_gw,
             "can_hover_ige": gw <= hige_gw,
             "at_service_ceiling": da >= self.service_ceiling_da_ft,
+            "estimated_enroute_ceiling_da_ft": round(est_ceiling_da),
+            "estimated_enroute_ceiling_msl_ft": round(est_ceiling_msl),
+            "estimated_enroute_ceiling_basis": ceiling_basis,
             "warnings": warnings,
         }
 
@@ -242,6 +318,15 @@ class HelicopterModel:
             "service_ceiling_da_ft": self.service_ceiling_da_ft,
             "autorotation_glide_ratio": self.autorotation_glide_ratio,
             "autorotation_speed_kt": self.autorotation_speed_kt,
+            "has_chart_enroute_ceiling_curve": len(self.enroute_ceiling_curve) > 0,
+            "enroute_ceiling_curve_source": self.enroute_ceiling_curve_source,
+            "ceiling_estimate_top_da_ft": self.perf_table[-1].da_ft if self.perf_table else self.service_ceiling_da_ft,
+            "ceiling_estimate_top_hige_gw_lb": self.perf_table[-1].hige_max_gw_lb if self.perf_table else self.max_gross_weight_lb,
+            "ceiling_estimate_basis": (
+                "Chart-derived gross-weight to ceiling DA curve"
+                if self.enroute_ceiling_curve
+                else "Published service ceiling baseline plus HIGE-envelope-derived weight adjustment."
+            ),
             "max_payload_full_fuel_lb": round(self.max_payload_lb(), 1),
             "notes": self.notes,
             "defaults": {
@@ -262,6 +347,7 @@ class HelicopterModel:
 # ---------------------------------------------------------------------------
 
 _DB: Dict[str, HelicopterModel] = {}
+_CEILING_CURVES_PATH = Path(__file__).with_name("helicopter_ceiling_curves.json")
 
 
 def _register(h: HelicopterModel) -> None:
@@ -289,6 +375,56 @@ _register(HelicopterModel(
     ],
     notes="S-300C RFM / Hughes 269C POH. Lycoming HIO-360-D1A, 190 HP.",
 ))
+
+
+def _load_external_ceiling_curves() -> None:
+    """
+    Load optional chart-digitized enroute ceiling curves from JSON.
+
+    Expected file: mvp_backend/helicopter_ceiling_curves.json
+    Format:
+    {
+      "S300C": {
+        "source": "AFM Figure ...",
+        "points": [
+          {"gross_weight_lb": 2050, "ceiling_da_ft": 10600},
+          {"gross_weight_lb": 1700, "ceiling_da_ft": 11100}
+        ]
+      }
+    }
+    """
+    if not _CEILING_CURVES_PATH.exists():
+        return
+    try:
+        raw = json.loads(_CEILING_CURVES_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    if not isinstance(raw, dict):
+        return
+
+    for type_code, entry in raw.items():
+        heli = _DB.get(str(type_code).upper())
+        if heli is None or not isinstance(entry, dict):
+            continue
+        points = entry.get("points")
+        if not isinstance(points, list):
+            continue
+        curve: List[Tuple[float, float]] = []
+        for p in points:
+            if not isinstance(p, dict):
+                continue
+            try:
+                w = float(p.get("gross_weight_lb"))
+                c = float(p.get("ceiling_da_ft"))
+            except (TypeError, ValueError):
+                continue
+            if w > 0 and c > 0:
+                curve.append((w, c))
+        if len(curve) >= 2:
+            heli.enroute_ceiling_curve = sorted(curve, key=lambda x: x[0])
+            src = entry.get("source")
+            if isinstance(src, str):
+                heli.enroute_ceiling_curve_source = src
 
 # ── Schweizer S-300CBi ────────────────────────────────────────────────────
 _register(HelicopterModel(
@@ -534,6 +670,8 @@ _register(HelicopterModel(
     ],
     notes="UH-1H Operator's Manual TM 55-1520-210-10. Lycoming T53-L-13B, 1,400 SHP.",
 ))
+
+_load_external_ceiling_curves()
 
 
 # ---------------------------------------------------------------------------
