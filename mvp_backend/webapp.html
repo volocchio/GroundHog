@@ -261,7 +261,14 @@
         <span class="muted" style="font-size:12px">° (green &lt;5°, yellow 5–15°, red &gt;15°)</span>
       </div>
 
-      <div style="display:flex; align-items:center; gap:6px; margin:4px 0 0">
+      <label>Check slope for:</label>
+      <div class="radio-group" style="margin-top:4px">
+        <label><input type="radio" name="slopeCheck" value="water" checked /> Water crossings only</label>
+        <label><input type="radio" name="slopeCheck" value="land" /> Land landing zones only</label>
+        <label><input type="radio" name="slopeCheck" value="both" /> All landing zones</label>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:6px; margin:8px 0 0">
         <label for="autorotSpeedKt" style="margin:0; font-size:13px">Autorotation speed (KIAS)</label>
         <input id="autorotSpeedKt" type="number" value="60" min="30" max="150" step="1" style="width:60px; text-align:right" title="Best autorotation glide speed" />
       </div>
@@ -2120,14 +2127,17 @@
             ctx.setLineDash([]);
 
             // Slope check applies only to shore exit/entry points, not water samples
+            const slopeCheckMode = document.querySelector('input[name="slopeCheck"]:checked')?.value || 'water';
+            const applySlopeCheckToWater = slopeCheckMode === 'water' || slopeCheckMode === 'both';
+            
             const entrySlope = calculateSlopeAtIndex(entryIdx);
             const exitSlope = calculateSlopeAtIndex(exitIdx);
             const shoreSlope = Math.max(entrySlope, exitSlope);
-            const shoreSlopeOk = shoreSlope <= slopeThreshold;
+            const shoreSlopeOk = !applySlopeCheckToWater || shoreSlope <= slopeThreshold;
 
             let runStart = sec.start;
             let runSafe = null;
-            let runMaxSlope = shoreSlope;
+            let runMaxSlope = applySlopeCheckToWater ? shoreSlope : null;
             for (let i = sec.start; i <= sec.end; i++) {
               const waterElev = ground[i];
               const rangeNm = Math.max(0, fa[i] - waterElev) / descentPerNm;
@@ -2522,14 +2532,17 @@
         }
 
         // Slope check applies only to shore entry/exit points, not water samples
+        const slopeCheckMode = document.querySelector('input[name="slopeCheck"]:checked')?.value || 'water';
+        const applySlopeCheckToWater = slopeCheckMode === 'water' || slopeCheckMode === 'both';
+        
         const entrySlope = calculateSlope(entryIdx);
         const exitSlope = calculateSlope(exitIdx);
         const shoreSlope = Math.max(entrySlope, exitSlope);
-        const shoreSlopeOk = shoreSlope <= slopeThreshold;
+        const shoreSlopeOk = !applySlopeCheckToWater || shoreSlope <= slopeThreshold;
 
         let runStart = sec.start;
         let runSafe = null;
-        let runMaxSlope = shoreSlope;
+        let runMaxSlope = applySlopeCheckToWater ? shoreSlope : null;
         for (let i = sec.start; i <= sec.end; i++) {
           const reachNm = Math.max(0, (fa[i] - ground[i]) / descentPerNm);
           let leftNeedNm = Math.max(0, dist[i] - entryD);
