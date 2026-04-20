@@ -306,6 +306,7 @@
       <div id="profileWrap">
         <div class="profile-title">Elevation Profile (side view)
           <span class="muted" style="font-size:11px; font-weight:normal; margin-left:8px">Blue = detected water, green/yellow/red tint = autorotation landing status for that water segment</span>
+          <span id="profileDebugInfo" class="muted" style="font-size:11px; font-weight:normal; margin-left:8px"></span>
           <span class="profile-controls">
             <label style="font-size:11px; font-weight:normal; margin:0 4px 0 0">Corridor:</label>
             <input id="profileCorridorNm" type="number" value="2" min="0.5" max="10" step="0.5" style="width:50px; padding:2px 4px; font-size:11px; border:1px solid #ccc; border-radius:4px; margin-right:6px" title="Obstacle display corridor width (NM each side)" />
@@ -1533,6 +1534,8 @@
 
       // Water fill — blue shading over terrain for detected water areas
       const isWater = data.is_water || [];
+      const waterSampleCount = isWater.length ? isWater.filter(Boolean).length : 0;
+      setProfileDebugInfo(`Water samples: ${waterSampleCount}/${dist.length} • Corridor segments: 0 (G0/Y0/R0)`);
       if (isWater.length === dist.length) {
         ctx.fillStyle = 'rgba(30, 100, 220, 0.45)';
         let inWater = false;
@@ -2017,6 +2020,10 @@
         const heli = typeof helicopterData !== 'undefined' ? helicopterData[code] : null;
         const glideRatio = heli ? heli.autorotation_glide_ratio : 0;
         if (glideRatio > 0) {
+          let corridorSegments = 0;
+          let greenSegments = 0;
+          let yellowSegments = 0;
+          let redSegments = 0;
           const routeCenters = samplePathAtDistances(lastProfilePath, dist);
           const hasRouteCenters = routeCenters.length === dist.length;
           const waterSections = [];
@@ -2064,6 +2071,14 @@
             const effectiveSafe = safe || spanNm < minUnsafeRunNm;
             const slopeOk = maxSlope !== null ? maxSlope <= slopeThreshold : true;
             const overallSafe = effectiveSafe && slopeOk;
+            corridorSegments += 1;
+            if (!effectiveSafe) {
+              redSegments += 1;
+            } else if (!slopeOk) {
+              yellowSegments += 1;
+            } else {
+              greenSegments += 1;
+            }
             
             // Determine fill color based on slope and reachability
             const col = maxSlope !== null && maxSlope > 5 ? slopeColor(maxSlope, slopeThreshold) : (overallSafe ? { fill: 'rgba(34, 197, 94, 0.10)', stroke: '#22c55e' } : { fill: 'rgba(239, 68, 68, 0.22)', stroke: '#ef4444' });
@@ -2181,6 +2196,9 @@
           }
 
           renderMapGlideCorridor(lastProfilePath, dist, isWater, fa, ground, descentPerNm);
+          setProfileDebugInfo(
+            `Water samples: ${waterSampleCount}/${dist.length} • Corridor segments: ${corridorSegments} (G${greenSegments}/Y${yellowSegments}/R${redSegments})`
+          );
         } else {
           glideCorridorGroup.clearLayers();
         }
@@ -2579,6 +2597,12 @@
         }
         drawRun(runStart, sec.end, runSafe, runMaxSlope);
       }
+    }
+
+    function setProfileDebugInfo(text) {
+      const el = document.getElementById('profileDebugInfo');
+      if (!el) return;
+      el.textContent = text || '';
     }
 
     function renderNavLog({legs, usableFuelGal, reserveMin, burnGph, depLabel, arrLabel, stops, failedLeg, nfStops, grossWeightLb, fuelWeightLbPerGal, heliInfo}) {
