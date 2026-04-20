@@ -285,6 +285,7 @@
             <button id="profileZoomIn" title="Zoom in">+</button>
             <button id="profileZoomOut" title="Zoom out">&minus;</button>
             <button id="profileReset" title="Reset zoom">Reset</button>
+            <button id="profileExportGpx" title="Download ForeFlight-compatible GPX">Export GPX</button>
           </span>
         </div>
         <canvas id="profileCanvas"></canvas>
@@ -634,6 +635,8 @@
       routeMarkers = [];
       document.getElementById('profileWrap').classList.remove('visible');
       lastProfileArgs = null;
+      lastProfilePath = null;
+      profileCursorDist = null;
     }
 
     async function loadAirports() {
@@ -1077,6 +1080,94 @@
     let lastProfilePath = null;  // cached route path [[lat,lon],...] for click-to-map
     let profileCursorDist = null; // distance (NM) of cursor from map click
 
+    function _safeWpName(raw, fallback) {
+      const s = String(raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (s) return s.slice(0, 8);
+      return fallback;
+    }
+
+    function _xmlEsc(v) {
+      return String(v)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\"/g, '&quot;')
+        .replace(/'/g, '&apos;');
+    }
+
+    function exportCurrentRouteAsGpx() {
+      if (!lastProfilePath || lastProfilePath.length < 2 || !lastProfileArgs) {
+        document.getElementById('error').textContent = 'No route available to export yet.';
+        return;
+      }
+
+      const depLabel = String(lastProfileArgs[1] || 'DEP');
+      const arrLabel = String(lastProfileArgs[2] || 'ARR');
+      const trackPts = lastProfilePath
+        .map((p) => ({ lat: Number(p[0]), lon: Number(p[1]) }))
+        .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon));
+
+      if (trackPts.length < 2) {
+        document.getElementById('error').textContent = 'Route path is invalid for GPX export.';
+        return;
+      }
+
+      const nowIso = new Date().toISOString();
+      const routeName = `${depLabel}-${arrLabel}`.replace(/\s+/g, '').slice(0, 24) || 'GROUNDHOG_ROUTE';
+
+      const routePointXml = [];
+      const usedWpNames = new Set();
+      for (let i = 0; i < trackPts.length; i++) {
+        const pt = trackPts[i];
+        let wpName;
+        if (i === 0) wpName = _safeWpName(depLabel, 'DEP');
+        else if (i === trackPts.length - 1) wpName = _safeWpName(arrLabel, 'ARR');
+        else wpName = `PT${String(i).padStart(3, '0')}`;
+        while (usedWpNames.has(wpName)) wpName = `${wpName.slice(0, 7)}X`;
+        usedWpNames.add(wpName);
+        routePointXml.push(
+          `    <rtept lat="${pt.lat.toFixed(6)}" lon="${pt.lon.toFixed(6)}"><name>${_xmlEsc(wpName)}</name></rtept>`
+        );
+      }
+
+      const trkPointXml = trackPts
+        .map((pt) => `      <trkpt lat="${pt.lat.toFixed(6)}" lon="${pt.lon.toFixed(6)}"></trkpt>`)
+        .join('\n');
+
+      const gpx = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<gpx version="1.1" creator="GroundHog" xmlns="http://www.topografix.com/GPX/1/1">',
+        '  <metadata>',
+        `    <name>${_xmlEsc(routeName)}</name>`,
+        `    <time>${nowIso}</time>`,
+        '  </metadata>',
+        '  <rte>',
+        `    <name>${_xmlEsc(routeName)}</name>`,
+        routePointXml.join('\n'),
+        '  </rte>',
+        '  <trk>',
+        `    <name>${_xmlEsc(routeName)} TRACK</name>`,
+        '    <trkseg>',
+        trkPointXml,
+        '    </trkseg>',
+        '  </trk>',
+        '</gpx>',
+      ].join('\n');
+
+      const blob = new Blob([gpx], { type: 'application/gpx+xml;charset=utf-8' });
+      const href = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = href;
+      a.download = `${routeName || 'groundhog-route'}.gpx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(href);
+
+      document.getElementById('status').textContent = 'GPX exported. Open it on iPad/iPhone and share to ForeFlight.';
+      document.getElementById('error').textContent = '';
+    }
+
     function profileResetZoom() {
       profileState.zoom = 1; profileState.panX = 0;
       if (lastProfileArgs) drawProfile(...lastProfileArgs);
@@ -1091,6 +1182,7 @@
       if (lastProfileArgs) drawProfile(...lastProfileArgs);
     });
     document.getElementById('profileReset').addEventListener('click', profileResetZoom);
+    document.getElementById('profileExportGpx').addEventListener('click', exportCurrentRouteAsGpx);
 
     (function initProfileInteraction() {
       const canvas = document.getElementById('profileCanvas');
@@ -1888,6 +1980,41 @@
             const entryD = dist[entryIdx];
             const exitD = dist[exitIdx];
             if (exitD - entryD <= 0) continue;
+
+            // Visual glide guides from each shore so autorotation reach is obvious.
+            const entryElev = ground[entryIdx];
+            const exitElev = ground[exitIdx];
+            const entryAlt = fa[entryIdx];
+            const exitAlt = fa[exitIdx];
+            const leftReachD = Math.min(exitD, entryD + Math.max(0, entryAlt - entryElev) / descentPerNm);
+            const rightReachD = Math.max(entryD, exitD - Math.max(0, exitAlt - exitElev) / descentPerNm);
+
+            ctx.strokeStyle = 'rgba(34, 197, 94, 0.85)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([6, 4]);
+            ctx.beginPath();
+            ctx.moveTo(x(entryD), y(entryAlt));
+            ctx.lineTo(x(leftReachD), y(entryElev));
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(x(exitD), y(exitAlt));
+            ctx.lineTo(x(rightReachD), y(exitElev));
+            ctx.stroke();
+
+            // Reach boundary marker between opposing glide limits.
+            if (leftReachD < rightReachD) {
+              const mid = 0.5 * (leftReachD + rightReachD);
+              ctx.strokeStyle = 'rgba(239, 68, 68, 0.8)';
+              ctx.lineWidth = 1.5;
+              ctx.setLineDash([3, 3]);
+              ctx.beginPath();
+              ctx.moveTo(x(mid), y(0));
+              ctx.lineTo(x(mid), y(Math.max(entryElev, exitElev) + 300));
+              ctx.stroke();
+            }
+            ctx.setLineDash([]);
+
             let runStart = sec.start;
             let runSafe = null;
             for (let i = sec.start; i <= sec.end; i++) {
