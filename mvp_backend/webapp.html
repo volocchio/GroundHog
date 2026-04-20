@@ -2359,6 +2359,7 @@
       if (!path || path.length < 2 || !dist || !fa || !ground || !isWater) return;
       if (dist.length !== fa.length || dist.length !== ground.length || dist.length !== isWater.length) return;
       if (!(descentPerNm > 0)) return;
+      const minUnsafeRunNm = 0.25;
 
       const centers = samplePathAtDistances(path, dist);
       if (centers.length !== dist.length) return;
@@ -2380,46 +2381,63 @@
         const entryD = dist[entryIdx];
         const exitD = dist[exitIdx];
 
-        const left = [];
-        const right = [];
-        const unsafeCenter = [];
+        function drawRun(startIdx, endIdx, safe) {
+          if (endIdx < startIdx) return;
+          const pts = [];
+          for (let i = startIdx; i <= endIdx; i++) {
+            if (centers[i]) pts.push(centers[i]);
+          }
+          if (pts.length < 2) return;
 
+          const spanNm = Math.max(0, dist[endIdx] - dist[startIdx]);
+          const effectiveSafe = safe || spanNm < minUnsafeRunNm;
+          if (effectiveSafe) {
+            L.polyline(pts, {
+              color: '#22c55e',
+              weight: 14,
+              opacity: 0.22,
+              lineCap: 'round',
+              lineJoin: 'round',
+            }).addTo(glideCorridorGroup);
+            L.polyline(pts, {
+              color: '#16a34a',
+              weight: 3,
+              opacity: 0.9,
+            }).bindTooltip('Safe glide corridor (shore reachable)').addTo(glideCorridorGroup);
+          } else {
+            L.polyline(pts, {
+              color: '#ef4444',
+              weight: 12,
+              opacity: 0.2,
+              lineCap: 'round',
+              lineJoin: 'round',
+            }).addTo(glideCorridorGroup);
+            L.polyline(pts, {
+              color: '#ef4444',
+              weight: 3,
+              opacity: 0.9,
+              dashArray: '6 6',
+            }).bindTooltip('Unreachable water segment at current profile altitude').addTo(glideCorridorGroup);
+          }
+        }
+
+        let runStart = sec.start;
+        let runSafe = null;
         for (let i = sec.start; i <= sec.end; i++) {
-          const c = centers[i];
-          if (!c) continue;
-          const prev = centers[Math.max(sec.start, i - 1)] || c;
-          const next = centers[Math.min(sec.end, i + 1)] || c;
-          let brg = bearingDeg(prev[0], prev[1], next[0], next[1]);
-          if (!Number.isFinite(brg)) brg = 0;
-
-          const reachNm = Math.max(0, Math.min(15, (fa[i] - ground[i]) / descentPerNm));
-          left.push(destinationPoint(c[0], c[1], brg - 90, reachNm));
-          right.push(destinationPoint(c[0], c[1], brg + 90, reachNm));
-
+          const reachNm = Math.max(0, (fa[i] - ground[i]) / descentPerNm);
           const leftNeedNm = Math.max(0, dist[i] - entryD);
           const rightNeedNm = Math.max(0, exitD - dist[i]);
-          if (!(leftNeedNm <= reachNm || rightNeedNm <= reachNm)) unsafeCenter.push(c);
+          const safe = leftNeedNm <= reachNm || rightNeedNm <= reachNm;
+          if (runSafe === null) {
+            runSafe = safe;
+            runStart = i;
+          } else if (safe !== runSafe) {
+            drawRun(runStart, i - 1, runSafe);
+            runStart = i;
+            runSafe = safe;
+          }
         }
-
-        if (left.length >= 2 && right.length >= 2) {
-          const polyPts = left.concat(right.reverse());
-          L.polygon(polyPts, {
-            color: '#16a34a',
-            weight: 1.5,
-            opacity: 0.85,
-            fillColor: '#22c55e',
-            fillOpacity: 0.12,
-          }).bindTooltip('Safe glide corridor (engine-out reach band)').addTo(glideCorridorGroup);
-        }
-
-        if (unsafeCenter.length >= 2) {
-          L.polyline(unsafeCenter, {
-            color: '#ef4444',
-            weight: 3,
-            opacity: 0.9,
-            dashArray: '6 6',
-          }).bindTooltip('Unreachable water segment at current profile altitude').addTo(glideCorridorGroup);
-        }
+        drawRun(runStart, sec.end, runSafe);
       }
     }
 
