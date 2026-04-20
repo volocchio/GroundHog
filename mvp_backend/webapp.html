@@ -2119,9 +2119,15 @@
             }
             ctx.setLineDash([]);
 
+            // Slope check applies only to shore exit/entry points, not water samples
+            const entrySlope = calculateSlopeAtIndex(entryIdx);
+            const exitSlope = calculateSlopeAtIndex(exitIdx);
+            const shoreSlope = Math.max(entrySlope, exitSlope);
+            const shoreSlopeOk = shoreSlope <= slopeThreshold;
+
             let runStart = sec.start;
             let runSafe = null;
-            let runMaxSlope = null;
+            let runMaxSlope = shoreSlope;
             for (let i = sec.start; i <= sec.end; i++) {
               const waterElev = ground[i];
               const rangeNm = Math.max(0, fa[i] - waterElev) / descentPerNm;
@@ -2139,17 +2145,14 @@
               const leftOk = leftNeedNm <= rangeNm;
               const rightOk = rightNeedNm <= rangeNm;
               const reachable = leftOk || rightOk;
-              const slope = calculateSlopeAtIndex(i);
-              const safe = reachable && slope <= slopeThreshold;
+              const safe = reachable && shoreSlopeOk;
               if (runSafe === null) {
                 runSafe = safe;
-                runMaxSlope = slope;
                 runStart = i;
               } else if (safe !== runSafe) {
                 drawWaterInterval(runStart, i - 1, runSafe, runMaxSlope);
                 runStart = i;
                 runSafe = safe;
-                runMaxSlope = slope;
               }
             }
             drawWaterInterval(runStart, sec.end, runSafe, runMaxSlope);
@@ -2518,9 +2521,15 @@
           }
         }
 
+        // Slope check applies only to shore entry/exit points, not water samples
+        const entrySlope = calculateSlope(entryIdx);
+        const exitSlope = calculateSlope(exitIdx);
+        const shoreSlope = Math.max(entrySlope, exitSlope);
+        const shoreSlopeOk = shoreSlope <= slopeThreshold;
+
         let runStart = sec.start;
         let runSafe = null;
-        let runMaxSlope = null;
+        let runMaxSlope = shoreSlope;
         for (let i = sec.start; i <= sec.end; i++) {
           const reachNm = Math.max(0, (fa[i] - ground[i]) / descentPerNm);
           let leftNeedNm = Math.max(0, dist[i] - entryD);
@@ -2533,17 +2542,14 @@
             rightNeedNm = haversineNm(here[0], here[1], exitPt[0], exitPt[1]);
           }
           const reachable = leftNeedNm <= reachNm || rightNeedNm <= reachNm;
-          const slope = calculateSlope(i);
-          const safe = reachable && slope <= slopeThreshold;
+          const safe = reachable && shoreSlopeOk;
           if (runSafe === null) {
             runSafe = safe;
-            runMaxSlope = slope;
             runStart = i;
           } else if (safe !== runSafe) {
             drawRun(runStart, i - 1, runSafe, runMaxSlope);
             runStart = i;
             runSafe = safe;
-            runMaxSlope = slope;
           }
         }
         drawRun(runStart, sec.end, runSafe, runMaxSlope);
