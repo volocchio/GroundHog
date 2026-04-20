@@ -131,6 +131,7 @@ def terrain_avoid_leg(
     descent_speed_kt: float = 0,
     glide_ratio: float = 0,
     water_risk: float = 100,
+    slope_threshold_deg: float = 15,
     timeout_s: float = 90.0,
 ) -> Optional[LegResult]:
     """Find terrain-avoiding path between airports using grid A*.
@@ -260,6 +261,7 @@ def terrain_avoid_leg(
                 glide_ratio=glide_ratio,
                 cruise_alt_ft=water_alt_ft,
                 water_risk=water_risk,
+                slope_threshold_deg=slope_threshold_deg,
             )
 
         path_idx = astar_path(grid, passable, start, goal,
@@ -631,6 +633,7 @@ def plan_route_multi_stop(
     descent_speed_kt: float = 0,
     glide_ratio: float = 0,
     water_risk: float = 100,
+    slope_threshold_deg: float = 15,
 ) -> dict:
     """Multi-stop route planner (unbounded stops) minimizing total time.
 
@@ -738,7 +741,8 @@ def plan_route_multi_stop(
                                         climb_speed_kt=climb_speed_kt,
                                         descent_speed_kt=descent_speed_kt,
                                         glide_ratio=glide_ratio,
-                                        water_risk=water_risk)
+                                        water_risk=water_risk,
+                                        slope_threshold_deg=slope_threshold_deg)
                 if not leg:
                     leg_cache[key] = (float("inf"), float("inf"), float("inf"), [])
                     continue
@@ -1106,7 +1110,7 @@ def _detect_water_grid(n_lat: int, n_lon: int, elev_ft: list) -> list[list[bool]
 
 def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
                       glide_ratio: float, cruise_alt_ft: float,
-                      water_risk: float) -> tuple:
+                      water_risk: float, slope_threshold_deg: float = 15) -> tuple:
     """Build a 2D cost grid penalizing water cells beyond autorotation glide range.
 
     Water is detected via _detect_water_grid (ocean voids AND inland lakes).
@@ -1220,6 +1224,74 @@ def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
                 # smoother gets the same heavy penalty — blocks dangerous shortcuts
                 smooth_cost[i][j] = WATER_BASE + beyond
             has_cost = True
+
+    # Apply slope penalty: for each water cell, check adjacent shore cells
+    # If any shore slope exceeds threshold, apply heavy cost
+    if slope_threshold_deg > 0 and slope_threshold_deg < 90:
+        import math
+        
+        # Helper: haversine distance in NM between two lat/lon points
+        def _haversine_nm(lat1, lon1, lat2, lon2):
+            from math import radians, cos, sin, asin, sqrt
+            R_nm = 3440.065  # Earth's radius in nautical miles
+            lat1, lon1, lat2, lon2 = map(radians, (lat1, lon1, lat2, lon2))
+            dlat = lat2 - lat1
+            dlon = lon2 - lon1
+            a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+            c = 2 * asin(sqrt(a))
+            return R_nm * c
+        
+        for i in range(n_lat):
+            for j in range(n_lon):
+                if not is_water[i][j]:
+                    continue
+                
+                # Check all 8 adjacent cells for shore
+                max_shore_slope = 0.0
+                for di in (-1, 0, 1):
+                    for dj in (-1, 0, 1):
+                        if di == 0 and dj == 0:
+                            continue
+                        ni, nj = i + di, j + dj
+                        if ni < 0 or ni >= n_lat or nj < 0 or nj >= n_lon:
+                            continue
+                        if is_water[ni][nj]:
+                            continue  # Looking for shore (land), not more water
+                        
+                        # Found a shore cell; calculate slope
+                        k_water = i * n_lon + j
+                        k_shore = ni * n_lon + nj
+                        elev_water_ft = elev_ft[k_water]
+                        elev_shore_ft = elev_ft[k_shore]
+                        
+                        if elev_water_ft == float("inf") or elev_shore_ft == float("inf"):
+                            continue
+                        
+                        # Lat/lon of water and shore cells
+                        lat_water, lon_water = grid.idx_to_latlon(i, j)
+                        lat_shore, lon_shore = grid.idx_to_latlon(ni, nj)
+                        
+                        # Distance in NM
+                        dist_nm = _haversine_nm(lat_water, lon_water, lat_shore, lon_shore)
+                        if dist_nm < 0.001:  # Too close to measure
+                            continue
+                        
+                        # Elevation difference (shore relative to water)
+                        dFt = abs(elev_shore_ft - elev_water_ft)
+                        
+                        # Slope in degrees: atan(rise / run)
+                        slope_rad = math.atan2(dFt, dist_nm * 6076.12)
+                        slope_deg = slope_rad * 180 / math.pi
+                        
+                        max_shore_slope = max(max_shore_slope, slope_deg)
+                
+                # If max shore slope exceeds threshold, apply additional penalty
+                if max_shore_slope > slope_threshold_deg:
+                    # Heavy penalty for steep shores: scales with excess slope
+                    slope_excess = max_shore_slope - slope_threshold_deg
+                    slope_penalty = 150.0 + (slope_excess * 5.0)  # Extra penalty proportional to steepness
+                    cost[i][j] = cost[i][j] + slope_penalty
+                    smooth_cost[i][j] = smooth_cost[i][j] + slope_penalty
 
     return (cost, smooth_cost) if has_cost else (None, None)
 

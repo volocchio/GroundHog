@@ -79,6 +79,8 @@ class RouteRequest(BaseModel):
 
     water_risk: float = Field(default=100, ge=0, le=100,
                               description="Water crossing risk tolerance: 0=must glide to shore, 100=ignore water.")
+    slope_threshold_deg: float = Field(default=15, ge=5, le=45,
+                                       description="Max acceptable landing slope in degrees.")
     glide_ratio: float = Field(default=4.0, ge=0, le=20,
                                description="Autorotation glide ratio (horizontal:vertical).")
 
@@ -211,6 +213,7 @@ def route(req: RouteRequest):
         descent_speed_kt=req.descent_speed_kt,
         glide_ratio=req.glide_ratio,
         water_risk=req.water_risk,
+        slope_threshold_deg=req.slope_threshold_deg,
     )
     return result
 

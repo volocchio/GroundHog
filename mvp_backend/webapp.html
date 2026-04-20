@@ -2853,6 +2853,7 @@
         avoid_borders: document.getElementById('avoidBorders').checked,
         water_risk: Number(document.getElementById('waterRisk').value),
         glide_ratio: (helicopterData[document.getElementById('heliType').value] || {}).autorotation_glide_ratio || 4.0,
+        slope_threshold_deg: Number(document.getElementById('slopeThreshold').value) || 15,
         fuel_load_gal: Number(document.getElementById('fuelLoadGal').value) || 0,
         waypoints,
       };
@@ -3358,6 +3359,7 @@
         avoid_airspace: payload.avoid_airspace,
         avoid_borders: payload.avoid_borders,
         water_risk: payload.water_risk,
+        slope_threshold_deg: payload.slope_threshold_deg,
         autorotation_speed_kt: Number(document.getElementById('autorotSpeedKt').value) || 60,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(routes));
@@ -3433,6 +3435,7 @@
       document.getElementById('adsbOut').dispatchEvent(new Event('change'));
       document.getElementById('avoidBorders').checked = r.avoid_borders !== false;
       document.getElementById('waterRisk').value = r.water_risk != null ? r.water_risk : 0;
+      document.getElementById('slopeThreshold').value = r.slope_threshold_deg != null ? r.slope_threshold_deg : 15;
       if (r.autorotation_speed_kt) document.getElementById('autorotSpeedKt').value = r.autorotation_speed_kt;
       updateGlideInfo();
       if (r.avoid_airspace) {
