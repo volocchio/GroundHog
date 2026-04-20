@@ -190,7 +190,7 @@
       <input id="burnGph" type="number" value="13" min="0" step="0.1" />
 
       <label>Max target altitude (ft MSL)</label>
-      <input id="maxMsl" type="number" value="7000" min="0" step="50" />
+      <input id="maxMsl" type="number" value="5000" min="0" step="50" />
 
       <label>Min altitude (ft AGL)</label>
       <input id="minAgl" type="number" value="200" min="0" step="50" />
@@ -1942,21 +1942,29 @@
             bounds.push(cumDist * scale);
           }
 
+          function interpAltAtDistance(dNm) {
+            if (dNm <= dist[0]) return fa[0];
+            if (dNm >= dist[dist.length - 1]) return fa[fa.length - 1];
+            for (let i = 0; i < dist.length - 1; i++) {
+              const d0 = dist[i], d1 = dist[i + 1];
+              if (d1 >= dNm) {
+                const t = (d1 - d0) > 0 ? (dNm - d0) / (d1 - d0) : 0;
+                return fa[i] + t * (fa[i + 1] - fa[i]);
+              }
+            }
+            return fa[fa.length - 1];
+          }
+
           function drawFaSegment(startD, endD, color) {
             if (!(endD > startD)) return;
             ctx.strokeStyle = color;
             ctx.beginPath();
-            let started = false;
+            ctx.moveTo(x(startD), y(interpAltAtDistance(startD)));
             for (let i = 0; i < dist.length; i++) {
-              if (dist[i] < startD || dist[i] > endD) continue;
-              if (!started) {
-                ctx.moveTo(x(dist[i]), y(fa[i]));
-                started = true;
-              } else {
-                ctx.lineTo(x(dist[i]), y(fa[i]));
-              }
+              if (dist[i] <= startD || dist[i] >= endD) continue;
+              ctx.lineTo(x(dist[i]), y(fa[i]));
             }
-            if (!started) return;
+            ctx.lineTo(x(endD), y(interpAltAtDistance(endD)));
             ctx.stroke();
           }
 
