@@ -29,7 +29,18 @@
     #profileCanvas { width: 100%; height: 250px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fafafa; cursor: grab; }
     #profileCanvas:active { cursor: grabbing; }
     .profile-controls { display: inline-flex; gap: 6px; margin-left: 12px; }
-    .profile-controls button { font-size: 11px; padding: 1px 8px; border: 1px solid #d1d5db; border-radius: 4px; background: #fff; cursor: pointer; }
+    .profile-controls button {
+      width: auto;
+      margin-top: 0;
+      color: #1f2937;
+      font-size: 11px;
+      line-height: 1.2;
+      padding: 1px 8px;
+      border: 1px solid #d1d5db;
+      border-radius: 4px;
+      background: #fff;
+      cursor: pointer;
+    }
     .profile-controls button:hover { background: #f3f4f6; }
     .profile-title { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
     table { width:100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
@@ -1916,13 +1927,51 @@
 
         for (let i = 0; i < dist.length; i++) fa[i] = smoothed[i];
 
-        ctx.strokeStyle = '#2563eb';
         ctx.lineWidth = 2;
         ctx.setLineDash([]);
-        ctx.beginPath();
-        ctx.moveTo(x(dist[0]), y(fa[0]));
-        for (let i = 1; i < fa.length; i++) ctx.lineTo(x(dist[i]), y(fa[i]));
-        ctx.stroke();
+        const legColors = ['#2563eb', '#16a34a', '#dc2626', '#9333ea', '#ea580c'];
+        if (legsList && legsList.length > 1) {
+          // Use the same scaled cumulative-leg distances as airport markers so
+          // profile leg coloring matches map leg coloring exactly.
+          const rawTotal = legsList.reduce((s, l) => s + l.distNm, 0);
+          const scale = rawTotal > 0 ? maxDist / rawTotal : 1;
+          const bounds = [0];
+          let cumDist = 0;
+          for (const leg of legsList) {
+            cumDist += leg.distNm;
+            bounds.push(cumDist * scale);
+          }
+
+          function drawFaSegment(startD, endD, color) {
+            if (!(endD > startD)) return;
+            ctx.strokeStyle = color;
+            ctx.beginPath();
+            let started = false;
+            for (let i = 0; i < dist.length; i++) {
+              if (dist[i] < startD || dist[i] > endD) continue;
+              if (!started) {
+                ctx.moveTo(x(dist[i]), y(fa[i]));
+                started = true;
+              } else {
+                ctx.lineTo(x(dist[i]), y(fa[i]));
+              }
+            }
+            if (!started) return;
+            ctx.stroke();
+          }
+
+          for (let li = 0; li < legsList.length; li++) {
+            const startD = bounds[li];
+            const endD = bounds[li + 1];
+            drawFaSegment(startD, endD, legColors[li % legColors.length]);
+          }
+        } else {
+          ctx.strokeStyle = '#2563eb';
+          ctx.beginPath();
+          ctx.moveTo(x(dist[0]), y(fa[0]));
+          for (let i = 1; i < fa.length; i++) ctx.lineTo(x(dist[i]), y(fa[i]));
+          ctx.stroke();
+        }
         ctx.setLineDash([]);
         if (zoomFactor >= 1.5) {
           ctx.fillStyle = '#2563eb'; ctx.font = '10px system-ui'; ctx.textAlign = 'left';
