@@ -442,6 +442,7 @@ def route_stream(req: RouteRequest):
                             avoid_borders=req.avoid_borders,
                             glide_ratio=req.glide_ratio,
                             water_risk=req.water_risk,
+                            slope_threshold_deg=req.slope_threshold_deg,
                         ):
                             if event.get("type") == "path":
                                 event["leg_index"] = global_leg

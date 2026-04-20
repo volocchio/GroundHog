@@ -1318,6 +1318,7 @@ def terrain_avoid_leg_streaming(
     avoid_borders: bool = True,
     glide_ratio: float = 0,
     water_risk: float = 100,
+    slope_threshold_deg: float = 15,
 ):
     """Generator that yields A* exploration events for one leg.
 
@@ -1340,7 +1341,7 @@ def terrain_avoid_leg_streaming(
     if avoid_borders:
         _atag += "|BORDERS"
     if water_risk < 100 and glide_ratio > 0:
-        _atag += f"|W{water_risk:.0f}G{glide_ratio:.1f}"
+        _atag += f"|W{water_risk:.0f}G{glide_ratio:.1f}S{slope_threshold_deg:.0f}"
     avoidance_tag = _atag
 
     # ── terrain intelligence quick-reject ──
@@ -1500,6 +1501,7 @@ def terrain_avoid_leg_streaming(
                 grid, elev_ft, passable,
                 glide_ratio=glide_ratio, cruise_alt_ft=water_alt_ft,
                 water_risk=water_risk,
+                slope_threshold_deg=slope_threshold_deg,
             )
             if water_cost_2d is not None:
                 if airspace_cost_2d is None:
