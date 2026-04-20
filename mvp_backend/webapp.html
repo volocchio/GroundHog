@@ -255,6 +255,12 @@
       </select>
       <div id="glideInfo" class="muted" style="font-size:11px; margin:2px 0"></div>
 
+      <label>Landing slope threshold (degrees)</label>
+      <div style="display:flex; align-items:center; gap:8px">
+        <input id="slopeThreshold" type="number" value="15" min="5" max="45" step="1" style="width:70px; text-align:right" title="Max acceptable landing slope in degrees" />
+        <span class="muted" style="font-size:12px">° (green &lt;5°, yellow 5–15°, red &gt;15°)</span>
+      </div>
+
       <div style="display:flex; align-items:center; gap:6px; margin:4px 0 0">
         <label for="autorotSpeedKt" style="margin:0; font-size:13px">Autorotation speed (KIAS)</label>
         <input id="autorotSpeedKt" type="number" value="60" min="30" max="150" step="1" style="width:60px; text-align:right" title="Best autorotation glide speed" />
@@ -2000,6 +2006,8 @@
         const heli = typeof helicopterData !== 'undefined' ? helicopterData[code] : null;
         const glideRatio = heli ? heli.autorotation_glide_ratio : 0;
         if (glideRatio > 0) {
+          const routeCenters = samplePathAtDistances(lastProfilePath, dist);
+          const hasRouteCenters = routeCenters.length === dist.length;
           const waterSections = [];
           let ws = -1;
           for (let i = 0; i < dist.length; i++) {
@@ -2012,13 +2020,43 @@
           if (ws >= 0) waterSections.push({ start: ws, end: dist.length - 1 });
 
           const descentPerNm = 6076.12 / glideRatio;
+          const slopeThreshold = Number(document.getElementById('slopeThreshold').value) || 15;
 
-          const minUnsafeRunNm = 0.25;
-          function drawWaterInterval(startIdx, endIdx, safe) {
+          // Calculate terrain slope (in degrees) at a given profile sample index.
+          // Slopes are computed from a small terrain buffer around the point (~200m).
+          function calculateSlopeAtIndex(idx, minBuffer = 2) {
+            if (idx < minBuffer || idx >= dist.length - minBuffer) return 0;
+            let maxSlope = 0;
+            for (let offset = -minBuffer; offset <= minBuffer; offset++) {
+              if (offset === 0) continue;
+              const i1 = Math.max(0, idx + offset - 1);
+              const i2 = Math.min(dist.length - 1, idx + offset);
+              const dNm = Math.abs(dist[i2] - dist[i1]);
+              const dFt = Math.abs(ground[i2] - ground[i1]);
+              if (dNm > 0) {
+                const slope = Math.atan2(dFt, dNm * 6076.12) * (180 / Math.PI);
+                maxSlope = Math.max(maxSlope, slope);
+              }
+            }
+            return maxSlope;
+          }
+
+          // Determine slope color: green < 5°, yellow 5-15°, red > 15° (or threshold)
+          function slopeColor(slope, threshold = 15) {
+            if (slope < 5) return { fill: 'rgba(34, 197, 94, 0.10)', stroke: '#22c55e', label: '✓ Gentle' };
+            if (slope <= threshold) return { fill: 'rgba(234, 179, 8, 0.12)', stroke: '#eab308', label: '⚠ Steep' };
+            return { fill: 'rgba(239, 68, 68, 0.22)', stroke: '#ef4444', label: '☠ Too steep' };
+          }
+          function drawWaterInterval(startIdx, endIdx, safe, maxSlope = null) {
             if (endIdx < startIdx) return;
             const spanNm = Math.max(0, dist[endIdx] - dist[startIdx]);
             const effectiveSafe = safe || spanNm < minUnsafeRunNm;
-            ctx.fillStyle = effectiveSafe ? 'rgba(34, 197, 94, 0.10)' : 'rgba(239, 68, 68, 0.22)';
+            const slopeOk = maxSlope !== null ? maxSlope <= slopeThreshold : true;
+            const overallSafe = effectiveSafe && slopeOk;
+            
+            // Determine fill color based on slope and reachability
+            const col = maxSlope !== null && maxSlope > 5 ? slopeColor(maxSlope, slopeThreshold) : (overallSafe ? { fill: 'rgba(34, 197, 94, 0.10)', stroke: '#22c55e' } : { fill: 'rgba(239, 68, 68, 0.22)', stroke: '#ef4444' });
+            ctx.fillStyle = col.fill;
             ctx.beginPath();
             ctx.moveTo(x(dist[startIdx]), y(0));
             for (let i = startIdx; i <= endIdx; i++) ctx.lineTo(x(dist[i]), y(ground[i]));
@@ -2026,14 +2064,17 @@
             ctx.closePath();
             ctx.fill();
 
-            if (!effectiveSafe) {
+            // Add label: distance, slope info if relevant
+            if (!overallSafe) {
               const midIdx = Math.floor((startIdx + endIdx) / 2);
               const deadNm = spanNm.toFixed(1);
+              const slopeInfo = maxSlope !== null ? ` (${maxSlope.toFixed(1)}°)` : '';
               const labelY = y(ground[midIdx]) - 10;
-              ctx.fillStyle = 'rgba(239, 68, 68, 0.9)';
+              ctx.fillStyle = maxSlope !== null && maxSlope > slopeThreshold ? 'rgba(239, 68, 68, 0.9)' : (maxSlope !== null ? 'rgba(234, 179, 8, 0.9)' : 'rgba(239, 68, 68, 0.9)');
               ctx.font = 'bold 11px system-ui';
               ctx.textAlign = 'center';
-              ctx.fillText(`☠ ${deadNm} NM`, x((dist[startIdx] + dist[endIdx]) / 2), labelY);
+              const prefix = effectiveSafe && !slopeOk ? '⚠' : '☠';
+              ctx.fillText(`${prefix} ${deadNm} NM${slopeInfo}`, x((dist[startIdx] + dist[endIdx]) / 2), labelY);
             }
           }
 
@@ -2080,22 +2121,38 @@
 
             let runStart = sec.start;
             let runSafe = null;
+            let runMaxSlope = null;
             for (let i = sec.start; i <= sec.end; i++) {
               const waterElev = ground[i];
               const rangeNm = Math.max(0, fa[i] - waterElev) / descentPerNm;
-              const leftOk = (dist[i] - entryD) <= rangeNm;
-              const rightOk = (exitD - dist[i]) <= rangeNm;
-              const safe = leftOk || rightOk;
+              let leftNeedNm = Math.max(0, dist[i] - entryD);
+              let rightNeedNm = Math.max(0, exitD - dist[i]);
+              if (hasRouteCenters) {
+                const here = routeCenters[i];
+                const entryPt = routeCenters[entryIdx];
+                const exitPt = routeCenters[exitIdx];
+                if (here && entryPt && exitPt) {
+                  leftNeedNm = haversineNm(here[0], here[1], entryPt[0], entryPt[1]);
+                  rightNeedNm = haversineNm(here[0], here[1], exitPt[0], exitPt[1]);
+                }
+              }
+              const leftOk = leftNeedNm <= rangeNm;
+              const rightOk = rightNeedNm <= rangeNm;
+              const reachable = leftOk || rightOk;
+              const slope = calculateSlopeAtIndex(i);
+              const safe = reachable && slope <= slopeThreshold;
               if (runSafe === null) {
                 runSafe = safe;
+                runMaxSlope = slope;
                 runStart = i;
               } else if (safe !== runSafe) {
-                drawWaterInterval(runStart, i - 1, runSafe);
+                drawWaterInterval(runStart, i - 1, runSafe, runMaxSlope);
                 runStart = i;
                 runSafe = safe;
+                runMaxSlope = slope;
               }
             }
-            drawWaterInterval(runStart, sec.end, runSafe);
+            drawWaterInterval(runStart, sec.end, runSafe, runMaxSlope);
           }
 
           renderMapGlideCorridor(lastProfilePath, dist, isWater, fa, ground, descentPerNm);
@@ -2360,6 +2417,25 @@
       if (dist.length !== fa.length || dist.length !== ground.length || dist.length !== isWater.length) return;
       if (!(descentPerNm > 0)) return;
       const minUnsafeRunNm = 0.25;
+      const slopeThreshold = Number(document.getElementById('slopeThreshold').value) || 15;
+
+      // Calculate slope at profile index (same logic as profile)
+      function calculateSlope(idx, minBuffer = 2) {
+        if (idx < minBuffer || idx >= dist.length - minBuffer) return 0;
+        let maxSlope = 0;
+        for (let offset = -minBuffer; offset <= minBuffer; offset++) {
+          if (offset === 0) continue;
+          const i1 = Math.max(0, idx + offset - 1);
+          const i2 = Math.min(dist.length - 1, idx + offset);
+          const dNm = Math.abs(dist[i2] - dist[i1]);
+          const dFt = Math.abs(ground[i2] - ground[i1]);
+          if (dNm > 0) {
+            const slope = Math.atan2(dFt, dNm * 6076.12) * (180 / Math.PI);
+            maxSlope = Math.max(maxSlope, slope);
+          }
+        }
+        return maxSlope;
+      }
 
       const centers = samplePathAtDistances(path, dist);
       if (centers.length !== dist.length) return;
@@ -2381,7 +2457,7 @@
         const entryD = dist[entryIdx];
         const exitD = dist[exitIdx];
 
-        function drawRun(startIdx, endIdx, safe) {
+        function drawRun(startIdx, endIdx, safe, maxSlope = null) {
           if (endIdx < startIdx) return;
           const pts = [];
           for (let i = startIdx; i <= endIdx; i++) {
@@ -2391,7 +2467,11 @@
 
           const spanNm = Math.max(0, dist[endIdx] - dist[startIdx]);
           const effectiveSafe = safe || spanNm < minUnsafeRunNm;
-          if (effectiveSafe) {
+          const slopeOk = maxSlope !== null ? maxSlope <= slopeThreshold : true;
+          const overallSafe = effectiveSafe && slopeOk;
+          
+          if (overallSafe) {
+            // Green corridor for safe, reachable, gentle slope
             L.polyline(pts, {
               color: '#22c55e',
               weight: 14,
@@ -2399,12 +2479,29 @@
               lineCap: 'round',
               lineJoin: 'round',
             }).addTo(glideCorridorGroup);
+            const tooltip = maxSlope !== null && maxSlope > 0 ? `Safe (${maxSlope.toFixed(1)}°)` : 'Safe glide corridor';
             L.polyline(pts, {
               color: '#16a34a',
               weight: 3,
               opacity: 0.9,
-            }).bindTooltip('Safe glide corridor (shore reachable)').addTo(glideCorridorGroup);
+            }).bindTooltip(tooltip).addTo(glideCorridorGroup);
+          } else if (effectiveSafe && !slopeOk) {
+            // Yellow corridor for reachable but steep slope
+            L.polyline(pts, {
+              color: '#eab308',
+              weight: 12,
+              opacity: 0.16,
+              lineCap: 'round',
+              lineJoin: 'round',
+            }).addTo(glideCorridorGroup);
+            L.polyline(pts, {
+              color: '#ca8a04',
+              weight: 3,
+              opacity: 0.9,
+              dashArray: '4 3',
+            }).bindTooltip(`Steep slope (${maxSlope.toFixed(1)}° > ${slopeThreshold}°)`).addTo(glideCorridorGroup);
           } else {
+            // Red corridor for unreachable
             L.polyline(pts, {
               color: '#ef4444',
               weight: 12,
@@ -2417,27 +2514,39 @@
               weight: 3,
               opacity: 0.9,
               dashArray: '6 6',
-            }).bindTooltip('Unreachable water segment at current profile altitude').addTo(glideCorridorGroup);
+            }).bindTooltip('Unreachable water segment').addTo(glideCorridorGroup);
           }
         }
 
         let runStart = sec.start;
         let runSafe = null;
+        let runMaxSlope = null;
         for (let i = sec.start; i <= sec.end; i++) {
           const reachNm = Math.max(0, (fa[i] - ground[i]) / descentPerNm);
-          const leftNeedNm = Math.max(0, dist[i] - entryD);
-          const rightNeedNm = Math.max(0, exitD - dist[i]);
-          const safe = leftNeedNm <= reachNm || rightNeedNm <= reachNm;
+          let leftNeedNm = Math.max(0, dist[i] - entryD);
+          let rightNeedNm = Math.max(0, exitD - dist[i]);
+          const here = centers[i];
+          const entryPt = centers[entryIdx];
+          const exitPt = centers[exitIdx];
+          if (here && entryPt && exitPt) {
+            leftNeedNm = haversineNm(here[0], here[1], entryPt[0], entryPt[1]);
+            rightNeedNm = haversineNm(here[0], here[1], exitPt[0], exitPt[1]);
+          }
+          const reachable = leftNeedNm <= reachNm || rightNeedNm <= reachNm;
+          const slope = calculateSlope(i);
+          const safe = reachable && slope <= slopeThreshold;
           if (runSafe === null) {
             runSafe = safe;
+            runMaxSlope = slope;
             runStart = i;
           } else if (safe !== runSafe) {
-            drawRun(runStart, i - 1, runSafe);
+            drawRun(runStart, i - 1, runSafe, runMaxSlope);
             runStart = i;
             runSafe = safe;
+            runMaxSlope = slope;
           }
         }
-        drawRun(runStart, sec.end, runSafe);
+        drawRun(runStart, sec.end, runSafe, runMaxSlope);
       }
     }
 
