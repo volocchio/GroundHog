@@ -1280,12 +1280,23 @@
       const ground = data.ground_ft;
       const maxMsl = data.max_msl_ft;
       const minAgl = data.min_agl_ft;
+      const heliCode = document.getElementById('heliType').value;
+      const heli = heliCode && helicopterData[heliCode] ? helicopterData[heliCode] : null;
+      const oatC = Number(document.getElementById('oatC').value) || 15;
+      const grossWeightLb = Number(document.getElementById('grossWeightLb').value) || 0;
+
+      let perfCeilingMsl = null;
+      if (heli && Number.isFinite(heli.service_ceiling_da_ft) && heli.service_ceiling_da_ft > 0) {
+        perfCeilingMsl = estimatePerformanceCeilingMsl(heliCode, oatC, grossWeightLb);
+      }
+      const effectiveMaxMsl = perfCeilingMsl !== null ? Math.min(maxMsl, perfCeilingMsl) : maxMsl;
 
       const maxDist = dist[dist.length - 1] || 1;
       // Scale Y-axis to highest MSL, terrain, or obstacle.
       // Exclude airspace ceilings — unlimited (99999) zones blow up the scale
       // and clipped airspace bands are still visible above the chart.
-      let peakAlt = Math.max(maxMsl, ...ground);
+      let peakAlt = Math.max(maxMsl, effectiveMaxMsl, ...ground);
+      if (perfCeilingMsl !== null) peakAlt = Math.max(peakAlt, perfCeilingMsl);
       for (const ob of (data._profileObstacles || [])) {
         peakAlt = Math.max(peakAlt, ob.amsl);
       }
@@ -1336,7 +1347,7 @@
       ctx.rect(pad.left, 0, pw, H);
       ctx.clip();
 
-      // Max MSL ceiling line
+      // Requested max MSL line
       ctx.strokeStyle = '#dc2626';
       ctx.lineWidth = 1.5;
       ctx.setLineDash([6, 4]);
@@ -1344,7 +1355,25 @@
       ctx.setLineDash([]);
       if (zoomFactor >= 1.3) {
         ctx.fillStyle = '#dc2626'; ctx.font = '10px system-ui'; ctx.textAlign = 'left';
-        ctx.fillText('Max MSL ' + maxMsl.toLocaleString() + ' ft', pad.left + 4, y(maxMsl) - 12);
+        ctx.fillText('Requested max MSL ' + maxMsl.toLocaleString() + ' ft', pad.left + 4, y(maxMsl) - 12);
+      }
+
+      if (perfCeilingMsl !== null) {
+        ctx.strokeStyle = 'rgba(124, 58, 237, 0.85)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([3, 5]);
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y(perfCeilingMsl));
+        ctx.lineTo(W - pad.right, y(perfCeilingMsl));
+        ctx.stroke();
+        ctx.setLineDash([]);
+        if (zoomFactor >= 1.3) {
+          ctx.fillStyle = 'rgba(91, 33, 182, 0.95)';
+          ctx.font = '10px system-ui';
+          ctx.textAlign = 'left';
+          const ceilLabel = `${heliCode} est. ceiling ${Math.round(perfCeilingMsl).toLocaleString()} ft MSL @ ${oatC}\u00b0C`;
+          ctx.fillText(ceilLabel, pad.left + 4, y(perfCeilingMsl) - 12);
+        }
       }
 
       // Min AGL band (terrain + minAgl) — hide when zoomed out to reduce clutter
@@ -1576,7 +1605,7 @@
           } else if (anyOver) {
             alt = bestOver;           // climb over if can't go under
           }
-          let ceiling = maxMsl;
+          let ceiling = effectiveMaxMsl;
           if (maxAgl > 0) ceiling = Math.min(ceiling, ground[i] + maxAgl);
           target[i] = Math.min(Math.max(alt, terrainMin), ceiling);
         }
@@ -1602,12 +1631,12 @@
           // Can't be lower than what climb to next point requires
           alt = Math.max(alt, minAltForClimb);
           // Always respect terrain floor and MSL ceiling
-          let baCeiling = maxMsl;
+          let baCeiling = effectiveMaxMsl;
           if (maxAgl > 0) baCeiling = Math.min(baCeiling, ground[i] + maxAgl);
           ba[i] = Math.min(Math.max(alt, terrainMin), baCeiling);
         }
 
-        let faCeiling0 = maxMsl;
+        let faCeiling0 = effectiveMaxMsl;
         if (maxAgl > 0) faCeiling0 = Math.min(faCeiling0, ground[0] + maxAgl);
         fa = [Math.min(Math.max(ba[0], ground[0] + minAgl), faCeiling0)];
         for (let i = 1; i < dist.length; i++) {
@@ -1616,12 +1645,15 @@
           const terrainMin = ground[i] + minAgl;
           const dtClimb = (segDist / climbKt) * 60;
           const dtDescent = (segDist / descentKt) * 60;
-          let faCeiling = maxMsl;
+          let faCeiling = effectiveMaxMsl;
           if (maxAgl > 0) faCeiling = Math.min(faCeiling, ground[i] + maxAgl);
           const ceiling = maxClimbFpm > 0 ? Math.min(prev + maxClimbFpm * dtClimb, faCeiling) : faCeiling;
           const floor = maxDescentFpm > 0 ? Math.max(prev - maxDescentFpm * dtDescent, terrainMin) : terrainMin;
-          // Pull toward backward-pass target (which anticipates future constraints)
-          fa.push(Math.min(ceiling, Math.max(ba[i], floor)));
+          // Pull toward backward-pass target (which anticipates future constraints).
+          // Clamp to terrainMin: when terrain rises faster than climb rate allows (e.g.
+          // after a pinned waypoint), the profile must follow terrain up, not show the
+          // aircraft descending into the mountain.
+          fa.push(Math.max(Math.min(ceiling, Math.max(ba[i], floor)), terrainMin));
         }
 
         ctx.strokeStyle = '#2563eb';
@@ -1633,7 +1665,13 @@
         ctx.stroke();
         ctx.fillStyle = '#2563eb'; ctx.font = '10px system-ui'; ctx.textAlign = 'left';
         if (zoomFactor >= 1.5)
-          ctx.fillText(zones.length ? 'Flight alt (airspace-aware)' : 'Terrain-follow alt (est.)', pad.left + 4, y(fa[Math.min(5, fa.length - 1)]) - 8);
+          ctx.fillText(
+            perfCeilingMsl !== null && perfCeilingMsl < maxMsl
+              ? (zones.length ? 'Flight alt (airspace-aware, ceiling-capped)' : 'Terrain-follow alt (ceiling-capped)')
+              : (zones.length ? 'Flight alt (airspace-aware)' : 'Terrain-follow alt (est.)'),
+            pad.left + 4,
+            y(fa[Math.min(5, fa.length - 1)]) - 8
+          );
       } else {
         // Max MSL mode — cruise at maxMsl, but duck under airspace and
         // descend to land / climb from each airport
@@ -1668,7 +1706,7 @@
             fa[i] = ground[i];
             continue;
           }
-          let alt = maxMsl; // default: cruise at max MSL
+          let alt = effectiveMaxMsl; // default: cruise at max feasible MSL
 
           // Check each zone independently (same per-zone logic as terrain-follow)
           let bestUnder = Infinity;
@@ -1680,7 +1718,7 @@
             const zFloor = z.floor_msl[i - z.start_idx];
             const zCeil  = z.ceiling_msl[i - z.start_idx];
             // Does our cruise altitude (maxMsl) penetrate this zone?
-            if (maxMsl > zFloor && maxMsl <= zCeil + BUF) {
+            if (effectiveMaxMsl > zFloor && effectiveMaxMsl <= zCeil + BUF) {
               // We're inside this zone — can we duck under?
               const underAlt = zFloor - BUF;
               if (underAlt >= terrainMin) {
@@ -1694,7 +1732,7 @@
           if (anyUnder) {
             alt = bestUnder;
           }
-          let effCeiling = maxMsl;
+          let effCeiling = effectiveMaxMsl;
           if (maxAgl > 0) effCeiling = Math.min(effCeiling, ground[i] + maxAgl);
           fa[i] = Math.min(Math.max(alt, terrainMin), effCeiling);
         }
@@ -1706,21 +1744,21 @@
           let i = 0;
           while (i < dist.length) {
             // Find start of a ducking region (fa < maxMsl and not airport)
-            if (fa[i] >= maxMsl || apIndices.has(i)) { i++; continue; }
+            if (fa[i] >= effectiveMaxMsl || apIndices.has(i)) { i++; continue; }
             const duckStart = i;
             const duckAlt = fa[i];
             // Scan to end of this ducking region
-            while (i < dist.length && fa[i] < maxMsl && !apIndices.has(i)) i++;
+            while (i < dist.length && fa[i] < effectiveMaxMsl && !apIndices.has(i)) i++;
             const duckEnd = i - 1;
             // Look ahead for the next ducking region within 20 NM
             const gapStart = i;
-            while (i < dist.length && (fa[i] >= maxMsl || apIndices.has(i))) {
+            while (i < dist.length && (fa[i] >= effectiveMaxMsl || apIndices.has(i))) {
               if (apIndices.has(i)) break; // don't bridge across airports
               if (dist[i] - dist[duckEnd] > 20) break; // gap too wide
               i++;
             }
             // If we found another duck within the gap
-            if (i < dist.length && fa[i] < maxMsl && !apIndices.has(i) && dist[i] - dist[duckEnd] <= 20) {
+            if (i < dist.length && fa[i] < effectiveMaxMsl && !apIndices.has(i) && dist[i] - dist[duckEnd] <= 20) {
               // Fill the gap: stay at the higher of the two duck altitudes
               const nextDuckAlt = fa[i];
               const bridgeAlt = Math.max(duckAlt, nextDuckAlt);
@@ -1758,11 +1796,11 @@
           alt = Math.min(alt, maxAltHere);
           alt = Math.max(alt, minAltHere);
           if (apIndices.has(i)) alt = ground[i];  // pin to ground at airports
-          ba[i] = Math.min(Math.max(alt, terrainMin), maxMsl);
+          ba[i] = Math.min(Math.max(alt, terrainMin), effectiveMaxMsl);
         }
 
         // Forward pass: rate-limited, pulled toward backward targets
-        const smoothed = [apIndices.has(0) ? ground[0] : Math.min(Math.max(ba[0], ground[0] + minAgl), maxMsl)];
+        const smoothed = [apIndices.has(0) ? ground[0] : Math.min(Math.max(ba[0], ground[0] + minAgl), effectiveMaxMsl)];
         for (let i = 1; i < dist.length; i++) {
           if (apIndices.has(i)) {
             smoothed.push(ground[i]);  // pin to ground at airports
@@ -1773,9 +1811,12 @@
           const terrainMin = ground[i] + minAgl;
           const dtClimb = (segDist / effClimbKt) * 60;
           const dtDesc = (segDist / effDescentKt) * 60;
-          const ceiling = Math.min(prev + effClimb * dtClimb, maxMsl);
+          const ceiling = Math.min(prev + effClimb * dtClimb, effectiveMaxMsl);
           const floor = Math.max(prev - effDescent * dtDesc, terrainMin);
-          smoothed.push(Math.min(ceiling, Math.max(ba[i], floor)));
+          // Clamp to terrainMin: when terrain rises faster than climb rate allows (e.g.
+          // after a pinned waypoint), show the profile following terrain up, not the
+          // aircraft descending into the mountain.
+          smoothed.push(Math.max(Math.min(ceiling, Math.max(ba[i], floor)), terrainMin));
         }
 
         for (let i = 0; i < dist.length; i++) fa[i] = smoothed[i];
@@ -1790,14 +1831,18 @@
         ctx.setLineDash([]);
         if (zoomFactor >= 1.5) {
           ctx.fillStyle = '#2563eb'; ctx.font = '10px system-ui'; ctx.textAlign = 'left';
-          ctx.fillText('Flight alt (est.)', pad.left + 4, y(fa[Math.min(5, fa.length - 1)]) - 8);
+          ctx.fillText(
+            perfCeilingMsl !== null && perfCeilingMsl < maxMsl ? 'Flight alt (ceiling-capped)' : 'Flight alt (est.)',
+            pad.left + 4,
+            y(fa[Math.min(5, fa.length - 1)]) - 8
+          );
         }
       }
 
       // ── Autorotation glide safety over water crossings ──
-      // Pilot's perspective: from flight altitude at each shore, draw
-      // a descending glide line toward the opposite shore.  Where both
-      // lines drop below water = dead zone (can't reach either shore).
+      // Evaluate shore reachability at each sampled point over water using the
+      // actual flight altitude there. This is more robust than shore-to-shore
+      // guide lines on multi-leg routes with turnarounds.
       if (fa && isWater.length === dist.length) {
         const code = document.getElementById('heliType').value;
         const heli = typeof helicopterData !== 'undefined' ? helicopterData[code] : null;
@@ -1816,91 +1861,51 @@
 
           const descentPerNm = 6076.12 / glideRatio;
 
+          function drawWaterInterval(startIdx, endIdx, safe) {
+            if (endIdx < startIdx) return;
+            ctx.fillStyle = safe ? 'rgba(34, 197, 94, 0.10)' : 'rgba(239, 68, 68, 0.22)';
+            ctx.beginPath();
+            ctx.moveTo(x(dist[startIdx]), y(0));
+            for (let i = startIdx; i <= endIdx; i++) ctx.lineTo(x(dist[i]), y(ground[i]));
+            ctx.lineTo(x(dist[endIdx]), y(0));
+            ctx.closePath();
+            ctx.fill();
+
+            if (!safe) {
+              const midIdx = Math.floor((startIdx + endIdx) / 2);
+              const deadNm = Math.max(0, dist[endIdx] - dist[startIdx]).toFixed(1);
+              const labelY = y(ground[midIdx]) - 10;
+              ctx.fillStyle = 'rgba(239, 68, 68, 0.9)';
+              ctx.font = 'bold 11px system-ui';
+              ctx.textAlign = 'center';
+              ctx.fillText(`☠ ${deadNm} NM`, x((dist[startIdx] + dist[endIdx]) / 2), labelY);
+            }
+          }
+
           for (const sec of waterSections) {
             const entryIdx = sec.start > 0 ? sec.start - 1 : sec.start;
             const exitIdx = sec.end < dist.length - 1 ? sec.end + 1 : sec.end;
             const entryD = dist[entryIdx];
             const exitD = dist[exitIdx];
             if (exitD - entryD <= 0) continue;
-            const waterElev = ground[sec.start];
-            const entryAlt = fa[entryIdx];
-            const exitAlt = fa[exitIdx];
-
-            // Forward glide from entry: descends toward exit
-            const fwdRangeNm = (entryAlt - waterElev) / descentPerNm;
-            const fwdEndD = Math.min(entryD + fwdRangeNm, exitD);
-            const fwdEndAlt = entryAlt - (fwdEndD - entryD) * descentPerNm;
-            const fwdReaches = fwdEndD >= exitD;
-
-            // Backward glide from exit: descends toward entry
-            const bwdRangeNm = (exitAlt - waterElev) / descentPerNm;
-            const bwdEndD = Math.max(exitD - bwdRangeNm, entryD);
-            const bwdEndAlt = exitAlt - (exitD - bwdEndD) * descentPerNm;
-            const bwdReaches = bwdEndD <= entryD;
-
-            // Draw forward glide line (green)
-            ctx.strokeStyle = 'rgba(34, 197, 94, 0.8)';
-            ctx.lineWidth = 2;
-            ctx.setLineDash([6, 3]);
-            ctx.beginPath();
-            ctx.moveTo(x(entryD), y(entryAlt));
-            ctx.lineTo(x(fwdEndD), y(Math.max(fwdEndAlt, waterElev)));
-            ctx.stroke();
-            ctx.setLineDash([]);
-
-            // Draw backward glide line (blue)
-            ctx.strokeStyle = 'rgba(59, 130, 246, 0.8)';
-            ctx.lineWidth = 2;
-            ctx.setLineDash([6, 3]);
-            ctx.beginPath();
-            ctx.moveTo(x(exitD), y(exitAlt));
-            ctx.lineTo(x(bwdEndD), y(Math.max(bwdEndAlt, waterElev)));
-            ctx.stroke();
-            ctx.setLineDash([]);
-
-            // Dead zone: where neither glide line reaches
-            if (!fwdReaches && !bwdReaches && fwdEndD < bwdEndD) {
-              // Red fill over the gap
-              ctx.fillStyle = 'rgba(239, 68, 68, 0.22)';
-              ctx.beginPath();
-              ctx.moveTo(x(fwdEndD), y(Math.max(fwdEndAlt, waterElev)));
-              ctx.lineTo(x(fwdEndD), y(waterElev));
-              ctx.lineTo(x(bwdEndD), y(waterElev));
-              ctx.lineTo(x(bwdEndD), y(Math.max(bwdEndAlt, waterElev)));
-              ctx.closePath();
-              ctx.fill();
-
-              // Red hatching at water level
-              ctx.strokeStyle = 'rgba(239, 68, 68, 0.5)';
-              ctx.lineWidth = 1;
-              const deadX1 = x(fwdEndD), deadX2 = x(bwdEndD);
-              const waterY = y(waterElev);
-              for (let hx = deadX1; hx < deadX2; hx += 8) {
-                ctx.beginPath();
-                ctx.moveTo(hx, waterY);
-                ctx.lineTo(Math.min(hx + 6, deadX2), waterY - 6);
-                ctx.stroke();
+            let runStart = sec.start;
+            let runSafe = null;
+            for (let i = sec.start; i <= sec.end; i++) {
+              const waterElev = ground[i];
+              const rangeNm = Math.max(0, fa[i] - waterElev) / descentPerNm;
+              const leftOk = (dist[i] - entryD) <= rangeNm;
+              const rightOk = (exitD - dist[i]) <= rangeNm;
+              const safe = leftOk || rightOk;
+              if (runSafe === null) {
+                runSafe = safe;
+                runStart = i;
+              } else if (safe !== runSafe) {
+                drawWaterInterval(runStart, i - 1, runSafe);
+                runStart = i;
+                runSafe = safe;
               }
-
-              // Label
-              const deadNm = (bwdEndD - fwdEndD).toFixed(1);
-              const midD = (fwdEndD + bwdEndD) / 2;
-              ctx.fillStyle = 'rgba(239, 68, 68, 0.9)';
-              ctx.font = 'bold 11px system-ui';
-              ctx.textAlign = 'center';
-              ctx.fillText(`\u2620 ${deadNm} NM`, x(midD), y(waterElev) - 10);
-            } else if (fwdReaches && bwdReaches) {
-              // Both lines reach the opposite shore — fully safe
-              // Light green fill over water
-              ctx.fillStyle = 'rgba(34, 197, 94, 0.08)';
-              ctx.beginPath();
-              ctx.moveTo(x(entryD), y(waterElev));
-              ctx.lineTo(x(exitD), y(waterElev));
-              ctx.lineTo(x(exitD), y(Math.min(entryAlt, exitAlt)));
-              ctx.lineTo(x(entryD), y(Math.min(entryAlt, exitAlt)));
-              ctx.closePath();
-              ctx.fill();
             }
+            drawWaterInterval(runStart, sec.end, runSafe);
           }
         }
       }
@@ -2320,6 +2325,28 @@
       return (h && h.fuel_weight_lb_per_gal) ? h.fuel_weight_lb_per_gal : 6.0;
     }
 
+    function estimatePerformanceCeilingMsl(typeCode, oatC, grossWeightLb) {
+      const heli = typeCode && helicopterData[typeCode] ? helicopterData[typeCode] : null;
+      if (!heli || !Number.isFinite(heli.service_ceiling_da_ft) || heli.service_ceiling_da_ft <= 0) return null;
+      let ceilingDa = heli.service_ceiling_da_ft;
+      const gw = Number(grossWeightLb) || 0;
+      const topDa = Number(heli.ceiling_estimate_top_da_ft) || 0;
+      const topHigeGw = Number(heli.ceiling_estimate_top_hige_gw_lb) || 0;
+      const mtow = Number(heli.max_gross_weight_lb) || 0;
+      if (gw > 0 && mtow > 0 && topDa > 0 && topHigeGw > 0 && topDa < ceilingDa && topHigeGw < mtow) {
+        const topGapDa = ceilingDa - topDa;
+        const refRelief = (mtow - topHigeGw) / mtow;
+        const weightRelief = Math.max(0, (mtow - Math.min(gw, mtow)) / mtow);
+        if (refRelief > 0 && weightRelief > 0) {
+          const boostDa = Math.min((weightRelief / refRelief) * topGapDa, ceilingDa * 0.20);
+          ceilingDa += Math.max(0, boostDa);
+        }
+      }
+      const denom = 1 + (120 * 1.98 / 1000);
+      const perfCeilingMsl = (ceilingDa - 120 * (oatC - 15)) / denom;
+      return Number.isFinite(perfCeilingMsl) && perfCeilingMsl > 0 ? perfCeilingMsl : null;
+    }
+
     function getPayload() {
       const dep = document.getElementById('dep').value.trim().toUpperCase();
       const arr = document.getElementById('arr').value.trim().toUpperCase();
@@ -2729,28 +2756,38 @@
       document.getElementById('error').textContent = '';
       document.getElementById('results').innerHTML = '';
       const payload = getPayload();
+      const perfCeilingMsl = estimatePerformanceCeilingMsl(payload.helicopter_type, payload.oat_c, payload.gross_weight_lb);
+      const effectiveMaxMsl = perfCeilingMsl !== null
+        ? Math.min(payload.max_msl_ft, Math.floor(perfCeilingMsl))
+        : payload.max_msl_ft;
+      const planningPayload = { ...payload, max_msl_ft: effectiveMaxMsl };
+
+      if (perfCeilingMsl !== null && effectiveMaxMsl < payload.max_msl_ft) {
+        document.getElementById('status').innerHTML =
+          `<span style="color:#7c3aed">🚁 Profile and route ceiling capped at ${effectiveMaxMsl.toLocaleString()} ft MSL by ${payload.helicopter_type} estimated hot-day ceiling (${Math.round(perfCeilingMsl).toLocaleString()} ft MSL @ ${payload.oat_c}°C).</span>`;
+      }
 
       // Pre-flight check: airport elevation vs max MSL ceiling
-      const depAp = airportLookup[payload.dep_icao];
-      const arrAp = airportLookup[payload.arr_icao];
-      if (depAp && depAp.elev > payload.max_msl_ft) {
+      const depAp = airportLookup[planningPayload.dep_icao];
+      const arrAp = airportLookup[planningPayload.arr_icao];
+      if (depAp && depAp.elev > planningPayload.max_msl_ft) {
         document.getElementById('error').textContent =
-          `${payload.dep_icao} elevation (${Math.round(depAp.elev)}' MSL) is above your max altitude ceiling (${payload.max_msl_ft}' MSL). Increase Max MSL or pick a different airport.`;
+          `${planningPayload.dep_icao} elevation (${Math.round(depAp.elev)}' MSL) is above your effective altitude ceiling (${planningPayload.max_msl_ft}' MSL). Increase Max MSL, reduce temperature, change helicopter, or pick a different airport.`;
         return;
       }
-      if (arrAp && arrAp.elev > payload.max_msl_ft) {
+      if (arrAp && arrAp.elev > planningPayload.max_msl_ft) {
         document.getElementById('error').textContent =
-          `${payload.arr_icao} elevation (${Math.round(arrAp.elev)}' MSL) is above your max altitude ceiling (${payload.max_msl_ft}' MSL). Increase Max MSL or pick a different airport.`;
+          `${planningPayload.arr_icao} elevation (${Math.round(arrAp.elev)}' MSL) is above your effective altitude ceiling (${planningPayload.max_msl_ft}' MSL). Increase Max MSL, reduce temperature, change helicopter, or pick a different airport.`;
         return;
       }
 
       // Check waypoint elevations too (strip -NF suffix for lookup)
-      for (const wpRaw of payload.waypoints) {
+      for (const wpRaw of planningPayload.waypoints) {
         const wpCode = wpRaw.replace(/-NF$/i, '');
         const wpAp = airportLookup[wpCode];
-        if (wpAp && wpAp.elev > payload.max_msl_ft) {
+        if (wpAp && wpAp.elev > planningPayload.max_msl_ft) {
           document.getElementById('error').textContent =
-            `Waypoint ${wpCode} elevation (${Math.round(wpAp.elev)}' MSL) is above your max altitude ceiling (${payload.max_msl_ft}' MSL). Increase Max MSL or remove this waypoint.`;
+            `Waypoint ${wpCode} elevation (${Math.round(wpAp.elev)}' MSL) is above your effective altitude ceiling (${planningPayload.max_msl_ft}' MSL). Increase Max MSL, reduce temperature, change helicopter, or remove this waypoint.`;
           return;
         }
       }
@@ -2768,9 +2805,9 @@
 
       const watch = document.getElementById('watchSearch').checked;
       if (watch) {
-        await planStreaming(payload);
+        await planStreaming(planningPayload);
       } else {
-        await planNormal(payload);
+        await planNormal(planningPayload);
       }
     }
 
