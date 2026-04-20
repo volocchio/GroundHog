@@ -1073,20 +1073,22 @@ def _detect_water_grid(n_lat: int, n_lon: int, elev_ft: list) -> list[list[bool]
                 ni, nj = i + di, j + dj
                 if 0 <= ni < n_lat and 0 <= nj < n_lon:
                     neighbour_count += 1
-                    if e2d[ni][nj] == e:
+                    # Tolerate ±5m SRTM noise/variation common over inland lake surfaces
+                    if abs(e2d[ni][nj] - e) <= 16.4:  # 16.4 ft ≈ 5 m
                         match_count += 1
             # Must match all available cardinal neighbors (at least 2)
             if neighbour_count >= 2 and match_count == neighbour_count:
-                flat[i][j] = True
+                flat[i][j] = True  # kept for edge-cell compatibility
 
-    # Flood-fill from flat seeds: only keep connected clusters ≥ 3 cells
+    # Flood-fill from flat seeds: only keep connected clusters ≥ 10 cells
+    # (larger minimum reduces false positives from small flat terrain patches)
     from collections import deque
     visited = [[False] * n_lon for _ in range(n_lat)]
     for i in range(n_lat):
         for j in range(n_lon):
             if not flat[i][j] or visited[i][j]:
                 continue
-            # BFS to find connected component of same-elevation flat cells
+            # BFS to find connected component of near-flat cells
             cluster = []
             q = deque()
             q.append((i, j))
@@ -1098,12 +1100,125 @@ def _detect_water_grid(n_lat: int, n_lon: int, elev_ft: list) -> list[list[bool]
                 for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
                     ni, nj = ci + di, cj + dj
                     if 0 <= ni < n_lat and 0 <= nj < n_lon and not visited[ni][nj]:
-                        if flat[ni][nj] and e2d[ni][nj] == ref_e:
+                        if flat[ni][nj] and abs(e2d[ni][nj] - ref_e) <= 16.4:
                             visited[ni][nj] = True
                             q.append((ni, nj))
-            if len(cluster) >= 3:
+
+    # Pass 2b: range-based flat detection — catches SRTM lake cells where
+    # one cardinal neighbor is a shore cell slightly above lake surface.
+    # Mark cell as flat if the full elevation range (self + all cardinal
+    # neighbors) is < 50 ft (≈15 m), indicating a very gently varying surface.
+    for i in range(n_lat):
+        for j in range(n_lon):
+            if flat[i][j] or is_water[i][j]:
+                continue
+            e = e2d[i][j]
+            if e == float("inf"):
+                continue
+            all_elevs = [e]
+            for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                ni, nj = i + di, j + dj
+                if 0 <= ni < n_lat and 0 <= nj < n_lon:
+                    ne = e2d[ni][nj]
+                    if ne != float("inf"):
+                        all_elevs.append(ne)
+            if len(all_elevs) >= 3 and (max(all_elevs) - min(all_elevs)) < 50.0:
+                flat[i][j] = True
+            if len(cluster) >= 10:
                 for ci, cj in cluster:
                     is_water[ci][cj] = True
+
+    # Flood-fill from flat seeds: only keep connected clusters ≥ 10 cells
+    from collections import deque
+    visited = [[False] * n_lon for _ in range(n_lat)]
+    for i in range(n_lat):
+        for j in range(n_lon):
+            if not flat[i][j] or visited[i][j]:
+                continue
+            cluster = []
+            q = deque()
+            q.append((i, j))
+            visited[i][j] = True
+            ref_e = e2d[i][j]
+            while q:
+                ci, cj = q.popleft()
+                cluster.append((ci, cj))
+                for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    ni, nj = ci + di, cj + dj
+                    if 0 <= ni < n_lat and 0 <= nj < n_lon and not visited[ni][nj]:
+                        if flat[ni][nj] and abs(e2d[ni][nj] - ref_e) <= 16.4:
+                            visited[ni][nj] = True
+                            q.append((ni, nj))
+            if len(cluster) >= 10:
+                for ci, cj in cluster:
+                    is_water[ci][cj] = True
+
+    # Pass 2b: range-based flat detection — catches SRTM lake cells where
+    # one cardinal neighbor is a shore cell slightly above lake surface.
+    # Mark cell as flat2b if full elevation range (self + all cardinal
+    # neighbors) < 50 ft (≈15 m).
+    flat2b = [[False] * n_lon for _ in range(n_lat)]
+    for i in range(n_lat):
+        for j in range(n_lon):
+            if is_water[i][j]:
+                continue
+            e = e2d[i][j]
+            if e == float("inf"):
+                continue
+            all_elevs = [e]
+            for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                ni, nj = i + di, j + dj
+                if 0 <= ni < n_lat and 0 <= nj < n_lon:
+                    ne = e2d[ni][nj]
+                    if ne != float("inf"):
+                        all_elevs.append(ne)
+            if len(all_elevs) >= 3 and (max(all_elevs) - min(all_elevs)) < 50.0:
+                flat2b[i][j] = True
+    # BFS flood-fill on flat2b seeds, clusters ≥ 10
+    visited2b = [[False] * n_lon for _ in range(n_lat)]
+    for i in range(n_lat):
+        for j in range(n_lon):
+            if not flat2b[i][j] or visited2b[i][j]:
+                continue
+            cluster2b = []
+            q = deque()
+            q.append((i, j))
+            visited2b[i][j] = True
+            ref_e = e2d[i][j]
+            while q:
+                ci, cj = q.popleft()
+                cluster2b.append((ci, cj))
+                for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    ni, nj = ci + di, cj + dj
+                    if 0 <= ni < n_lat and 0 <= nj < n_lon and not visited2b[ni][nj]:
+                        if flat2b[ni][nj] and abs(e2d[ni][nj] - ref_e) <= 16.4:
+                            visited2b[ni][nj] = True
+                            q.append((ni, nj))
+            if len(cluster2b) >= 10:
+                for ci, cj in cluster2b:
+                    is_water[ci][cj] = True
+
+    # Dilation pass: expand water clusters by 1 cell to fill SRTM sampling gaps
+    # (1km grid cells may sample the shore instead of the lake center).
+    # Only expand to cells within 300 ft of an adjacent water cell's elevation
+    # so mountains are not absorbed.
+    _DILATION_ELEV_TOL_FT = 300.0
+    for _dil in range(3):  # 3 passes to bridge gaps in large lake coverage
+        new_water = [row[:] for row in is_water]
+        for i in range(n_lat):
+            for j in range(n_lon):
+                if is_water[i][j]:
+                    continue
+                e_ij = e2d[i][j]
+                if e_ij == float("inf"):
+                    continue
+                for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    ni, nj = i + di, j + dj
+                    if 0 <= ni < n_lat and 0 <= nj < n_lon and is_water[ni][nj]:
+                        if abs(e_ij - e2d[ni][nj]) <= _DILATION_ELEV_TOL_FT:
+                            new_water[i][j] = True
+                            break
+        is_water = new_water
 
     return is_water
 
