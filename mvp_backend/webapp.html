@@ -98,6 +98,68 @@
       padding: 1px 4px; border-radius: 3px;
       white-space: nowrap;
     }
+
+    /* ── Live Flight HUD ───────────────────────────────────────── */
+    #liveBtn {
+      background: #059669;
+    }
+    #liveBtn.tracking { background: #dc2626; }
+    #liveStatus { font-size: 12px; color: #6b7280; margin-top: 6px; min-height: 14px; }
+    .live-hud {
+      background: rgba(15, 23, 42, 0.92);
+      color: #f8fafc;
+      border-radius: 10px;
+      padding: 8px 10px;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+      min-width: 210px;
+      user-select: none;
+    }
+    .live-hud .hud-title {
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+      color: #94a3b8; margin-bottom: 6px;
+    }
+    .live-hud .hud-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #22c55e; box-shadow: 0 0 6px #22c55e;
+      animation: hudPulse 1.6s ease-in-out infinite;
+    }
+    @keyframes hudPulse { 0%,100% {opacity:1;} 50% {opacity:0.35;} }
+    .live-hud.stale .hud-dot { background:#f59e0b; box-shadow:0 0 6px #f59e0b; }
+    .live-hud.lost .hud-dot { background:#ef4444; box-shadow:0 0 6px #ef4444; animation:none; }
+    .live-hud .hud-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px;
+    }
+    .live-hud .hud-cell .lbl {
+      font-size: 10px; color: #94a3b8; letter-spacing: 0.05em; text-transform: uppercase;
+    }
+    .live-hud .hud-cell .val {
+      font-size: 22px; font-weight: 700; line-height: 1.1;
+      font-variant-numeric: tabular-nums;
+    }
+    .live-hud .hud-cell .unit {
+      font-size: 11px; color: #cbd5e1; margin-left: 2px; font-weight: 500;
+    }
+    .live-hud .hud-foot {
+      margin-top: 6px; padding-top: 6px; border-top: 1px solid #334155;
+      font-size: 11px; color: #cbd5e1; display: flex; justify-content: space-between;
+    }
+    .live-hud .hud-actions {
+      margin-top: 6px; display: flex; gap: 6px;
+    }
+    .live-hud .hud-actions button {
+      flex: 1; margin: 0; padding: 5px 8px; font-size: 11px;
+      background: #1e293b; border: 1px solid #334155; color: #f8fafc;
+      border-radius: 6px; cursor: pointer;
+    }
+    .live-hud .hud-actions button.on { background: #2563eb; border-color: #3b82f6; }
+    .ac-marker {
+      width: 36px; height: 36px;
+      display: flex; align-items: center; justify-content: center;
+      pointer-events: none;
+    }
+    .ac-marker svg { transform-origin: 50% 50%; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6)); }
   </style>
 </head>
 <body>
@@ -296,6 +358,10 @@
         <input type="checkbox" id="watchSearch" checked />
         <label for="watchSearch" style="margin:0; display:inline">Watch A* search on map</label>
       </div>
+
+      <button id="liveBtn" type="button" title="Use phone GPS to track flight in real time">🛰 Start Live Flight</button>
+      <div id="liveStatus"></div>
+
       <div id="status" class="muted" style="margin-top:10px"></div>
       <div id="error" class="err" style="margin-top:8px"></div>
       <div id="cacheStats" class="muted" style="margin-top:12px; font-size:0.8em; border-top:1px solid #ddd; padding-top:6px"></div>
@@ -3485,6 +3551,343 @@
     });
 
     refreshSavedDropdown();
+
+    // ─────────────────────────────────────────────────────────────────
+    // Live Flight: phone GPS → in-cockpit HUD
+    // ─────────────────────────────────────────────────────────────────
+    const live = {
+      watchId: null,
+      wakeLock: null,
+      marker: null,
+      trail: null,
+      trailPts: [],
+      lastFix: null,        // {lat, lon, t (ms), altMslFt}
+      smoothGsKt: null,
+      smoothHdgDeg: null,
+      groundFt: null,
+      lastElevFetchAt: 0,
+      lastElevAt: null,     // {lat, lon}
+      autoFollow: true,
+      hudCtl: null,
+      lostTimer: null,
+    };
+
+    const M_TO_FT = 3.28084;
+    const MPS_TO_KT = 1.94384;
+
+    function _havNm(a, b) {
+      const R = 3440.065;  // NM
+      const toRad = Math.PI / 180;
+      const dLat = (b[0] - a[0]) * toRad;
+      const dLon = (b[1] - a[1]) * toRad;
+      const lat1 = a[0] * toRad, lat2 = b[0] * toRad;
+      const h = Math.sin(dLat / 2) ** 2 +
+                Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+      return 2 * R * Math.asin(Math.sqrt(h));
+    }
+
+    function _bearingDeg(a, b) {
+      const toRad = Math.PI / 180, toDeg = 180 / Math.PI;
+      const lat1 = a[0] * toRad, lat2 = b[0] * toRad;
+      const dLon = (b[1] - a[1]) * toRad;
+      const y = Math.sin(dLon) * Math.cos(lat2);
+      const x = Math.cos(lat1) * Math.sin(lat2) -
+                Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+      return (Math.atan2(y, x) * toDeg + 360) % 360;
+    }
+
+    function _aircraftIcon(headingDeg) {
+      const hdg = Number.isFinite(headingDeg) ? headingDeg : 0;
+      const html = `<div class="ac-marker">
+        <svg width="32" height="32" viewBox="0 0 32 32" style="transform: rotate(${hdg}deg)">
+          <path d="M16 2 L20 20 L16 17 L12 20 Z" fill="#dc2626" stroke="#fff" stroke-width="1.2" stroke-linejoin="round"/>
+          <circle cx="16" cy="16" r="2" fill="#fff"/>
+        </svg></div>`;
+      return L.divIcon({ html, className: '', iconSize: [32, 32], iconAnchor: [16, 16] });
+    }
+
+    function _buildHud() {
+      const HudCtl = L.Control.extend({
+        options: { position: 'topright' },
+        onAdd: function () {
+          const d = L.DomUtil.create('div', 'live-hud');
+          d.id = 'liveHud';
+          d.innerHTML = `
+            <div class="hud-title">
+              <span><span class="hud-dot"></span> Live Flight</span>
+              <span id="hudFixAge">—</span>
+            </div>
+            <div class="hud-grid">
+              <div class="hud-cell"><div class="lbl">Ground Speed</div><div class="val"><span id="hudGs">—</span><span class="unit">kt</span></div></div>
+              <div class="hud-cell"><div class="lbl">Heading</div><div class="val"><span id="hudHdg">—</span><span class="unit">°</span></div></div>
+              <div class="hud-cell"><div class="lbl">Altitude MSL</div><div class="val"><span id="hudAlt">—</span><span class="unit">ft</span></div></div>
+              <div class="hud-cell"><div class="lbl">AGL</div><div class="val"><span id="hudAgl">—</span><span class="unit">ft</span></div></div>
+              <div class="hud-cell" style="grid-column:1 / -1"><div class="lbl">Position</div><div class="val" style="font-size:13px"><span id="hudPos">—</span></div></div>
+            </div>
+            <div class="hud-foot">
+              <span>To go: <b id="hudToGo">—</b></span>
+              <span>ETE: <b id="hudEte">—</b></span>
+            </div>
+            <div class="hud-actions">
+              <button id="hudFollowBtn" class="on" type="button">Follow</button>
+              <button id="hudClearBtn" type="button">Clear trail</button>
+              <button id="hudStopBtn" type="button">Stop</button>
+            </div>`;
+          L.DomEvent.disableClickPropagation(d);
+          L.DomEvent.disableScrollPropagation(d);
+          setTimeout(() => {
+            d.querySelector('#hudFollowBtn').onclick = () => {
+              live.autoFollow = !live.autoFollow;
+              d.querySelector('#hudFollowBtn').classList.toggle('on', live.autoFollow);
+              if (live.autoFollow && live.lastFix) {
+                map.panTo([live.lastFix.lat, live.lastFix.lon]);
+              }
+            };
+            d.querySelector('#hudClearBtn').onclick = () => {
+              live.trailPts = [];
+              if (live.trail) live.trail.setLatLngs([]);
+            };
+            d.querySelector('#hudStopBtn').onclick = stopLiveFlight;
+          }, 0);
+          return d;
+        },
+      });
+      return new HudCtl();
+    }
+
+    function _fmtPos(lat, lon) {
+      const ns = lat >= 0 ? 'N' : 'S', ew = lon >= 0 ? 'W' : 'E';
+      // GPS lon: negative = West in Western hemisphere
+      const lonAbs = Math.abs(lon), latAbs = Math.abs(lat);
+      const ewChar = lon < 0 ? 'W' : 'E';
+      return `${latAbs.toFixed(4)}°${lat>=0?'N':'S'}  ${lonAbs.toFixed(4)}°${ewChar}`;
+    }
+
+    function _fmtEte(hr) {
+      if (!Number.isFinite(hr) || hr < 0) return '—';
+      const totalMin = Math.round(hr * 60);
+      const h = Math.floor(totalMin / 60), m = totalMin % 60;
+      return h > 0 ? `${h}h ${String(m).padStart(2,'0')}m` : `${m} min`;
+    }
+
+    // Distance remaining along planned path from current position (NM).
+    function _distanceToGoNm(lat, lon) {
+      const path = (typeof lastProfilePath !== 'undefined' && Array.isArray(lastProfilePath)) ? lastProfilePath : null;
+      if (!path || path.length < 2) return null;
+      // Find closest point on path (sample by vertex; good enough at update rates).
+      let bestIdx = 0, bestD = Infinity;
+      for (let i = 0; i < path.length; i++) {
+        const d = _havNm([lat, lon], path[i]);
+        if (d < bestD) { bestD = d; bestIdx = i; }
+      }
+      // Reject if more than 20 NM off course
+      if (bestD > 20) return null;
+      let remain = bestD;
+      for (let i = bestIdx; i < path.length - 1; i++) {
+        remain += _havNm(path[i], path[i + 1]);
+      }
+      return remain;
+    }
+
+    async function _fetchGroundElevationFt(lat, lon) {
+      try {
+        const r = await fetch(`/elevation?lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}`);
+        if (!r.ok) return null;
+        const j = await r.json();
+        return Number.isFinite(j.elevation_ft) ? j.elevation_ft : null;
+      } catch { return null; }
+    }
+
+    function _setLiveStatus(msg, isErr) {
+      const el = document.getElementById('liveStatus');
+      el.textContent = msg || '';
+      el.style.color = isErr ? '#b91c1c' : '#6b7280';
+    }
+
+    function _updateHud(fix) {
+      const hud = document.getElementById('liveHud');
+      if (!hud) return;
+      const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+      set('hudGs', Number.isFinite(fix.gsKt) ? Math.round(fix.gsKt) : '—');
+      set('hudHdg', Number.isFinite(fix.hdgDeg) ? String(Math.round(fix.hdgDeg)).padStart(3, '0') : '—');
+      set('hudAlt', Number.isFinite(fix.altMslFt) ? Math.round(fix.altMslFt).toLocaleString() : '—');
+      let aglTxt = '—';
+      if (Number.isFinite(fix.altMslFt) && Number.isFinite(live.groundFt)) {
+        const agl = Math.max(0, Math.round(fix.altMslFt - live.groundFt));
+        aglTxt = agl.toLocaleString();
+      }
+      set('hudAgl', aglTxt);
+      set('hudPos', _fmtPos(fix.lat, fix.lon));
+      const toGo = _distanceToGoNm(fix.lat, fix.lon);
+      set('hudToGo', toGo != null ? `${toGo.toFixed(1)} NM` : '—');
+      const ete = (toGo != null && Number.isFinite(fix.gsKt) && fix.gsKt > 5) ? toGo / fix.gsKt : null;
+      set('hudEte', _fmtEte(ete));
+      set('hudFixAge', '0s');
+      hud.classList.remove('stale', 'lost');
+      if (live.lostTimer) clearTimeout(live.lostTimer);
+      live.lostTimer = setTimeout(() => { hud.classList.add('stale'); set('hudFixAge', '5s+'); }, 5000);
+    }
+
+    function _onPosition(pos) {
+      const c = pos.coords;
+      const lat = c.latitude, lon = c.longitude;
+      const t = pos.timestamp || Date.now();
+      const altMslFt = Number.isFinite(c.altitude) ? c.altitude * M_TO_FT : NaN;
+
+      // Ground speed: prefer device-provided, else derive from previous fix.
+      let gsKt = NaN;
+      if (Number.isFinite(c.speed) && c.speed >= 0) {
+        gsKt = c.speed * MPS_TO_KT;
+      } else if (live.lastFix) {
+        const dt = (t - live.lastFix.t) / 1000;
+        if (dt > 0.2) {
+          const dNm = _havNm([live.lastFix.lat, live.lastFix.lon], [lat, lon]);
+          gsKt = (dNm / dt) * 3600;
+        }
+      }
+      // Smooth GS lightly to suppress GPS jitter at low speeds
+      if (Number.isFinite(gsKt)) {
+        live.smoothGsKt = (live.smoothGsKt == null) ? gsKt : 0.6 * live.smoothGsKt + 0.4 * gsKt;
+      }
+
+      // Heading: prefer device, else derive from track when moving.
+      let hdgDeg = NaN;
+      if (Number.isFinite(c.heading) && c.heading >= 0) {
+        hdgDeg = c.heading;
+      } else if (live.lastFix && Number.isFinite(live.smoothGsKt) && live.smoothGsKt > 8) {
+        hdgDeg = _bearingDeg([live.lastFix.lat, live.lastFix.lon], [lat, lon]);
+      }
+      if (Number.isFinite(hdgDeg)) {
+        // Circular smoothing
+        if (live.smoothHdgDeg == null) {
+          live.smoothHdgDeg = hdgDeg;
+        } else {
+          let diff = ((hdgDeg - live.smoothHdgDeg + 540) % 360) - 180;
+          live.smoothHdgDeg = (live.smoothHdgDeg + 0.4 * diff + 360) % 360;
+        }
+      }
+
+      // Update marker + trail
+      const ll = [lat, lon];
+      if (!live.marker) {
+        live.marker = L.marker(ll, { icon: _aircraftIcon(live.smoothHdgDeg || 0), zIndexOffset: 1000 }).addTo(map);
+      } else {
+        live.marker.setLatLng(ll);
+        live.marker.setIcon(_aircraftIcon(live.smoothHdgDeg || 0));
+      }
+      if (!live.trail) {
+        live.trail = L.polyline([], { color: '#dc2626', weight: 3, opacity: 0.75, dashArray: '4,4' }).addTo(map);
+      }
+      live.trailPts.push(ll);
+      // Cap trail length to keep map snappy
+      if (live.trailPts.length > 5000) live.trailPts.splice(0, live.trailPts.length - 5000);
+      live.trail.setLatLngs(live.trailPts);
+
+      if (live.autoFollow) map.panTo(ll, { animate: true, duration: 0.4 });
+
+      // Refresh ground elevation when we've moved >0.05 NM or every 4 s
+      const now = Date.now();
+      const movedFar = !live.lastElevAt || _havNm([live.lastElevAt.lat, live.lastElevAt.lon], ll) > 0.05;
+      if (movedFar || (now - live.lastElevFetchAt) > 4000) {
+        live.lastElevFetchAt = now;
+        live.lastElevAt = { lat, lon };
+        _fetchGroundElevationFt(lat, lon).then(g => {
+          if (g != null) live.groundFt = g;
+        });
+      }
+
+      const fix = {
+        lat, lon, t, altMslFt,
+        gsKt: live.smoothGsKt,
+        hdgDeg: live.smoothHdgDeg,
+      };
+      live.lastFix = fix;
+      _updateHud(fix);
+    }
+
+    function _onPositionError(err) {
+      const map = { 1: 'permission denied', 2: 'position unavailable', 3: 'timeout' };
+      _setLiveStatus(`GPS error: ${map[err.code] || err.message}`, true);
+      const hud = document.getElementById('liveHud');
+      if (hud) hud.classList.add('lost');
+    }
+
+    async function startLiveFlight() {
+      if (!('geolocation' in navigator)) {
+        _setLiveStatus('Geolocation not supported on this device.', true);
+        return;
+      }
+      if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+        _setLiveStatus('GPS requires HTTPS. Open this page over https://', true);
+        return;
+      }
+      if (!live.hudCtl) {
+        live.hudCtl = _buildHud();
+        live.hudCtl.addTo(map);
+      }
+      _setLiveStatus('Acquiring GPS fix…');
+      try {
+        live.watchId = navigator.geolocation.watchPosition(_onPosition, _onPositionError, {
+          enableHighAccuracy: true,
+          maximumAge: 1000,
+          timeout: 15000,
+        });
+      } catch (e) {
+        _setLiveStatus(`Failed to start GPS: ${e.message}`, true);
+        return;
+      }
+      // Keep the screen awake during flight (best-effort).
+      try {
+        if ('wakeLock' in navigator) {
+          live.wakeLock = await navigator.wakeLock.request('screen');
+          live.wakeLock.addEventListener?.('release', () => {});
+        }
+      } catch {}
+      const btn = document.getElementById('liveBtn');
+      btn.textContent = '⏹ Stop Live Flight';
+      btn.classList.add('tracking');
+    }
+
+    function stopLiveFlight() {
+      if (live.watchId != null) {
+        try { navigator.geolocation.clearWatch(live.watchId); } catch {}
+        live.watchId = null;
+      }
+      if (live.wakeLock) {
+        try { live.wakeLock.release(); } catch {}
+        live.wakeLock = null;
+      }
+      if (live.lostTimer) { clearTimeout(live.lostTimer); live.lostTimer = null; }
+      if (live.hudCtl) {
+        try { map.removeControl(live.hudCtl); } catch {}
+        live.hudCtl = null;
+      }
+      if (live.marker) { try { map.removeLayer(live.marker); } catch {} live.marker = null; }
+      if (live.trail) { try { map.removeLayer(live.trail); } catch {} live.trail = null; }
+      live.trailPts = [];
+      live.lastFix = null;
+      live.smoothGsKt = null;
+      live.smoothHdgDeg = null;
+      live.groundFt = null;
+      const btn = document.getElementById('liveBtn');
+      btn.textContent = '🛰 Start Live Flight';
+      btn.classList.remove('tracking');
+      _setLiveStatus('');
+    }
+
+    // Re-acquire wake lock when tab regains visibility
+    document.addEventListener('visibilitychange', async () => {
+      if (document.visibilityState === 'visible' && live.watchId != null && !live.wakeLock) {
+        try {
+          if ('wakeLock' in navigator) live.wakeLock = await navigator.wakeLock.request('screen');
+        } catch {}
+      }
+    });
+
+    document.getElementById('liveBtn').addEventListener('click', () => {
+      if (live.watchId == null) startLiveFlight();
+      else stopLiveFlight();
+    });
   </script>
 </body>
 </html>

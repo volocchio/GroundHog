@@ -41,6 +41,27 @@ def health():
                       if f.endswith(".hgt")]) if os.path.isdir(os.path.join(ROOT, "mvp_backend", "srtm_cache")) else 0
     return {"status": "ok", "srtm_tiles": srtm_count}
 
+
+@app.get("/elevation")
+def elevation(lat: float = Query(..., ge=-90, le=90),
+              lon: float = Query(..., ge=-180, le=180)):
+    """Return SRTM ground elevation (ft MSL) for a single lat/lon.
+
+    Used by the live-flight HUD to compute AGL from the phone GPS altitude.
+    """
+    from mvp_backend.terrain_provider import meters_to_feet
+    provider = SRTMProvider(cache_dir=os.path.join(ROOT, "mvp_backend", "srtm_cache"))
+    elev_m = provider.get_many_m([(lat, lon)])[0]
+    if elev_m != elev_m:  # NaN → ocean / void
+        return {"lat": lat, "lon": lon, "elevation_ft": None, "elevation_m": None}
+    return {
+        "lat": lat,
+        "lon": lon,
+        "elevation_m": float(elev_m),
+        "elevation_ft": float(meters_to_feet(elev_m)),
+    }
+
+
 class RouteRequest(BaseModel):
     dep_icao: str
     arr_icao: str
