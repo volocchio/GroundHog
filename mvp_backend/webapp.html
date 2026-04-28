@@ -2,8 +2,20 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Terrain + Fuel Route Planner</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>GroundHog</title>
+
+  <!-- PWA: installable on iOS Safari and Android Chrome -->
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <meta name="theme-color" content="#2f3033" />
+  <meta name="application-name" content="GroundHog" />
+  <!-- iOS Safari (ignores manifest icons; needs these tags) -->
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="GroundHog" />
+  <meta name="mobile-web-app-capable" content="yes" />
+
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
         integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
         crossorigin=""/>
@@ -4017,6 +4029,20 @@
       if (live.watchId == null) startLiveFlight();
       else stopLiveFlight();
     });
+
+    // ── PWA service worker registration ─────────────────────────────────
+    if ('serviceWorker' in navigator && location.protocol === 'https:') {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js', { scope: '/' })
+          .then((reg) => {
+            // Check for updates whenever the page becomes visible (new deploys roll out fast)
+            document.addEventListener('visibilitychange', () => {
+              if (document.visibilityState === 'visible') reg.update();
+            });
+          })
+          .catch((err) => console.warn('SW registration failed:', err));
+      });
+    }
   </script>
 </body>
 </html>

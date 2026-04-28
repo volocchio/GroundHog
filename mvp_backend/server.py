@@ -13,7 +13,8 @@ import time
 import logging
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import List
 
@@ -118,6 +119,45 @@ def index():
     here = os.path.dirname(__file__)
     with open(os.path.join(here, "webapp.html"), "r", encoding="utf-8") as f:
         return f.read()
+
+
+# ── PWA assets ──────────────────────────────────────────────────────────
+_STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+if os.path.isdir(_STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+
+
+@app.get("/manifest.webmanifest")
+def manifest():
+    p = os.path.join(_STATIC_DIR, "manifest.webmanifest")
+    return FileResponse(p, media_type="application/manifest+json")
+
+
+@app.get("/sw.js")
+def service_worker():
+    p = os.path.join(_STATIC_DIR, "sw.js")
+    # Service workers must be served with no-cache so updates roll out fast.
+    return FileResponse(
+        p,
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate",
+                 "Service-Worker-Allowed": "/"},
+    )
+
+
+@app.get("/apple-touch-icon.png")
+@app.get("/apple-touch-icon-precomposed.png")
+def apple_touch_icon():
+    return FileResponse(os.path.join(_STATIC_DIR, "apple-touch-icon.png"),
+                        media_type="image/png")
+
+
+@app.get("/favicon.ico")
+def favicon():
+    p = os.path.join(_STATIC_DIR, "icon-192.png")
+    if os.path.isfile(p):
+        return FileResponse(p, media_type="image/png")
+    return Response(status_code=204)
 
 
 @app.get("/health")
