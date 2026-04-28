@@ -1852,7 +1852,7 @@
       // Water fill — blue shading over terrain for detected water areas
       const isWater = data.is_water || [];
       const waterSampleCount = isWater.length ? isWater.filter(Boolean).length : 0;
-      setProfileDebugInfo(`Water samples: ${waterSampleCount}/${dist.length} • Corridor segments: 0 (G0/Y0/R0)`);
+      setProfileDebugInfo(`[v5] Water: ${waterSampleCount}/${dist.length} • initializing corridor…`);
       if (isWater.length === dist.length) {
         ctx.fillStyle = 'rgba(30, 100, 220, 0.45)';
         let inWater = false;
@@ -2531,18 +2531,18 @@
 
           renderMapGlideCorridor(lastProfilePath, dist, isWater, fa, ground, descentPerNm);
           setProfileDebugInfo(
-            `Water samples: ${waterSampleCount}/${dist.length} • Corridor segments: ${corridorSegments} (G${greenSegments}/Y${yellowSegments}/R${redSegments})`
+            `[v5] Water: ${waterSampleCount}/${dist.length} • Sections: ${waterSections.length} • Corridor: ${corridorSegments} (G${greenSegments}/Y${yellowSegments}/R${redSegments}) • Glide: ${glideRatio.toFixed(1)}${_gcDiag.glideRatioFallback ? ' (fallback)' : ''}`
           );
         } else {
           glideCorridorGroup.clearLayers();
           setProfileDebugInfo(
-            `Water samples: ${waterSampleCount}/${dist.length} • Corridor: heli "${code}" has no autorotation_glide_ratio (heliLoaded=${!!heli})`
+            `[v5] Water: ${waterSampleCount}/${dist.length} • Corridor: heli "${code}" no glide_ratio (heliLoaded=${!!heli})`
           );
         }
       } else {
         glideCorridorGroup.clearLayers();
         setProfileDebugInfo(
-          `Water samples: ${waterSampleCount}/${dist.length} • Corridor skipped: fa=${!!fa} faLen=${_gcDiag.faLen} distLen=${dist.length} isWaterLen=${isWater.length}`
+          `[v5] Water: ${waterSampleCount}/${dist.length} • Corridor skipped: fa=${!!fa} faLen=${_gcDiag.faLen} distLen=${dist.length} isWaterLen=${isWater.length}`
         );
       }
 
