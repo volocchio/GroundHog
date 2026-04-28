@@ -1721,6 +1721,7 @@
       const ground = data.ground_ft;
       const maxMsl = data.max_msl_ft;
       const minAgl = data.min_agl_ft;
+      try { // ── outer guard: surface render errors in the debug bar ──
       const heliCode = document.getElementById('heliType').value;
       const heli = heliCode && helicopterData[heliCode] ? helicopterData[heliCode] : null;
       const oatC = Number(document.getElementById('oatC').value) || 15;
@@ -2342,6 +2343,7 @@
       };
       if (fa && isWater.length === dist.length) {
         try {
+        const code = document.getElementById('heliType').value;
         const heli = typeof helicopterData !== 'undefined' ? helicopterData[code] : null;
         // Fallback: if helicopterData hasn't finished loading yet or the type
         // code doesn't match, use a generic piston-helicopter glide ratio so
@@ -2666,6 +2668,10 @@
           ctx.fillText(profileCursorDist.toFixed(1) + ' NM', cx, pad.top - 4);
           ctx.restore();
         }
+      }
+      } catch (e) {
+        // Surface any drawProfile error in the debug bar rather than silently failing
+        try { setProfileDebugInfo(`Profile render error: ${e && e.message || e}`); } catch (_) {}
       }
     }
 
