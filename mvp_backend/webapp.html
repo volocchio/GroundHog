@@ -940,13 +940,27 @@
         if (!res.ok) return;
         const list = await res.json();
         const sel = document.getElementById('heliType');
+        // Split helicopters from fixed-wing aircraft so the dropdown is scannable
+        const helis = [];
+        const fixed = [];
         for (const h of list) {
           helicopterData[h.type_code] = h;
-          const opt = document.createElement('option');
-          opt.value = h.type_code;
-          opt.textContent = `${h.name} (${h.engine_type})`;
-          sel.appendChild(opt);
+          if (h.airframe_class === 'fixed_wing') fixed.push(h); else helis.push(h);
         }
+        const addGroup = (label, items) => {
+          if (!items.length) return;
+          const g = document.createElement('optgroup');
+          g.label = label;
+          for (const h of items) {
+            const opt = document.createElement('option');
+            opt.value = h.type_code;
+            opt.textContent = `${h.name} (${h.engine_type})`;
+            g.appendChild(opt);
+          }
+          sel.appendChild(g);
+        };
+        addGroup('Helicopters', helis);
+        addGroup('Fixed-wing (low-power singles)', fixed);
         // Pre-select S300C since defaults are S300C
         if (helicopterData['S300C']) sel.value = 'S300C';
         updateHeliInfo();

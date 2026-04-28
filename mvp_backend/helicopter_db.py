@@ -83,6 +83,7 @@ class HelicopterModel:
     service_ceiling_da_ft: float # density-altitude service ceiling
     autorotation_glide_ratio: float = 4.0  # horizontal:vertical glide ratio in autorotation
     autorotation_speed_kt: float = 60.0      # best autorotation glide speed (KIAS)
+    airframe_class: str = "helicopter"  # "helicopter" or "fixed_wing" — disables HOGE/HIGE checks for FW
     # Optional chart-derived envelope: [(gross_weight_lb, ceiling_da_ft), ...]
     # If present, this is preferred over proxy estimation.
     enroute_ceiling_curve: List[Tuple[float, float]] = field(default_factory=list)
@@ -262,25 +263,31 @@ class HelicopterModel:
                 f"marginal performance."
             )
         if gw > hige_gw:
-            hige_deficit = gw - hige_gw
-            warnings.append(
-                f"At {gw:.0f} lb{gw_note}, DA {da:.0f} ft exceeds HIGE limit "
-                f"by {hige_deficit:.0f} lb (max HIGE: {hige_gw:.0f} lb).  "
-                f"Plan for a run-on landing and takeoff.  "
-                f"Reduce {hige_deficit / self.fuel_weight_lb_per_gal:.1f} gal fuel "
-                f"or {hige_deficit:.0f} lb payload to regain hover capability."
-            )
+            if self.airframe_class == "fixed_wing":
+                pass  # HOGE/HIGE not applicable to fixed-wing aircraft
+            else:
+                hige_deficit = gw - hige_gw
+                warnings.append(
+                    f"At {gw:.0f} lb{gw_note}, DA {da:.0f} ft exceeds HIGE limit "
+                    f"by {hige_deficit:.0f} lb (max HIGE: {hige_gw:.0f} lb).  "
+                    f"Plan for a run-on landing and takeoff.  "
+                    f"Reduce {hige_deficit / self.fuel_weight_lb_per_gal:.1f} gal fuel "
+                    f"or {hige_deficit:.0f} lb payload to regain hover capability."
+                )
         elif gw > hoge_gw:
-            hoge_deficit = gw - hoge_gw
-            warnings.append(
-                f"At {gw:.0f} lb{gw_note}, cannot hover OGE at DA {da:.0f} ft — "
-                f"exceeds HOGE limit by {hoge_deficit:.0f} lb (max HOGE: {hoge_gw:.0f} lb).  "
-                f"Stay in ground effect or reduce "
-                f"{hoge_deficit / self.fuel_weight_lb_per_gal:.1f} gal fuel / "
-                f"{hoge_deficit:.0f} lb payload.  "
-                f"Caution: avoid OGE maneuvers, pinnacle ops, and confined areas "
-                f"without run-on capability."
-            )
+            if self.airframe_class == "fixed_wing":
+                pass
+            else:
+                hoge_deficit = gw - hoge_gw
+                warnings.append(
+                    f"At {gw:.0f} lb{gw_note}, cannot hover OGE at DA {da:.0f} ft — "
+                    f"exceeds HOGE limit by {hoge_deficit:.0f} lb (max HOGE: {hoge_gw:.0f} lb).  "
+                    f"Stay in ground effect or reduce "
+                    f"{hoge_deficit / self.fuel_weight_lb_per_gal:.1f} gal fuel / "
+                    f"{hoge_deficit:.0f} lb payload.  "
+                    f"Caution: avoid OGE maneuvers, pinnacle ops, and confined areas "
+                    f"without run-on capability."
+                )
 
         return {
             "type_code": self.type_code,
@@ -311,6 +318,7 @@ class HelicopterModel:
             "name": self.name,
             "engine_type": self.engine_type,
             "fuel_type": self.fuel_type,
+            "airframe_class": self.airframe_class,
             "max_gross_weight_lb": self.max_gross_weight_lb,
             "empty_weight_lb": self.empty_weight_lb,
             "usable_fuel_gal": self.usable_fuel_gal,
@@ -669,6 +677,229 @@ _register(HelicopterModel(
         PerfPoint(da_ft=12000,max_roc_fpm=130,  cruise_ktas=91,  fuel_burn_gph=65.0, hoge_max_gw_lb=5350, hige_max_gw_lb=6400),
     ],
     notes="UH-1H Operator's Manual TM 55-1520-210-10. Lycoming T53-L-13B, 1,400 SHP.",
+))
+
+
+# ===========================================================================
+# FIXED-WING TRAINERS / LIGHT SINGLES
+# ===========================================================================
+# These low-powered light singles struggle at high density altitude almost as
+# much as light helicopters. HOGE/HIGE columns are set equal to max gross
+# weight (hover checks are not applicable to fixed wing) and suppressed by
+# `airframe_class="fixed_wing"` in performance_at(). Service ceilings are
+# the published POH service ceiling (lightly loaded). Climb rates degrade
+# realistically with DA based on POH performance tables (best-rate climb at
+# Vy at the gross weight shown, ISA, fixed-pitch prop, leaned for max power).
+# ===========================================================================
+
+# \u2500\u2500 Cessna 152 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+_register(HelicopterModel(
+    type_code="C152",
+    name="Cessna 152 (fixed-wing)",
+    engine_type="piston",
+    fuel_type="100LL",
+    max_gross_weight_lb=1670,
+    empty_weight_lb=1115,
+    usable_fuel_gal=24.5,
+    fuel_weight_lb_per_gal=6.0,
+    service_ceiling_da_ft=14700,
+    autorotation_glide_ratio=9.0,   # power-off glide ratio (best glide ~60 KIAS)
+    autorotation_speed_kt=60.0,
+    airframe_class="fixed_wing",
+    perf_table=[
+        PerfPoint(da_ft=0,    max_roc_fpm=715, cruise_ktas=107, fuel_burn_gph=6.1, hoge_max_gw_lb=1670, hige_max_gw_lb=1670),
+        PerfPoint(da_ft=2000, max_roc_fpm=605, cruise_ktas=106, fuel_burn_gph=5.9, hoge_max_gw_lb=1670, hige_max_gw_lb=1670),
+        PerfPoint(da_ft=4000, max_roc_fpm=500, cruise_ktas=105, fuel_burn_gph=5.7, hoge_max_gw_lb=1670, hige_max_gw_lb=1670),
+        PerfPoint(da_ft=6000, max_roc_fpm=395, cruise_ktas=103, fuel_burn_gph=5.5, hoge_max_gw_lb=1670, hige_max_gw_lb=1670),
+        PerfPoint(da_ft=8000, max_roc_fpm=290, cruise_ktas=101, fuel_burn_gph=5.3, hoge_max_gw_lb=1670, hige_max_gw_lb=1670),
+        PerfPoint(da_ft=10000,max_roc_fpm=190, cruise_ktas=98,  fuel_burn_gph=5.1, hoge_max_gw_lb=1670, hige_max_gw_lb=1670),
+        PerfPoint(da_ft=12000,max_roc_fpm=90,  cruise_ktas=94,  fuel_burn_gph=4.9, hoge_max_gw_lb=1670, hige_max_gw_lb=1670),
+    ],
+    notes="Cessna 152 POH (1985). Lycoming O-235-L2C, 110 HP. Climb rates at gross. Mountain warning: at DA above ~10,000 ft this airplane has very little excess power for terrain avoidance.",
+))
+
+# \u2500\u2500 Cessna 150 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+_register(HelicopterModel(
+    type_code="C150",
+    name="Cessna 150M (fixed-wing)",
+    engine_type="piston",
+    fuel_type="100LL",
+    max_gross_weight_lb=1600,
+    empty_weight_lb=1111,
+    usable_fuel_gal=22.5,
+    fuel_weight_lb_per_gal=6.0,
+    service_ceiling_da_ft=14000,
+    autorotation_glide_ratio=8.5,
+    autorotation_speed_kt=60.0,
+    airframe_class="fixed_wing",
+    perf_table=[
+        PerfPoint(da_ft=0,    max_roc_fpm=670, cruise_ktas=102, fuel_burn_gph=6.0, hoge_max_gw_lb=1600, hige_max_gw_lb=1600),
+        PerfPoint(da_ft=2000, max_roc_fpm=560, cruise_ktas=101, fuel_burn_gph=5.8, hoge_max_gw_lb=1600, hige_max_gw_lb=1600),
+        PerfPoint(da_ft=4000, max_roc_fpm=450, cruise_ktas=100, fuel_burn_gph=5.6, hoge_max_gw_lb=1600, hige_max_gw_lb=1600),
+        PerfPoint(da_ft=6000, max_roc_fpm=345, cruise_ktas=98,  fuel_burn_gph=5.4, hoge_max_gw_lb=1600, hige_max_gw_lb=1600),
+        PerfPoint(da_ft=8000, max_roc_fpm=240, cruise_ktas=95,  fuel_burn_gph=5.2, hoge_max_gw_lb=1600, hige_max_gw_lb=1600),
+        PerfPoint(da_ft=10000,max_roc_fpm=140, cruise_ktas=92,  fuel_burn_gph=5.0, hoge_max_gw_lb=1600, hige_max_gw_lb=1600),
+        PerfPoint(da_ft=12000,max_roc_fpm=50,  cruise_ktas=88,  fuel_burn_gph=4.8, hoge_max_gw_lb=1600, hige_max_gw_lb=1600),
+    ],
+    notes="Cessna 150M POH. Continental O-200-A, 100 HP. Even more anemic than the 152 at altitude \u2014 not a mountain airplane.",
+))
+
+# \u2500\u2500 Cessna 172N (160 HP) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+_register(HelicopterModel(
+    type_code="C172N",
+    name="Cessna 172N Skyhawk 160 HP (fixed-wing)",
+    engine_type="piston",
+    fuel_type="100LL",
+    max_gross_weight_lb=2300,
+    empty_weight_lb=1430,
+    usable_fuel_gal=40,
+    fuel_weight_lb_per_gal=6.0,
+    service_ceiling_da_ft=14200,
+    autorotation_glide_ratio=9.0,
+    autorotation_speed_kt=65.0,
+    airframe_class="fixed_wing",
+    perf_table=[
+        PerfPoint(da_ft=0,    max_roc_fpm=770, cruise_ktas=120, fuel_burn_gph=8.4, hoge_max_gw_lb=2300, hige_max_gw_lb=2300),
+        PerfPoint(da_ft=2000, max_roc_fpm=655, cruise_ktas=119, fuel_burn_gph=8.1, hoge_max_gw_lb=2300, hige_max_gw_lb=2300),
+        PerfPoint(da_ft=4000, max_roc_fpm=540, cruise_ktas=118, fuel_burn_gph=7.8, hoge_max_gw_lb=2300, hige_max_gw_lb=2300),
+        PerfPoint(da_ft=6000, max_roc_fpm=425, cruise_ktas=116, fuel_burn_gph=7.5, hoge_max_gw_lb=2300, hige_max_gw_lb=2300),
+        PerfPoint(da_ft=8000, max_roc_fpm=310, cruise_ktas=113, fuel_burn_gph=7.2, hoge_max_gw_lb=2300, hige_max_gw_lb=2300),
+        PerfPoint(da_ft=10000,max_roc_fpm=200, cruise_ktas=110, fuel_burn_gph=6.9, hoge_max_gw_lb=2300, hige_max_gw_lb=2300),
+        PerfPoint(da_ft=12000,max_roc_fpm=90,  cruise_ktas=106, fuel_burn_gph=6.6, hoge_max_gw_lb=2300, hige_max_gw_lb=2300),
+    ],
+    notes="Cessna 172N POH. Lycoming O-320-H2AD, 160 HP. The classic underpowered trainer at altitude \u2014 plan generous climb gradients.",
+))
+
+# \u2500\u2500 Cessna 172SP (180 HP) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+_register(HelicopterModel(
+    type_code="C172SP",
+    name="Cessna 172SP Skyhawk 180 HP (fixed-wing)",
+    engine_type="piston",
+    fuel_type="100LL",
+    max_gross_weight_lb=2550,
+    empty_weight_lb=1660,
+    usable_fuel_gal=53,
+    fuel_weight_lb_per_gal=6.0,
+    service_ceiling_da_ft=14000,
+    autorotation_glide_ratio=9.0,
+    autorotation_speed_kt=68.0,
+    airframe_class="fixed_wing",
+    perf_table=[
+        PerfPoint(da_ft=0,    max_roc_fpm=730, cruise_ktas=124, fuel_burn_gph=10.0, hoge_max_gw_lb=2550, hige_max_gw_lb=2550),
+        PerfPoint(da_ft=2000, max_roc_fpm=620, cruise_ktas=123, fuel_burn_gph=9.7,  hoge_max_gw_lb=2550, hige_max_gw_lb=2550),
+        PerfPoint(da_ft=4000, max_roc_fpm=510, cruise_ktas=121, fuel_burn_gph=9.4,  hoge_max_gw_lb=2550, hige_max_gw_lb=2550),
+        PerfPoint(da_ft=6000, max_roc_fpm=400, cruise_ktas=119, fuel_burn_gph=9.1,  hoge_max_gw_lb=2550, hige_max_gw_lb=2550),
+        PerfPoint(da_ft=8000, max_roc_fpm=290, cruise_ktas=117, fuel_burn_gph=8.8,  hoge_max_gw_lb=2550, hige_max_gw_lb=2550),
+        PerfPoint(da_ft=10000,max_roc_fpm=180, cruise_ktas=113, fuel_burn_gph=8.5,  hoge_max_gw_lb=2550, hige_max_gw_lb=2550),
+        PerfPoint(da_ft=12000,max_roc_fpm=70,  cruise_ktas=109, fuel_burn_gph=8.2,  hoge_max_gw_lb=2550, hige_max_gw_lb=2550),
+    ],
+    notes="Cessna 172S POH. Lycoming IO-360-L2A, 180 HP. Better than 172N at altitude but still draggy at gross.",
+))
+
+# \u2500\u2500 Cessna 182T (Skylane, 230 HP) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+_register(HelicopterModel(
+    type_code="C182T",
+    name="Cessna 182T Skylane (fixed-wing)",
+    engine_type="piston",
+    fuel_type="100LL",
+    max_gross_weight_lb=3100,
+    empty_weight_lb=2000,
+    usable_fuel_gal=87,
+    fuel_weight_lb_per_gal=6.0,
+    service_ceiling_da_ft=18100,
+    autorotation_glide_ratio=9.0,
+    autorotation_speed_kt=70.0,
+    airframe_class="fixed_wing",
+    perf_table=[
+        PerfPoint(da_ft=0,    max_roc_fpm=924, cruise_ktas=145, fuel_burn_gph=14.0, hoge_max_gw_lb=3100, hige_max_gw_lb=3100),
+        PerfPoint(da_ft=2000, max_roc_fpm=815, cruise_ktas=144, fuel_burn_gph=13.6, hoge_max_gw_lb=3100, hige_max_gw_lb=3100),
+        PerfPoint(da_ft=4000, max_roc_fpm=705, cruise_ktas=143, fuel_burn_gph=13.2, hoge_max_gw_lb=3100, hige_max_gw_lb=3100),
+        PerfPoint(da_ft=6000, max_roc_fpm=595, cruise_ktas=141, fuel_burn_gph=12.8, hoge_max_gw_lb=3100, hige_max_gw_lb=3100),
+        PerfPoint(da_ft=8000, max_roc_fpm=485, cruise_ktas=139, fuel_burn_gph=12.4, hoge_max_gw_lb=3100, hige_max_gw_lb=3100),
+        PerfPoint(da_ft=10000,max_roc_fpm=375, cruise_ktas=136, fuel_burn_gph=12.0, hoge_max_gw_lb=3100, hige_max_gw_lb=3100),
+        PerfPoint(da_ft=12000,max_roc_fpm=265, cruise_ktas=133, fuel_burn_gph=11.6, hoge_max_gw_lb=3100, hige_max_gw_lb=3100),
+        PerfPoint(da_ft=14000,max_roc_fpm=155, cruise_ktas=129, fuel_burn_gph=11.2, hoge_max_gw_lb=3100, hige_max_gw_lb=3100),
+        PerfPoint(da_ft=16000,max_roc_fpm=50,  cruise_ktas=124, fuel_burn_gph=10.8, hoge_max_gw_lb=3100, hige_max_gw_lb=3100),
+    ],
+    notes="Cessna 182T POH. Lycoming IO-540-AB1A5, 230 HP. Real mountain capability when lightly loaded.",
+))
+
+# \u2500\u2500 Piper PA-28-140 Cherokee Cruiser \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+_register(HelicopterModel(
+    type_code="PA28140",
+    name="Piper PA-28-140 Cherokee 150 HP (fixed-wing)",
+    engine_type="piston",
+    fuel_type="100LL",
+    max_gross_weight_lb=2150,
+    empty_weight_lb=1275,
+    usable_fuel_gal=48,
+    fuel_weight_lb_per_gal=6.0,
+    service_ceiling_da_ft=14300,
+    autorotation_glide_ratio=8.5,
+    autorotation_speed_kt=70.0,
+    airframe_class="fixed_wing",
+    perf_table=[
+        PerfPoint(da_ft=0,    max_roc_fpm=660, cruise_ktas=115, fuel_burn_gph=8.0, hoge_max_gw_lb=2150, hige_max_gw_lb=2150),
+        PerfPoint(da_ft=2000, max_roc_fpm=550, cruise_ktas=114, fuel_burn_gph=7.8, hoge_max_gw_lb=2150, hige_max_gw_lb=2150),
+        PerfPoint(da_ft=4000, max_roc_fpm=440, cruise_ktas=113, fuel_burn_gph=7.5, hoge_max_gw_lb=2150, hige_max_gw_lb=2150),
+        PerfPoint(da_ft=6000, max_roc_fpm=335, cruise_ktas=111, fuel_burn_gph=7.3, hoge_max_gw_lb=2150, hige_max_gw_lb=2150),
+        PerfPoint(da_ft=8000, max_roc_fpm=230, cruise_ktas=108, fuel_burn_gph=7.0, hoge_max_gw_lb=2150, hige_max_gw_lb=2150),
+        PerfPoint(da_ft=10000,max_roc_fpm=130, cruise_ktas=105, fuel_burn_gph=6.8, hoge_max_gw_lb=2150, hige_max_gw_lb=2150),
+        PerfPoint(da_ft=12000,max_roc_fpm=40,  cruise_ktas=101, fuel_burn_gph=6.5, hoge_max_gw_lb=2150, hige_max_gw_lb=2150),
+    ],
+    notes="Piper PA-28-140 POH. Lycoming O-320-E2A, 150 HP. Cherokee 140s with 4 seats are routinely flown over gross \u2014 numbers here are at book gross.",
+))
+
+# \u2500\u2500 Piper PA-28-161 Warrior III \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+_register(HelicopterModel(
+    type_code="PA28161",
+    name="Piper PA-28-161 Warrior III (fixed-wing)",
+    engine_type="piston",
+    fuel_type="100LL",
+    max_gross_weight_lb=2440,
+    empty_weight_lb=1518,
+    usable_fuel_gal=48,
+    fuel_weight_lb_per_gal=6.0,
+    service_ceiling_da_ft=14000,
+    autorotation_glide_ratio=9.0,
+    autorotation_speed_kt=73.0,
+    airframe_class="fixed_wing",
+    perf_table=[
+        PerfPoint(da_ft=0,    max_roc_fpm=644, cruise_ktas=117, fuel_burn_gph=8.7, hoge_max_gw_lb=2440, hige_max_gw_lb=2440),
+        PerfPoint(da_ft=2000, max_roc_fpm=540, cruise_ktas=116, fuel_burn_gph=8.4, hoge_max_gw_lb=2440, hige_max_gw_lb=2440),
+        PerfPoint(da_ft=4000, max_roc_fpm=430, cruise_ktas=115, fuel_burn_gph=8.1, hoge_max_gw_lb=2440, hige_max_gw_lb=2440),
+        PerfPoint(da_ft=6000, max_roc_fpm=320, cruise_ktas=113, fuel_burn_gph=7.8, hoge_max_gw_lb=2440, hige_max_gw_lb=2440),
+        PerfPoint(da_ft=8000, max_roc_fpm=215, cruise_ktas=110, fuel_burn_gph=7.5, hoge_max_gw_lb=2440, hige_max_gw_lb=2440),
+        PerfPoint(da_ft=10000,max_roc_fpm=110, cruise_ktas=107, fuel_burn_gph=7.2, hoge_max_gw_lb=2440, hige_max_gw_lb=2440),
+        PerfPoint(da_ft=12000,max_roc_fpm=20,  cruise_ktas=104, fuel_burn_gph=6.9, hoge_max_gw_lb=2440, hige_max_gw_lb=2440),
+    ],
+    notes="Piper Warrior III POH. Lycoming O-320-D3G, 160 HP. Climb performance at gross weight.",
+))
+
+# \u2500\u2500 Piper PA-28-181 Archer III \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+_register(HelicopterModel(
+    type_code="PA28181",
+    name="Piper PA-28-181 Archer III (fixed-wing)",
+    engine_type="piston",
+    fuel_type="100LL",
+    max_gross_weight_lb=2550,
+    empty_weight_lb=1635,
+    usable_fuel_gal=48,
+    fuel_weight_lb_per_gal=6.0,
+    service_ceiling_da_ft=13650,
+    autorotation_glide_ratio=9.0,
+    autorotation_speed_kt=76.0,
+    airframe_class="fixed_wing",
+    perf_table=[
+        PerfPoint(da_ft=0,    max_roc_fpm=667, cruise_ktas=126, fuel_burn_gph=10.5, hoge_max_gw_lb=2550, hige_max_gw_lb=2550),
+        PerfPoint(da_ft=2000, max_roc_fpm=560, cruise_ktas=125, fuel_burn_gph=10.2, hoge_max_gw_lb=2550, hige_max_gw_lb=2550),
+        PerfPoint(da_ft=4000, max_roc_fpm=450, cruise_ktas=123, fuel_burn_gph=9.9,  hoge_max_gw_lb=2550, hige_max_gw_lb=2550),
+        PerfPoint(da_ft=6000, max_roc_fpm=340, cruise_ktas=121, fuel_burn_gph=9.6,  hoge_max_gw_lb=2550, hige_max_gw_lb=2550),
+        PerfPoint(da_ft=8000, max_roc_fpm=230, cruise_ktas=119, fuel_burn_gph=9.3,  hoge_max_gw_lb=2550, hige_max_gw_lb=2550),
+        PerfPoint(da_ft=10000,max_roc_fpm=125, cruise_ktas=116, fuel_burn_gph=9.0,  hoge_max_gw_lb=2550, hige_max_gw_lb=2550),
+        PerfPoint(da_ft=12000,max_roc_fpm=30,  cruise_ktas=112, fuel_burn_gph=8.7,  hoge_max_gw_lb=2550, hige_max_gw_lb=2550),
+    ],
+    notes="Piper Archer III POH. Lycoming O-360-A4M, 180 HP.",
 ))
 
 _load_external_ceiling_curves()
