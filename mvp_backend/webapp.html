@@ -2528,22 +2528,30 @@
             }
             drawWaterInterval(runStart, sec.end, runSafe, runMaxSlope);
           }
-
-          renderMapGlideCorridor(lastProfilePath, dist, isWater, fa, ground, descentPerNm);
-          setProfileDebugInfo(
-            `[v5] Water: ${waterSampleCount}/${dist.length} • Sections: ${waterSections.length} • Corridor: ${corridorSegments} (G${greenSegments}/Y${yellowSegments}/R${redSegments}) • Glide: ${glideRatio.toFixed(1)}${_gcDiag.glideRatioFallback ? ' (fallback)' : ''}`
-          );
-        } else {
-          glideCorridorGroup.clearLayers();
-          setProfileDebugInfo(
-            `[v5] Water: ${waterSampleCount}/${dist.length} • Corridor: heli "${code}" no glide_ratio (heliLoaded=${!!heli})`
-          );
         }
-      } else {
-        glideCorridorGroup.clearLayers();
+      }
+
+      // Always-on continuous slope/glide corridor on the map.
+      // Runs regardless of water detection so the pilot sees landing-risk
+      // colour under every part of the route, not only over water.
+      try {
+        const _glideRatioForCorridor = (() => {
+          const code = document.getElementById('heliType').value;
+          const heli = typeof helicopterData !== 'undefined' ? helicopterData[code] : null;
+          const raw = heli ? heli.autorotation_glide_ratio : 0;
+          return raw > 0 ? raw : 4.0;
+        })();
+        const _descentPerNm = 6076.12 / _glideRatioForCorridor;
+        renderMapGlideCorridor(lastProfilePath, dist, isWater, fa, ground, _descentPerNm);
+        const stats = window._glideCorridorStats || { green: 0, yellow: 0, red: 0, runs: 0, total: 0 };
+        const pct = stats.total > 0 ? (n) => `${Math.round(100 * n / stats.total)}%` : () => '0%';
         setProfileDebugInfo(
-          `[v5] Water: ${waterSampleCount}/${dist.length} • Corridor skipped: fa=${!!fa} faLen=${_gcDiag.faLen} distLen=${dist.length} isWaterLen=${isWater.length}`
+          `Slope corridor: ${pct(stats.green)} green / ${pct(stats.yellow)} yellow / ${pct(stats.red)} red `
+          + `(${stats.runs} run${stats.runs === 1 ? '' : 's'}) • Water samples: ${waterSampleCount}/${dist.length} • Glide: ${_glideRatioForCorridor.toFixed(1)}:1`
         );
+      } catch (e) {
+        glideCorridorGroup.clearLayers();
+        setProfileDebugInfo(`Slope corridor error: ${e && e.message || e}`);
       }
 
       // ── Airport markers at each leg boundary (drawn last, on top) ──
@@ -2715,6 +2723,19 @@
 
     function addMarker(lat, lon, label, isEndpoint = false, legLabel = '') {
       const displayLabel = legLabel ? `${legLabel} ${label}` : label;
+      // De-duplicate: round-trip routes traverse the same waypoint twice
+      // (outbound + return), which would stack two pins at one spot. If a
+      // marker already exists within ~50 m of this position with the same
+      // label, just skip adding another.
+      const dupTolDeg = 0.0005; // ~55 m at mid-latitudes
+      for (const r of routeMarkers) {
+        const ll = r.marker.getLatLng();
+        if (Math.abs(ll.lat - lat) < dupTolDeg
+            && Math.abs(ll.lng - lon) < dupTolDeg
+            && r.label === displayLabel) {
+          return r.marker;
+        }
+      }
       const marker = L.marker([lat, lon]).bindPopup(apLabel(label)).addTo(layerGroup);
       marker.bindTooltip(displayLabel, {
         permanent: true, direction: 'top', offset: [0, -36],
@@ -2794,27 +2815,36 @@
       return pts;
     }
 
+    // Continuous slope/glide corridor along the entire route.
+    //   green  = gentle terrain (< 5°), good autorotation landing options
+    //   yellow = steep terrain (5–threshold°), survivable but rough
+    //   red    = too steep (> threshold°) OR water that's out of glide range
+    //            from either shore. These are the "engine-out, you're in
+    //            trouble" segments worth pre-briefing.
+    // Renders regardless of whether the route is over water — the goal is
+    // for the pilot to see continuous landing-risk colour under the entire
+    // flight path so they can plan to aim for safer terrain (or water) if
+    // they lose the engine.
     function renderMapGlideCorridor(path, dist, isWater, fa, ground, descentPerNm) {
       glideCorridorGroup.clearLayers();
-      if (!path || path.length < 2 || !dist || !fa || !ground || !isWater) return;
-      if (dist.length !== fa.length || dist.length !== ground.length || dist.length !== isWater.length) return;
-      if (!(descentPerNm > 0)) return;
-      const minUnsafeRunNm = 0.25;
-      const slopeThreshold = Number(document.getElementById('slopeThreshold').value) || 15;
+      if (!path || path.length < 2 || !dist || !ground) return;
+      if (dist.length !== ground.length) return;
+      if (isWater && isWater.length !== dist.length) isWater = null;
+      const slopeThreshold = Number(document.getElementById('slopeThreshold')?.value) || 15;
+      const haveFa = !!(fa && fa.length === dist.length && descentPerNm > 0);
 
-      // Calculate slope at profile index (same logic as profile)
-      function calculateSlope(idx, minBuffer = 2) {
-        if (idx < minBuffer || idx >= dist.length - minBuffer) return 0;
+      function slopeAt(idx, buf = 2) {
+        if (idx < buf || idx >= dist.length - buf) return 0;
         let maxSlope = 0;
-        for (let offset = -minBuffer; offset <= minBuffer; offset++) {
-          if (offset === 0) continue;
-          const i1 = Math.max(0, idx + offset - 1);
-          const i2 = Math.min(dist.length - 1, idx + offset);
+        for (let off = -buf; off <= buf; off++) {
+          if (off === 0) continue;
+          const i1 = Math.max(0, idx + off - 1);
+          const i2 = Math.min(dist.length - 1, idx + off);
           const dNm = Math.abs(dist[i2] - dist[i1]);
           const dFt = Math.abs(ground[i2] - ground[i1]);
           if (dNm > 0) {
-            const slope = Math.atan2(dFt, dNm * 6076.12) * (180 / Math.PI);
-            maxSlope = Math.max(maxSlope, slope);
+            const s = Math.atan2(dFt, dNm * 6076.12) * (180 / Math.PI);
+            if (s > maxSlope) maxSlope = s;
           }
         }
         return maxSlope;
@@ -2823,120 +2853,97 @@
       const centers = samplePathAtDistances(path, dist);
       if (centers.length !== dist.length) return;
 
-      const waterSections = [];
-      let ws = -1;
+      // Pre-compute nearest-water-shore distances if we have water info, so
+      // we can flag "unreachable open water" as red.
+      let nearestShoreNm = null;
+      if (isWater && haveFa) {
+        nearestShoreNm = new Array(dist.length).fill(0);
+        // forward pass: distance to last non-water sample
+        let lastShore = null;
+        for (let i = 0; i < dist.length; i++) {
+          if (!isWater[i]) lastShore = dist[i];
+          nearestShoreNm[i] = lastShore === null ? Infinity : dist[i] - lastShore;
+        }
+        // backward pass
+        let nextShore = null;
+        for (let i = dist.length - 1; i >= 0; i--) {
+          if (!isWater[i]) nextShore = dist[i];
+          const fwd = nextShore === null ? Infinity : nextShore - dist[i];
+          if (fwd < nearestShoreNm[i]) nearestShoreNm[i] = fwd;
+        }
+      }
+
+      // Classify every sample.
+      // category: 0 = green, 1 = yellow, 2 = red
+      const cat = new Array(dist.length);
+      let g = 0, y = 0, r = 0;
       for (let i = 0; i < dist.length; i++) {
-        if (isWater[i] && ws < 0) ws = i;
-        if (!isWater[i] && ws >= 0) {
-          waterSections.push({ start: ws, end: i - 1 });
-          ws = -1;
-        }
-      }
-      if (ws >= 0) waterSections.push({ start: ws, end: dist.length - 1 });
-
-      for (const sec of waterSections) {
-        const entryIdx = sec.start > 0 ? sec.start - 1 : sec.start;
-        const exitIdx = sec.end < dist.length - 1 ? sec.end + 1 : sec.end;
-        const entryD = dist[entryIdx];
-        const exitD = dist[exitIdx];
-
-        function drawRun(startIdx, endIdx, safe, maxSlope = null) {
-          if (endIdx < startIdx) return;
-          const pts = [];
-          for (let i = startIdx; i <= endIdx; i++) {
-            if (centers[i]) pts.push(centers[i]);
-          }
-          if (pts.length < 2) return;
-
-          const spanNm = Math.max(0, dist[endIdx] - dist[startIdx]);
-          const effectiveSafe = safe || spanNm < minUnsafeRunNm;
-          const slopeOk = maxSlope !== null ? maxSlope <= slopeThreshold : true;
-          const overallSafe = effectiveSafe && slopeOk;
-          
-          if (overallSafe) {
-            // Green corridor for safe, reachable, gentle slope
-            L.polyline(pts, {
-              color: '#22c55e',
-              weight: 14,
-              opacity: 0.22,
-              lineCap: 'round',
-              lineJoin: 'round',
-            }).addTo(glideCorridorGroup);
-            const tooltip = maxSlope !== null && maxSlope > 0 ? `Safe (${maxSlope.toFixed(1)}°)` : 'Safe glide corridor';
-            L.polyline(pts, {
-              color: '#16a34a',
-              weight: 3,
-              opacity: 0.9,
-            }).bindTooltip(tooltip).addTo(glideCorridorGroup);
-          } else if (effectiveSafe && !slopeOk) {
-            // Yellow corridor for reachable but steep slope
-            L.polyline(pts, {
-              color: '#eab308',
-              weight: 12,
-              opacity: 0.16,
-              lineCap: 'round',
-              lineJoin: 'round',
-            }).addTo(glideCorridorGroup);
-            L.polyline(pts, {
-              color: '#ca8a04',
-              weight: 3,
-              opacity: 0.9,
-              dashArray: '4 3',
-            }).bindTooltip(`Steep slope (${maxSlope.toFixed(1)}° > ${slopeThreshold}°)`).addTo(glideCorridorGroup);
+        const overWater = isWater ? !!isWater[i] : false;
+        let category;
+        if (overWater) {
+          // Water: depend on glide reach to nearest shore
+          if (haveFa && nearestShoreNm) {
+            const reachNm = Math.max(0, (fa[i] - ground[i]) / descentPerNm);
+            category = nearestShoreNm[i] <= reachNm ? 0 : 2;
           } else {
-            // Red corridor for unreachable
-            L.polyline(pts, {
-              color: '#ef4444',
-              weight: 12,
-              opacity: 0.2,
-              lineCap: 'round',
-              lineJoin: 'round',
-            }).addTo(glideCorridorGroup);
-            L.polyline(pts, {
-              color: '#ef4444',
-              weight: 3,
-              opacity: 0.9,
-              dashArray: '6 6',
-            }).bindTooltip('Unreachable water segment').addTo(glideCorridorGroup);
+            category = 0; // unknown reach → assume reachable (don't scare)
           }
+        } else {
+          const s = slopeAt(i);
+          if (s < 5) category = 0;
+          else if (s <= slopeThreshold) category = 1;
+          else category = 2;
         }
-
-        // Slope check applies only to shore entry/exit points, not water samples
-        const slopeCheckMode = document.querySelector('input[name="slopeCheck"]:checked')?.value || 'water';
-        const applySlopeCheckToWater = slopeCheckMode === 'water' || slopeCheckMode === 'both';
-        
-        const entrySlope = calculateSlope(entryIdx);
-        const exitSlope = calculateSlope(exitIdx);
-        const shoreSlope = Math.max(entrySlope, exitSlope);
-        const shoreSlopeOk = !applySlopeCheckToWater || shoreSlope <= slopeThreshold;
-
-        let runStart = sec.start;
-        let runSafe = null;
-        let runMaxSlope = applySlopeCheckToWater ? shoreSlope : null;
-        for (let i = sec.start; i <= sec.end; i++) {
-          const reachNm = Math.max(0, (fa[i] - ground[i]) / descentPerNm);
-          let leftNeedNm = Math.max(0, dist[i] - entryD);
-          let rightNeedNm = Math.max(0, exitD - dist[i]);
-          const here = centers[i];
-          const entryPt = centers[entryIdx];
-          const exitPt = centers[exitIdx];
-          if (here && entryPt && exitPt) {
-            leftNeedNm = haversineNm(here[0], here[1], entryPt[0], entryPt[1]);
-            rightNeedNm = haversineNm(here[0], here[1], exitPt[0], exitPt[1]);
-          }
-          const reachable = leftNeedNm <= reachNm || rightNeedNm <= reachNm;
-          const safe = reachable && shoreSlopeOk;
-          if (runSafe === null) {
-            runSafe = safe;
-            runStart = i;
-          } else if (safe !== runSafe) {
-            drawRun(runStart, i - 1, runSafe, runMaxSlope);
-            runStart = i;
-            runSafe = safe;
-          }
-        }
-        drawRun(runStart, sec.end, runSafe, runMaxSlope);
+        cat[i] = category;
+        if (category === 0) g++; else if (category === 1) y++; else r++;
       }
+
+      // Group consecutive same-category samples into runs and draw each as
+      // a thick translucent halo polyline with a slim opaque core.
+      const colorPalette = {
+        0: { halo: '#22c55e', core: '#16a34a', label: 'Gentle terrain' },
+        1: { halo: '#eab308', core: '#ca8a04', label: 'Steep terrain' },
+        2: { halo: '#ef4444', core: '#dc2626', label: 'Hazardous' },
+      };
+
+      function drawRun(startIdx, endIdx, c) {
+        if (endIdx <= startIdx) return;
+        // Include one neighbouring point at each end so adjacent runs visually meet.
+        const a = Math.max(0, startIdx - 1);
+        const b = Math.min(dist.length - 1, endIdx + 1);
+        const pts = [];
+        for (let i = a; i <= b; i++) {
+          if (centers[i]) pts.push(centers[i]);
+        }
+        if (pts.length < 2) return;
+        const col = colorPalette[c];
+        L.polyline(pts, {
+          color: col.halo, weight: 18, opacity: 0.28,
+          lineCap: 'round', lineJoin: 'round',
+        }).bindTooltip(col.label).addTo(glideCorridorGroup);
+        L.polyline(pts, {
+          color: col.core, weight: 3, opacity: 0.85,
+        }).addTo(glideCorridorGroup);
+      }
+
+      let runStart = 0;
+      let runCat = cat[0];
+      let runs = 0;
+      for (let i = 1; i < dist.length; i++) {
+        if (cat[i] !== runCat) {
+          drawRun(runStart, i - 1, runCat);
+          runs++;
+          runStart = i;
+          runCat = cat[i];
+        }
+      }
+      drawRun(runStart, dist.length - 1, runCat);
+      runs++;
+
+      // Surface aggregate counts so the profile debug line can read them.
+      window._glideCorridorStats = {
+        green: g, yellow: y, red: r, runs, total: dist.length,
+      };
     }
 
     function setProfileDebugInfo(text) {
