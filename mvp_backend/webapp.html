@@ -2341,7 +2341,7 @@
         isWaterLen: isWater.length,
       };
       if (fa && isWater.length === dist.length) {
-        const code = document.getElementById('heliType').value;
+        try {
         const heli = typeof helicopterData !== 'undefined' ? helicopterData[code] : null;
         // Fallback: if helicopterData hasn't finished loading yet or the type
         // code doesn't match, use a generic piston-helicopter glide ratio so
@@ -2373,6 +2373,7 @@
 
           const descentPerNm = 6076.12 / glideRatio;
           const slopeThreshold = Number(document.getElementById('slopeThreshold').value) || 15;
+          const minUnsafeRunNm = 0.25;
 
           // Calculate terrain slope (in degrees) at a given profile sample index.
           // Slopes are computed from a small terrain buffer around the point (~200m).
@@ -2528,7 +2529,7 @@
             }
             drawWaterInterval(runStart, sec.end, runSafe, runMaxSlope);
           }
-        }
+        } catch (e) { /* canvas water tinting failed — non-fatal, corridor still renders */ }
       }
 
       // Always-on continuous slope/glide corridor on the map.
