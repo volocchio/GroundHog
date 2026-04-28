@@ -300,6 +300,50 @@
           <input id="fuelLoadGal" type="number" value="30" min="0" step="0.1" style="width:90px; text-align:right" title="Fuel on board at departure (gal)" />
         </div>
         <div id="towBar" style="margin-top:8px; font-size:0.82em"></div>
+
+        <div style="margin-top:8px; border-top:1px dashed #d1d5db; padding-top:6px">
+          <div style="display:flex; justify-content:space-between; align-items:center; cursor:pointer" id="cgToggleHeader">
+            <span style="font-weight:600; font-size:12px">Center of Gravity (optional)</span>
+            <span id="cgToggleArrow" style="font-size:11px; color:#4338ca">▸ Show</span>
+          </div>
+          <div id="cgPanel" style="display:none; margin-top:6px">
+            <div style="font-size:10.5px; color:#92400e; background:#fef3c7; padding:4px 6px; border-radius:4px; margin-bottom:6px; line-height:1.3">
+              ⚠ Enter arms (inches from datum) and CG limits from <strong>your aircraft's W&amp;B sheet</strong>. Values are saved per tail number.
+            </div>
+            <div style="display:grid; grid-template-columns:1fr auto auto; gap:3px 8px; font-size:0.82em; align-items:center">
+              <div></div>
+              <div style="text-align:right; color:#6b7280; font-size:10px">Weight (lb)</div>
+              <div style="text-align:right; color:#6b7280; font-size:10px">Arm (in)</div>
+
+              <label style="margin:0">BEW</label>
+              <span id="cgBewLb" style="text-align:right; color:#6b7280; min-width:70px; display:inline-block">—</span>
+              <input id="cgBewArm" type="number" value="" step="0.1" style="width:70px; text-align:right" placeholder="0.0" />
+
+              <label style="margin:0">Pilot</label>
+              <span id="cgPilotLb" style="text-align:right; color:#6b7280; min-width:70px; display:inline-block">—</span>
+              <input id="cgPilotArm" type="number" value="" step="0.1" style="width:70px; text-align:right" placeholder="0.0" />
+
+              <label style="margin:0">Passengers</label>
+              <span id="cgPaxLb" style="text-align:right; color:#6b7280; min-width:70px; display:inline-block">—</span>
+              <input id="cgPaxArm" type="number" value="" step="0.1" style="width:70px; text-align:right" placeholder="0.0" />
+
+              <label style="margin:0">Cargo</label>
+              <span id="cgCargoLb" style="text-align:right; color:#6b7280; min-width:70px; display:inline-block">—</span>
+              <input id="cgCargoArm" type="number" value="" step="0.1" style="width:70px; text-align:right" placeholder="0.0" />
+
+              <label style="margin:0">Fuel</label>
+              <span id="cgFuelLb" style="text-align:right; color:#6b7280; min-width:70px; display:inline-block">—</span>
+              <input id="cgFuelArm" type="number" value="" step="0.1" style="width:70px; text-align:right" placeholder="0.0" />
+            </div>
+            <div style="display:grid; grid-template-columns:1fr auto 1fr auto; gap:3px 6px; font-size:0.82em; align-items:center; margin-top:6px; border-top:1px dotted #d1d5db; padding-top:6px">
+              <label style="margin:0">CG fwd limit (in)</label>
+              <input id="cgFwdLimit" type="number" value="" step="0.1" style="width:70px; text-align:right" placeholder="fwd" />
+              <label style="margin:0; text-align:right">CG aft limit (in)</label>
+              <input id="cgAftLimit" type="number" value="" step="0.1" style="width:70px; text-align:right" placeholder="aft" />
+            </div>
+            <div id="cgResult" style="margin-top:8px; font-size:0.85em"></div>
+          </div>
+        </div>
       </div>
       <input id="grossWeightLb" type="hidden" value="0" />
 
@@ -1056,7 +1100,104 @@
       // Async HIGE check
       clearTimeout(_higeCheckTimer);
       _higeCheckTimer = setTimeout(() => checkHigeLimit(code, tow), 400);
+
+      // CG calc
+      updateCG(bew, pilot, pax, cargo, fuelLb, tow);
     }
+
+    // ── CG calculator ──
+    function updateCG(bew, pilot, pax, cargo, fuelLb, tow) {
+      // Mirror weights into the read-only weight column
+      const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v > 0 ? Math.round(v) : '—'; };
+      set('cgBewLb', bew); set('cgPilotLb', pilot); set('cgPaxLb', pax);
+      set('cgCargoLb', cargo); set('cgFuelLb', fuelLb);
+
+      const result = document.getElementById('cgResult');
+      const num = id => { const v = parseFloat(document.getElementById(id).value); return isNaN(v) ? null : v; };
+      const bewArm = num('cgBewArm');
+      const pilotArm = num('cgPilotArm');
+      const paxArm = num('cgPaxArm');
+      const cargoArm = num('cgCargoArm');
+      const fuelArm = num('cgFuelArm');
+      const fwdLimit = num('cgFwdLimit');
+      const aftLimit = num('cgAftLimit');
+
+      // Need at least BEW arm + fuel arm + limits to compute meaningfully
+      const haveCore = bewArm != null && bew > 0;
+      if (!haveCore) {
+        result.innerHTML = '<div style="color:#6b7280; font-size:11px">Enter BEW arm and station arms from your W&amp;B sheet to compute CG.</div>';
+        return;
+      }
+
+      // Build moment sum, only counting stations with both weight > 0 AND arm provided
+      let totalW = 0, totalM = 0;
+      const missing = [];
+      const addStation = (label, w, arm) => {
+        if (w <= 0) return; // station empty, skip silently
+        if (arm == null) { missing.push(label); return; }
+        totalW += w; totalM += w * arm;
+      };
+      // BEW always counted (haveCore guarantees both)
+      totalW += bew; totalM += bew * bewArm;
+      addStation('Pilot', pilot, pilotArm);
+      addStation('Passengers', pax, paxArm);
+      addStation('Cargo', cargo, cargoArm);
+      addStation('Fuel', fuelLb, fuelArm);
+
+      const cg = totalM / totalW;
+      const inLimits = (fwdLimit != null && aftLimit != null) ? (cg >= fwdLimit && cg <= aftLimit) : null;
+      const margin = (fwdLimit != null && aftLimit != null) ? Math.min(cg - fwdLimit, aftLimit - cg) : null;
+
+      let html = '';
+      html += `<div style="display:flex; justify-content:space-between; align-items:baseline">`;
+      html += `<span style="font-weight:600">CG: ${cg.toFixed(2)}"</span>`;
+      html += `<span style="color:#6b7280; font-size:11px">Total moment: ${Math.round(totalM)} in-lb</span>`;
+      html += `</div>`;
+
+      if (fwdLimit != null && aftLimit != null && aftLimit > fwdLimit) {
+        // Visual envelope bar
+        const range = aftLimit - fwdLimit;
+        const pos = Math.max(0, Math.min(1, (cg - fwdLimit) / range));
+        const color = inLimits ? (Math.abs(margin) < range * 0.05 ? '#f59e0b' : '#16a34a') : '#dc2626';
+        html += `<div style="position:relative; background:#e5e7eb; border-radius:4px; height:14px; margin-top:4px">`;
+        html += `<div style="position:absolute; left:0; top:0; bottom:0; width:100%; border-left:2px solid #6b7280; border-right:2px solid #6b7280; border-radius:4px"></div>`;
+        // CG marker
+        const markerLeft = inLimits ? (pos * 100) : (cg < fwdLimit ? 0 : 100);
+        html += `<div style="position:absolute; left:${markerLeft}%; top:-2px; bottom:-2px; width:3px; background:${color}; transform:translateX(-50%)"></div>`;
+        html += `</div>`;
+        html += `<div style="display:flex; justify-content:space-between; font-size:10px; color:#6b7280; margin-top:2px">`;
+        html += `<span>fwd ${fwdLimit.toFixed(1)}"</span><span>aft ${aftLimit.toFixed(1)}"</span>`;
+        html += `</div>`;
+        if (inLimits) {
+          html += `<div style="color:${color}; font-weight:600; font-size:11px; margin-top:3px">✓ Within CG envelope (margin ${margin.toFixed(2)}")</div>`;
+        } else {
+          const dir = cg < fwdLimit ? 'forward' : 'aft';
+          const off = cg < fwdLimit ? (fwdLimit - cg) : (cg - aftLimit);
+          html += `<div style="color:#dc2626; font-weight:600; font-size:11px; margin-top:3px">⚠ OUT of CG envelope — ${off.toFixed(2)}" too far ${dir}</div>`;
+        }
+      } else {
+        html += `<div style="color:#6b7280; font-size:11px; margin-top:2px">Enter CG fwd &amp; aft limits to check envelope.</div>`;
+      }
+      if (missing.length) {
+        html += `<div style="color:#92400e; font-size:10.5px; margin-top:3px">Missing arm for: ${missing.join(', ')} — not included in CG</div>`;
+      }
+      result.innerHTML = html;
+    }
+
+    // CG section toggle
+    document.getElementById('cgToggleHeader').addEventListener('click', () => {
+      const panel = document.getElementById('cgPanel');
+      const arrow = document.getElementById('cgToggleArrow');
+      const open = panel.style.display !== 'none';
+      panel.style.display = open ? 'none' : 'block';
+      arrow.textContent = open ? '▸ Show' : '▾ Hide';
+      if (!open) updateWeightBuildUp(); // refresh on open
+    });
+
+    // CG inputs trigger live recompute
+    ['cgBewArm','cgPilotArm','cgPaxArm','cgCargoArm','cgFuelArm','cgFwdLimit','cgAftLimit'].forEach(id => {
+      document.getElementById(id).addEventListener('input', updateWeightBuildUp);
+    });
 
     async function checkHigeLimit(typeCode, tow) {
       try {
@@ -1145,6 +1286,7 @@
       const parts = [`Base: ${ac.base_type || 'Manual'}`];
       if (ac.bew_lb) parts.push(`BEW: ${ac.bew_lb} lb`);
       if (ac.pilot_lb) parts.push(`Pilot: ${ac.pilot_lb} lb`);
+      if (ac.cg && Object.values(ac.cg).some(v => v != null)) parts.push('CG configured');
       if (ac.notes) parts.push(ac.notes);
       detail.textContent = parts.join(' • ');
     }
@@ -1159,10 +1301,20 @@
 
       // Capture current form state as this aircraft's profile
       const aircraft = getSavedAircraft();
+      const numOrNull = id => { const v = parseFloat(document.getElementById(id).value); return isNaN(v) ? null : v; };
       aircraft[cleanReg] = {
         base_type: heliType,
         bew_lb: Number(document.getElementById('bewLb').value) || 0,
         pilot_lb: Number(document.getElementById('pilotLb').value) || 0,
+        cg: {
+          bew_arm: numOrNull('cgBewArm'),
+          pilot_arm: numOrNull('cgPilotArm'),
+          pax_arm: numOrNull('cgPaxArm'),
+          cargo_arm: numOrNull('cgCargoArm'),
+          fuel_arm: numOrNull('cgFuelArm'),
+          fwd_limit: numOrNull('cgFwdLimit'),
+          aft_limit: numOrNull('cgAftLimit'),
+        },
       };
       localStorage.setItem(AIRCRAFT_KEY, JSON.stringify(aircraft));
       refreshAircraftDropdown();
@@ -1208,6 +1360,23 @@
       // Overlay with saved BEW & pilot weight
       if (ac.bew_lb) document.getElementById('bewLb').value = ac.bew_lb;
       if (ac.pilot_lb != null) document.getElementById('pilotLb').value = ac.pilot_lb;
+
+      // Restore CG fields, if present
+      const cg = ac.cg || {};
+      const setVal = (id, v) => { document.getElementById(id).value = (v == null ? '' : v); };
+      setVal('cgBewArm', cg.bew_arm);
+      setVal('cgPilotArm', cg.pilot_arm);
+      setVal('cgPaxArm', cg.pax_arm);
+      setVal('cgCargoArm', cg.cargo_arm);
+      setVal('cgFuelArm', cg.fuel_arm);
+      setVal('cgFwdLimit', cg.fwd_limit);
+      setVal('cgAftLimit', cg.aft_limit);
+      // Auto-expand CG panel if any CG data was saved
+      const hasCg = Object.values(cg).some(v => v != null);
+      if (hasCg) {
+        document.getElementById('cgPanel').style.display = 'block';
+        document.getElementById('cgToggleArrow').textContent = '▾ Hide';
+      }
       updateWeightBuildUp();
     });
 
