@@ -160,6 +160,90 @@ def favicon():
     return Response(status_code=204)
 
 
+# ── Map tile proxy + on-disk cache ───────────────────────────────
+# Serving tiles same-origin so the service worker can cache them cleanly
+# (cross-origin opaque responses count fully against the cache quota and
+# can't be inspected). Also lets us cache once on the server and respect
+# upstream tile-server ToS / rate limits.
+#
+# Provider key → (URL template, file extension, list of {s} subdomains or None)
+# {z},{x},{y} are filled in per request.
+_TILE_PROVIDERS = {
+    "osm": ("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", "png", ["a", "b", "c"]),
+    "opentopo": ("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", "png", ["a", "b", "c"]),
+    "usgs-topo": ("https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}", "png", None),
+    "usgs-imagery": ("https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryTopo/MapServer/tile/{z}/{y}/{x}", "jpg", None),
+    "vfr-sectional": ("https://tiles.arcgis.com/tiles/ssFJjBXIUyZDrSYZ/arcgis/rest/services/VFR_Sectional/MapServer/tile/{z}/{y}/{x}", "png", None),
+    "vfr-world": ("https://services.arcgisonline.com/arcgis/rest/services/Specialty/World_Navigation_Charts/MapServer/tile/{z}/{y}/{x}", "png", None),
+}
+
+_TILE_CACHE_DIR = os.path.join(ROOT, "mvp_backend", "tile_cache")
+_TILE_USER_AGENT = "GroundHog/1.0 (+https://groundhog.voloaltro.tech)"
+# Cap upstream fetches for safety. Browsers limit concurrent connections per
+# origin already; this guards the disk cache from runaway prefetch loops.
+_TILE_MAX_Z = 16
+_tile_fetch_lock = threading.Semaphore(8)
+
+
+@app.get("/tiles/{provider}/{z}/{x}/{y}.png")
+@app.get("/tiles/{provider}/{z}/{x}/{y}.jpg")
+def get_tile(provider: str, z: int, x: int, y: int):
+    """Fetch a map tile from the upstream provider, cache it on disk, and
+    return it. Same-origin URL so the service worker can cache it cleanly
+    for offline use."""
+    spec = _TILE_PROVIDERS.get(provider)
+    if not spec:
+        raise HTTPException(404, f"Unknown tile provider: {provider}")
+    if z < 0 or z > _TILE_MAX_Z:
+        raise HTTPException(400, f"Zoom {z} out of range (0..{_TILE_MAX_Z})")
+    max_xy = (1 << z) - 1
+    if x < 0 or x > max_xy or y < 0 or y > max_xy:
+        raise HTTPException(400, "Tile x/y out of range for zoom")
+
+    url_tpl, ext, subdomains = spec
+    cache_path = os.path.join(_TILE_CACHE_DIR, provider, str(z), str(x), f"{y}.{ext}")
+    media_type = "image/png" if ext == "png" else "image/jpeg"
+    # Long Cache-Control: tiles are effectively immutable for our purposes
+    # (chart cycles are months). SW + browser will cache aggressively.
+    cache_headers = {"Cache-Control": "public, max-age=2592000, immutable"}
+
+    if os.path.isfile(cache_path) and os.path.getsize(cache_path) > 0:
+        return FileResponse(cache_path, media_type=media_type, headers=cache_headers)
+
+    # Fetch upstream
+    if subdomains:
+        sub = subdomains[(x + y) % len(subdomains)]
+        url = url_tpl.format(s=sub, z=z, x=x, y=y)
+    else:
+        url = url_tpl.format(z=z, x=x, y=y)
+
+    import requests
+    try:
+        with _tile_fetch_lock:
+            r = requests.get(url, headers={"User-Agent": _TILE_USER_AGENT}, timeout=15)
+    except requests.RequestException as e:
+        raise HTTPException(502, f"Upstream tile fetch failed: {e}")
+    if r.status_code != 200 or not r.content:
+        # Don't cache failures
+        raise HTTPException(r.status_code if r.status_code >= 400 else 502,
+                            f"Upstream returned {r.status_code}")
+
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    tmp_path = cache_path + ".tmp"
+    try:
+        with open(tmp_path, "wb") as f:
+            f.write(r.content)
+        os.replace(tmp_path, cache_path)
+    except OSError as e:
+        # If we can't write to cache, still serve the tile.
+        logger.warning("Tile cache write failed for %s: %s", cache_path, e)
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+    return Response(content=r.content, media_type=media_type, headers=cache_headers)
+
+
 @app.get("/health")
 def health():
     return {"ok": True}

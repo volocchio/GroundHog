@@ -433,9 +433,8 @@
 
       <label>Apply landing-slope check to:</label>
       <div class="radio-group" style="margin-top:4px">
-        <label><input type="radio" name="slopeCheck" value="water" checked /> Water crossings only</label>
-        <label><input type="radio" name="slopeCheck" value="land" /> Ignore shore slope on water crossings</label>
-        <label><input type="radio" name="slopeCheck" value="both" /> Same as water crossings today</label>
+        <label><input type="radio" name="slopeCheck" value="water" checked /> Water crossings (check shore exit/entry slope)</label>
+        <label><input type="radio" name="slopeCheck" value="land" /> Don't check shore slope (water reachability only)</label>
       </div>
       <div class="muted" style="font-size:11px; margin-top:4px">
         Current behavior: the colored glide corridor is only drawn for detected water segments. Green means reachable shore with gentle slope, yellow means reachable but steep, and red means unreachable or steeper than the selected threshold.
@@ -468,6 +467,7 @@
       </div>
 
       <button id="liveBtn" type="button" title="Use phone GPS to track flight in real time">🛰 Start Live Flight</button>
+      <button id="packTripBtn" type="button" title="Download map tiles + airports + obstacles for offline use" style="background:#7c3aed">📦 Pack for Trip (Offline)</button>
       <div id="liveStatus"></div>
 
       <div id="status" class="muted" style="margin-top:10px"></div>
@@ -571,33 +571,37 @@
     map.createPane('airspacePane');
     map.getPane('airspacePane').style.zIndex = 350;  // below default markerPane (600)
 
-    const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 18,
+    // ── Map tile layers (proxied through /tiles/{provider}/...) ──
+    // Same-origin so the service worker can cache them for offline use.
+    // Disk-cached server-side too, so each tile is fetched from upstream
+    // at most once across all users.
+    const osmLayer = L.tileLayer('/tiles/osm/{z}/{x}/{y}.png', {
+      maxZoom: 16,
       attribution: '&copy; OpenStreetMap'
     });
 
-    const usgsTopo = L.tileLayer('https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}', {
+    const usgsTopo = L.tileLayer('/tiles/usgs-topo/{z}/{x}/{y}.png', {
       maxZoom: 16,
       attribution: 'USGS'
     });
 
-    const openTopo = L.tileLayer('https://tile.opentopomap.org/{z}/{x}/{y}.png', {
-      maxZoom: 17,
+    const openTopo = L.tileLayer('/tiles/opentopo/{z}/{x}/{y}.png', {
+      maxZoom: 16,
       attribution: '&copy; OpenTopoMap'
     });
 
-    const esriImagery = L.tileLayer('https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryTopo/MapServer/tile/{z}/{y}/{x}', {
+    const esriImagery = L.tileLayer('/tiles/usgs-imagery/{z}/{x}/{y}.jpg', {
       maxZoom: 16,
       attribution: 'USGS Imagery'
     });
 
-    const vfrSectional = L.tileLayer('https://tiles.arcgis.com/tiles/ssFJjBXIUyZDrSYZ/arcgis/rest/services/VFR_Sectional/MapServer/tile/{z}/{y}/{x}', {
+    const vfrSectional = L.tileLayer('/tiles/vfr-sectional/{z}/{x}/{y}.png', {
       minZoom: 8,
       maxZoom: 12,
       attribution: 'FAA VFR Sectional (zoom 8+)'
     });
 
-    const vfrWorld = L.tileLayer('https://services.arcgisonline.com/arcgis/rest/services/Specialty/World_Navigation_Charts/MapServer/tile/{z}/{y}/{x}', {
+    const vfrWorld = L.tileLayer('/tiles/vfr-world/{z}/{x}/{y}.png', {
       maxZoom: 10,
       attribution: 'NGA Operational Navigation Charts'
     });
@@ -2328,10 +2332,27 @@
       // Evaluate shore reachability at each sampled point over water using the
       // actual flight altitude there. This is more robust than shore-to-shore
       // guide lines on multi-leg routes with turnarounds.
+      // Diagnostic: surface preconditions for the slope/glide corridor so a
+      // missing color overlay is debuggable without DevTools.
+      const _gcDiag = {
+        fa: !!fa,
+        faLen: fa ? fa.length : 0,
+        distLen: dist.length,
+        isWaterLen: isWater.length,
+      };
       if (fa && isWater.length === dist.length) {
         const code = document.getElementById('heliType').value;
         const heli = typeof helicopterData !== 'undefined' ? helicopterData[code] : null;
-        const glideRatio = heli ? heli.autorotation_glide_ratio : 0;
+        // Fallback: if helicopterData hasn't finished loading yet or the type
+        // code doesn't match, use a generic piston-helicopter glide ratio so
+        // the corridor still renders. Most light helis fall in 3.5–4.5.
+        const rawGlide = heli ? heli.autorotation_glide_ratio : 0;
+        const glideRatio = rawGlide > 0 ? rawGlide : 4.0;
+        _gcDiag.heliCode = code;
+        _gcDiag.heliLoaded = !!heli;
+        _gcDiag.glideRatio = glideRatio;
+        _gcDiag.glideRatioFallback = !(rawGlide > 0);
+        try { console.log('[glideCorridor] preconditions', _gcDiag); } catch (e) {}
         if (glideRatio > 0) {
           let corridorSegments = 0;
           let greenSegments = 0;
@@ -2514,9 +2535,15 @@
           );
         } else {
           glideCorridorGroup.clearLayers();
+          setProfileDebugInfo(
+            `Water samples: ${waterSampleCount}/${dist.length} • Corridor: heli "${code}" has no autorotation_glide_ratio (heliLoaded=${!!heli})`
+          );
         }
       } else {
         glideCorridorGroup.clearLayers();
+        setProfileDebugInfo(
+          `Water samples: ${waterSampleCount}/${dist.length} • Corridor skipped: fa=${!!fa} faLen=${_gcDiag.faLen} distLen=${dist.length} isWaterLen=${isWater.length}`
+        );
       }
 
       // ── Airport markers at each leg boundary (drawn last, on top) ──
@@ -3166,12 +3193,19 @@
       const dep = document.getElementById('dep').value.trim().toUpperCase();
       const arr = document.getElementById('arr').value.trim().toUpperCase();
       const roundTrip = document.getElementById('roundTrip').checked;
-      const waypoints = document.getElementById('waypoints').value.split(/[\s,]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
+      // Split on whitespace only — commas are part of @lat,lon custom-point tokens
+      const waypoints = document.getElementById('waypoints').value.split(/\s+/).map(s => s.trim().toUpperCase()).filter(Boolean);
 
       let effectiveArr = arr;
       if (roundTrip && dep && arr && dep !== arr) {
-        // Round trip: dep → arr (no refuel) → dep
+        // Round trip: dep → [waypoints] → arr (no refuel) → [waypoints reversed] → dep.
+        // We mirror the intermediate waypoints in reverse so the return leg
+        // passes through the same fly-overs / stops the user added on the way out.
+        const outboundWps = waypoints.slice();
         waypoints.push(arr + '-NF');
+        for (let i = outboundWps.length - 1; i >= 0; i--) {
+          waypoints.push(outboundWps[i]);
+        }
         effectiveArr = dep;
       }
 
@@ -3367,6 +3401,8 @@
               totalFuelGal += legFuelGal;
               lastLegFuelGal = legFuelGal;
               allCoords = allCoords.concat(event.coords);
+              // Stash for "Pack for Trip" so it can build a corridor bbox.
+              window._lastRouteCoords = allCoords.slice();
               legsList.push({
                 from: event.from || payload.dep_icao,
                 to: event.to || payload.arr_icao,
@@ -4213,8 +4249,241 @@
       else stopLiveFlight();
     });
 
+    // ── Pack for Trip (offline tile prefetch) ──────────────────────────
+    // Builds a tile list from the current route (with a configurable
+    // corridor buffer) and posts it to the service worker, which fills
+    // the tile cache and reports progress back. Same flow primes airport,
+    // obstacle, and airspace JSON for the corridor so they're cached too.
+    const PACK_PROVIDERS = [
+      { id: 'opentopo',     label: '🏔️ OpenTopoMap',       ext: 'png', defaultOn: true,  maxZ: 16 },
+      { id: 'usgs-topo',    label: '🗺️ USGS Topo',          ext: 'png', defaultOn: false, maxZ: 16 },
+      { id: 'usgs-imagery', label: '🛰️ USGS Imagery',       ext: 'jpg', defaultOn: false, maxZ: 16 },
+      { id: 'osm',          label: '🛣️ Street Map',         ext: 'png', defaultOn: false, maxZ: 16 },
+      { id: 'vfr-sectional',label: '🛩️ FAA VFR Sectional',  ext: 'png', defaultOn: true,  maxZ: 12, minZ: 8 },
+      { id: 'vfr-world',    label: '🌍 World Aeronautical', ext: 'png', defaultOn: false, maxZ: 10 },
+    ];
+
+    function _lon2tileX(lon, z) { return Math.floor(((lon + 180) / 360) * (1 << z)); }
+    function _lat2tileY(lat, z) {
+      const r = lat * Math.PI / 180;
+      return Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * (1 << z));
+    }
+
+    function _routeBboxWithBuffer(coords, bufferNm) {
+      if (!coords || !coords.length) return null;
+      let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
+      for (const [la, lo] of coords) {
+        if (la < minLat) minLat = la; if (la > maxLat) maxLat = la;
+        if (lo < minLon) minLon = lo; if (lo > maxLon) maxLon = lo;
+      }
+      // 1 NM ≈ 1/60 deg lat. Lon scales with cos(lat).
+      const dLat = bufferNm / 60.0;
+      const midLat = (minLat + maxLat) / 2;
+      const dLon = bufferNm / (60.0 * Math.max(0.1, Math.cos(midLat * Math.PI / 180)));
+      return { south: minLat - dLat, north: maxLat + dLat,
+               west:  minLon - dLon, east:  maxLon + dLon };
+    }
+
+    function _buildTileUrls(bbox, providers, minZ, maxZ) {
+      const urls = [];
+      for (const p of providers) {
+        const z0 = Math.max(minZ, p.minZ || 0);
+        const z1 = Math.min(maxZ, p.maxZ || 16);
+        for (let z = z0; z <= z1; z++) {
+          const x0 = _lon2tileX(bbox.west, z), x1 = _lon2tileX(bbox.east, z);
+          const y0 = _lat2tileY(bbox.north, z), y1 = _lat2tileY(bbox.south, z);
+          for (let x = Math.min(x0, x1); x <= Math.max(x0, x1); x++) {
+            for (let y = Math.min(y0, y1); y <= Math.max(y0, y1); y++) {
+              urls.push(`/tiles/${p.id}/${z}/${x}/${y}.${p.ext}`);
+            }
+          }
+        }
+      }
+      return urls;
+    }
+
+    function _buildDataUrls(bbox) {
+      // Bulk JSON the live UI will need offline. Airport list is global;
+      // obstacles + airspace are bbox-scoped.
+      const b = `south=${bbox.south.toFixed(5)}&north=${bbox.north.toFixed(5)}&west=${bbox.west.toFixed(5)}&east=${bbox.east.toFixed(5)}`;
+      return [
+        '/airports',
+        '/helicopters',
+        `/obstacles?${b}&min_agl=200`,
+        `/airspace?${b}`,
+      ];
+    }
+
+    function _ensurePackModal() {
+      let m = document.getElementById('packModal');
+      if (m) return m;
+      m = document.createElement('div');
+      m.id = 'packModal';
+      m.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.5); display:none; align-items:center; justify-content:center; z-index:9999;';
+      m.innerHTML = `
+        <div style="background:#fff; border-radius:10px; padding:20px; max-width:520px; width:92%; max-height:88vh; overflow-y:auto; box-shadow:0 20px 60px rgba(0,0,0,0.3); font-family:system-ui,sans-serif">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px">
+            <h3 style="margin:0; font-size:16px">📦 Pack for Trip — Offline Cache</h3>
+            <button id="packCloseBtn" style="background:transparent; border:none; font-size:22px; cursor:pointer; color:#666; padding:0 6px">×</button>
+          </div>
+          <div style="font-size:13px; color:#555; margin-bottom:12px">
+            Downloads map tiles + airport / obstacle / airspace data along your planned route so the app keeps working with no signal in the air.
+          </div>
+          <div id="packNoRoute" style="display:none; padding:10px; background:#fef3c7; border:1px solid #f59e0b; border-radius:6px; font-size:13px; color:#92400e; margin-bottom:12px">
+            ⚠️ No route planned yet. Run a route first, then pack it.
+          </div>
+          <div id="packForm">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px">
+              <div>
+                <label style="display:block; font-size:12px; color:#444; margin-bottom:3px">Corridor width (NM each side)</label>
+                <input id="packBufferNm" type="number" value="10" min="1" max="100" step="1" style="width:100%; padding:6px; border:1px solid #ccc; border-radius:5px" />
+              </div>
+              <div>
+                <label style="display:block; font-size:12px; color:#444; margin-bottom:3px">Zoom range</label>
+                <div style="display:flex; gap:6px; align-items:center">
+                  <input id="packMinZ" type="number" value="8"  min="3" max="16" style="width:50%; padding:6px; border:1px solid #ccc; border-radius:5px" />
+                  <span style="color:#888">→</span>
+                  <input id="packMaxZ" type="number" value="13" min="3" max="16" style="width:50%; padding:6px; border:1px solid #ccc; border-radius:5px" />
+                </div>
+              </div>
+            </div>
+            <div style="margin-bottom:10px">
+              <div style="font-size:12px; color:#444; margin-bottom:5px">Map layers to cache</div>
+              <div id="packProviders" style="display:flex; flex-direction:column; gap:4px; padding:8px; background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px"></div>
+            </div>
+            <div id="packEstimate" style="padding:10px; background:#eff6ff; border:1px solid #bfdbfe; border-radius:6px; font-size:13px; color:#1e40af; margin-bottom:12px">
+              Estimating…
+            </div>
+            <div style="display:flex; gap:8px">
+              <button id="packStartBtn" style="flex:1; background:#7c3aed; color:#fff; border:none; padding:10px; border-radius:6px; font-size:14px; cursor:pointer; font-weight:600">Start Pack</button>
+              <button id="packCancelBtn" style="background:#f3f4f6; color:#374151; border:1px solid #d1d5db; padding:10px 16px; border-radius:6px; font-size:14px; cursor:pointer">Cancel</button>
+            </div>
+          </div>
+          <div id="packProgressWrap" style="display:none; margin-top:12px">
+            <div style="font-size:13px; color:#444; margin-bottom:6px"><span id="packProgressLabel">Packing…</span></div>
+            <div style="background:#e5e7eb; height:14px; border-radius:7px; overflow:hidden">
+              <div id="packProgressBar" style="background:#7c3aed; height:100%; width:0%; transition:width 0.2s"></div>
+            </div>
+            <div id="packProgressText" style="font-size:12px; color:#666; margin-top:6px"></div>
+            <button id="packDoneBtn" style="display:none; margin-top:10px; width:100%; background:#16a34a; color:#fff; border:none; padding:10px; border-radius:6px; font-size:14px; cursor:pointer; font-weight:600">Done</button>
+          </div>
+        </div>`;
+      document.body.appendChild(m);
+
+      const providers = document.getElementById('packProviders');
+      PACK_PROVIDERS.forEach((p) => {
+        const row = document.createElement('label');
+        row.style.cssText = 'display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; padding:2px 0';
+        const zRange = (p.minZ ? `z${p.minZ}` : '') + (p.minZ && p.maxZ ? '–' : '') + (p.maxZ < 16 ? `z${p.maxZ}` : '');
+        row.innerHTML = `<input type="checkbox" data-pid="${p.id}" ${p.defaultOn ? 'checked' : ''} /> ${p.label} <span style="color:#888; font-size:11px; margin-left:auto">${zRange || `up to z${p.maxZ}`}</span>`;
+        providers.appendChild(row);
+      });
+
+      m.querySelector('#packCloseBtn').onclick = () => { m.style.display = 'none'; };
+      m.querySelector('#packCancelBtn').onclick = () => { m.style.display = 'none'; };
+      m.querySelector('#packDoneBtn').onclick = () => { m.style.display = 'none'; };
+      m.addEventListener('click', (e) => { if (e.target === m) m.style.display = 'none'; });
+
+      const reEstimate = () => _updatePackEstimate();
+      ['packBufferNm','packMinZ','packMaxZ'].forEach(id => document.getElementById(id).addEventListener('input', reEstimate));
+      providers.addEventListener('change', reEstimate);
+
+      m.querySelector('#packStartBtn').onclick = _startPack;
+      return m;
+    }
+
+    function _selectedProviders() {
+      return PACK_PROVIDERS.filter(p =>
+        document.querySelector(`#packProviders input[data-pid="${p.id}"]`)?.checked);
+    }
+    function _packParams() {
+      return {
+        bufferNm: Math.max(1, Number(document.getElementById('packBufferNm').value) || 10),
+        minZ: Math.max(3, Math.min(16, Number(document.getElementById('packMinZ').value) || 8)),
+        maxZ: Math.max(3, Math.min(16, Number(document.getElementById('packMaxZ').value) || 13)),
+        providers: _selectedProviders(),
+      };
+    }
+
+    function _updatePackEstimate() {
+      const coords = window._lastRouteCoords;
+      const est = document.getElementById('packEstimate');
+      if (!coords || coords.length < 2) {
+        est.textContent = 'No route to pack.';
+        return;
+      }
+      const { bufferNm, minZ, maxZ, providers } = _packParams();
+      if (maxZ < minZ) { est.textContent = 'Max zoom must be ≥ min zoom.'; return; }
+      if (!providers.length) { est.textContent = 'Select at least one map layer.'; return; }
+      const bbox = _routeBboxWithBuffer(coords, bufferNm);
+      const urls = _buildTileUrls(bbox, providers, minZ, maxZ);
+      // Rough size: ~15 KB / tile averaged across providers.
+      const mb = (urls.length * 15) / 1024;
+      est.innerHTML = `≈ <b>${urls.length.toLocaleString()}</b> tiles · ~${mb.toFixed(1)} MB · plus airports, obstacles, airspace for the corridor.`;
+    }
+
+    async function _startPack() {
+      const coords = window._lastRouteCoords;
+      if (!coords || coords.length < 2) return;
+      if (!('serviceWorker' in navigator) || !navigator.serviceWorker.controller) {
+        alert('Service worker not active yet. Reload the page over HTTPS and try again.');
+        return;
+      }
+      const { bufferNm, minZ, maxZ, providers } = _packParams();
+      if (maxZ < minZ || !providers.length) return;
+      const bbox = _routeBboxWithBuffer(coords, bufferNm);
+      const tileUrls = _buildTileUrls(bbox, providers, minZ, maxZ);
+      const dataUrls = _buildDataUrls(bbox);
+      const allUrls = tileUrls.concat(dataUrls);
+
+      document.getElementById('packForm').style.display = 'none';
+      const wrap = document.getElementById('packProgressWrap');
+      wrap.style.display = 'block';
+      const bar = document.getElementById('packProgressBar');
+      const txt = document.getElementById('packProgressText');
+      const lbl = document.getElementById('packProgressLabel');
+      const doneBtn = document.getElementById('packDoneBtn');
+      bar.style.width = '0%';
+      txt.textContent = '';
+      lbl.textContent = `Packing ${allUrls.length.toLocaleString()} resources…`;
+      doneBtn.style.display = 'none';
+
+      const sw = navigator.serviceWorker;
+      const onMsg = (event) => {
+        const m = event.data || {};
+        if (m.type === 'PACK_PROGRESS' || m.type === 'PACK_DONE') {
+          const pct = m.total ? (m.done / m.total) * 100 : 0;
+          bar.style.width = pct.toFixed(1) + '%';
+          txt.textContent = `${m.done.toLocaleString()} / ${m.total.toLocaleString()}` + (m.failed ? ` · ${m.failed} failed` : '');
+        }
+        if (m.type === 'PACK_DONE') {
+          lbl.textContent = m.failed ? `Pack complete (${m.failed} failed)` : '✅ Trip cached for offline use';
+          doneBtn.style.display = 'block';
+          sw.removeEventListener('message', onMsg);
+        }
+      };
+      sw.addEventListener('message', onMsg);
+      sw.controller.postMessage({ type: 'PACK', urls: allUrls, concurrency: 6 });
+    }
+
+    document.getElementById('packTripBtn').addEventListener('click', () => {
+      const m = _ensurePackModal();
+      const noRoute = document.getElementById('packNoRoute');
+      const form = document.getElementById('packForm');
+      const wrap = document.getElementById('packProgressWrap');
+      wrap.style.display = 'none';
+      form.style.display = 'block';
+      const hasRoute = window._lastRouteCoords && window._lastRouteCoords.length >= 2;
+      noRoute.style.display = hasRoute ? 'none' : 'block';
+      form.querySelector('#packStartBtn').disabled = !hasRoute;
+      form.querySelector('#packStartBtn').style.opacity = hasRoute ? '1' : '0.5';
+      m.style.display = 'flex';
+      _updatePackEstimate();
+    });
+
     // ── PWA service worker registration ─────────────────────────────────
-    if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    if ('serviceWorker' in navigator
+        && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
       window.addEventListener('load', () => {
         navigator.serviceWorker.register('/sw.js', { scope: '/' })
           .then((reg) => {
