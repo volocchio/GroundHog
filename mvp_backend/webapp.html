@@ -99,63 +99,115 @@
       white-space: nowrap;
     }
 
-    /* ── Live Flight HUD ───────────────────────────────────────── */
-    #liveBtn {
-      background: #059669;
-    }
+    /* ── Live Flight HUD (Garmin Pilot top ribbon) ─────────────── */
+    #liveBtn { background: #059669; }
     #liveBtn.tracking { background: #dc2626; }
     #liveStatus { font-size: 12px; color: #6b7280; margin-top: 6px; min-height: 14px; }
-    .live-hud {
-      background: rgba(15, 23, 42, 0.92);
-      color: #f8fafc;
-      border-radius: 10px;
-      padding: 8px 10px;
-      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.35);
-      min-width: 210px;
+
+    .live-ribbon {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 9999;
+      background: #2f3033;
+      border-bottom: 1px solid #111;
+      padding: 4px 4px 5px;
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 3px;
+      font-family: 'Helvetica Neue', Arial, system-ui, sans-serif;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.4);
       user-select: none;
+      -webkit-user-select: none;
     }
-    .live-hud .hud-title {
-      display: flex; justify-content: space-between; align-items: center;
-      font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
-      color: #94a3b8; margin-bottom: 6px;
+    .live-ribbon.collapsed { padding: 2px 4px; }
+    .live-ribbon.collapsed .hud-cell { display: none; }
+    .live-ribbon.collapsed .hud-bar { display: flex; }
+
+    .live-ribbon .hud-cell {
+      background: #f3f4f4;
+      border: 1px solid #1a1a1a;
+      border-radius: 2px;
+      padding: 1px 4px 2px;
+      text-align: center;
+      min-height: 38px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      overflow: hidden;
     }
-    .live-hud .hud-dot {
-      width: 8px; height: 8px; border-radius: 50%;
-      background: #22c55e; box-shadow: 0 0 6px #22c55e;
-      animation: hudPulse 1.6s ease-in-out infinite;
+    .live-ribbon .hud-cell .lbl {
+      font-size: 10px; color: #5a5a5a;
+      line-height: 1.05; letter-spacing: 0; text-transform: none;
+      font-weight: 500;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
-    @keyframes hudPulse { 0%,100% {opacity:1;} 50% {opacity:0.35;} }
-    .live-hud.stale .hud-dot { background:#f59e0b; box-shadow:0 0 6px #f59e0b; }
-    .live-hud.lost .hud-dot { background:#ef4444; box-shadow:0 0 6px #ef4444; animation:none; }
-    .live-hud .hud-grid {
-      display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px;
+    .live-ribbon .hud-cell .val {
+      font-size: 18px; font-weight: 700; line-height: 1.0;
+      color: #111; font-variant-numeric: tabular-nums;
+      letter-spacing: -0.5px;
     }
-    .live-hud .hud-cell .lbl {
-      font-size: 10px; color: #94a3b8; letter-spacing: 0.05em; text-transform: uppercase;
+    .live-ribbon .hud-cell .unit {
+      font-size: 10px; color: #444; font-weight: 500; margin-left: 1px;
+      vertical-align: baseline;
     }
-    .live-hud .hud-cell .val {
-      font-size: 22px; font-weight: 700; line-height: 1.1;
-      font-variant-numeric: tabular-nums;
+    .live-ribbon .hud-cell .sub {
+      font-size: 9px; color: #444; font-weight: 500;
     }
-    .live-hud .hud-cell .unit {
-      font-size: 11px; color: #cbd5e1; margin-left: 2px; font-weight: 500;
+    /* Coloured highlights like the screenshot */
+    .live-ribbon .hud-cell.ok    { background: #cdebc7; }   /* green */
+    .live-ribbon .hud-cell.warn  { background: #ffe9a8; }   /* amber */
+    .live-ribbon .hud-cell.alert { background: #ffb4b4; }   /* red */
+    .live-ribbon .hud-cell.dim   { background: #d9d9d9; color:#555; }
+    .live-ribbon .hud-cell.dim .val { color:#666; }
+
+    .live-ribbon .hud-bar {
+      display: none;
+      width: 100%;
+      align-items: center;
+      justify-content: space-between;
+      color: #f3f4f4;
+      font-size: 12px;
+      padding: 2px 6px;
     }
-    .live-hud .hud-foot {
-      margin-top: 6px; padding-top: 6px; border-top: 1px solid #334155;
-      font-size: 11px; color: #cbd5e1; display: flex; justify-content: space-between;
+    .live-ribbon .hud-bar .left,
+    .live-ribbon .hud-bar .right { display: flex; gap: 10px; align-items: center; }
+
+    .live-ribbon .hud-toggle,
+    .live-ribbon .hud-stop {
+      position: absolute; top: 2px;
+      width: 22px; height: 22px;
+      background: rgba(0,0,0,0.55); color: #fff;
+      border: 1px solid #000; border-radius: 3px;
+      font-size: 13px; line-height: 18px; text-align: center;
+      cursor: pointer; z-index: 2;
     }
-    .live-hud .hud-actions {
-      margin-top: 6px; display: flex; gap: 6px;
+    .live-ribbon .hud-toggle { right: 28px; }
+    .live-ribbon .hud-stop   { right: 4px; background: #b91c1c; }
+
+    /* GPS sat-bars indicator inside a cell */
+    .gps-bars { display: inline-flex; gap: 1px; align-items: flex-end; height: 14px; }
+    .gps-bars span {
+      width: 3px; background: #2c7a2c; border: 1px solid #1a1a1a;
+      border-radius: 1px;
     }
-    .live-hud .hud-actions button {
-      flex: 1; margin: 0; padding: 5px 8px; font-size: 11px;
-      background: #1e293b; border: 1px solid #334155; color: #f8fafc;
-      border-radius: 6px; cursor: pointer;
+    .gps-bars span.b1 { height: 4px; }
+    .gps-bars span.b2 { height: 7px; }
+    .gps-bars span.b3 { height: 10px; }
+    .gps-bars span.b4 { height: 14px; }
+    .gps-bars.weak span { background: #888; }
+    .gps-bars.lost span { background: #c33; }
+
+    /* Push the rest of the page down a touch when the ribbon is shown so it doesn't cover the controls */
+    body.live-on header { margin-top: 168px; }
+    body.live-on .live-ribbon.collapsed ~ header,
+    body.live-on:has(.live-ribbon.collapsed) header { margin-top: 28px; }
+    @media (min-width: 720px) {
+      body.live-on header { margin-top: 92px; }
+      .live-ribbon { grid-template-columns: repeat(10, 1fr); }
     }
-    .live-hud .hud-actions button.on { background: #2563eb; border-color: #3b82f6; }
+
     .ac-marker {
-      width: 36px; height: 36px;
+      width: 40px; height: 40px;
       display: flex; align-items: center; justify-content: center;
       pointer-events: none;
     }
@@ -3568,8 +3620,11 @@
       lastElevFetchAt: 0,
       lastElevAt: null,     // {lat, lon}
       autoFollow: true,
-      hudCtl: null,
+      hudEl: null,
       lostTimer: null,
+      smoothVs: null,
+      lastAltFt: null,
+      lastAltAt: null,
     };
 
     const M_TO_FT = 3.28084;
@@ -3598,61 +3653,56 @@
 
     function _aircraftIcon(headingDeg) {
       const hdg = Number.isFinite(headingDeg) ? headingDeg : 0;
+      // Garmin Pilot–style yellow ownship triangle with white outline
       const html = `<div class="ac-marker">
-        <svg width="32" height="32" viewBox="0 0 32 32" style="transform: rotate(${hdg}deg)">
-          <path d="M16 2 L20 20 L16 17 L12 20 Z" fill="#dc2626" stroke="#fff" stroke-width="1.2" stroke-linejoin="round"/>
-          <circle cx="16" cy="16" r="2" fill="#fff"/>
+        <svg width="40" height="40" viewBox="0 0 40 40" style="transform: rotate(${hdg}deg)">
+          <path d="M20 3 L29 30 L20 25 L11 30 Z"
+                fill="#f5d300" stroke="#111" stroke-width="1.5" stroke-linejoin="round"/>
+          <circle cx="20" cy="20" r="2" fill="#111"/>
         </svg></div>`;
-      return L.divIcon({ html, className: '', iconSize: [32, 32], iconAnchor: [16, 16] });
+      return L.divIcon({ html, className: '', iconSize: [40, 40], iconAnchor: [20, 20] });
     }
 
     function _buildHud() {
-      const HudCtl = L.Control.extend({
-        options: { position: 'topright' },
-        onAdd: function () {
-          const d = L.DomUtil.create('div', 'live-hud');
-          d.id = 'liveHud';
-          d.innerHTML = `
-            <div class="hud-title">
-              <span><span class="hud-dot"></span> Live Flight</span>
-              <span id="hudFixAge">—</span>
-            </div>
-            <div class="hud-grid">
-              <div class="hud-cell"><div class="lbl">Ground Speed</div><div class="val"><span id="hudGs">—</span><span class="unit">kt</span></div></div>
-              <div class="hud-cell"><div class="lbl">Heading</div><div class="val"><span id="hudHdg">—</span><span class="unit">°</span></div></div>
-              <div class="hud-cell"><div class="lbl">Altitude MSL</div><div class="val"><span id="hudAlt">—</span><span class="unit">ft</span></div></div>
-              <div class="hud-cell"><div class="lbl">AGL</div><div class="val"><span id="hudAgl">—</span><span class="unit">ft</span></div></div>
-              <div class="hud-cell" style="grid-column:1 / -1"><div class="lbl">Position</div><div class="val" style="font-size:13px"><span id="hudPos">—</span></div></div>
-            </div>
-            <div class="hud-foot">
-              <span>To go: <b id="hudToGo">—</b></span>
-              <span>ETE: <b id="hudEte">—</b></span>
-            </div>
-            <div class="hud-actions">
-              <button id="hudFollowBtn" class="on" type="button">Follow</button>
-              <button id="hudClearBtn" type="button">Clear trail</button>
-              <button id="hudStopBtn" type="button">Stop</button>
-            </div>`;
-          L.DomEvent.disableClickPropagation(d);
-          L.DomEvent.disableScrollPropagation(d);
-          setTimeout(() => {
-            d.querySelector('#hudFollowBtn').onclick = () => {
-              live.autoFollow = !live.autoFollow;
-              d.querySelector('#hudFollowBtn').classList.toggle('on', live.autoFollow);
-              if (live.autoFollow && live.lastFix) {
-                map.panTo([live.lastFix.lat, live.lastFix.lon]);
-              }
-            };
-            d.querySelector('#hudClearBtn').onclick = () => {
-              live.trailPts = [];
-              if (live.trail) live.trail.setLatLngs([]);
-            };
-            d.querySelector('#hudStopBtn').onclick = stopLiveFlight;
-          }, 0);
-          return d;
-        },
-      });
-      return new HudCtl();
+      // Garmin Pilot–style top ribbon. Built as a fixed DOM element
+      // (not a Leaflet control) so it spans full screen width on phones.
+      const d = document.createElement('div');
+      d.className = 'live-ribbon';
+      d.id = 'liveHud';
+      d.innerHTML = `
+        <div class="hud-cell" id="cellGs"><div class="lbl">Gnd Speed</div><div class="val"><span id="hudGs">—</span><span class="unit">kt</span></div></div>
+        <div class="hud-cell" id="cellTrk"><div class="lbl">Track</div><div class="val"><span id="hudHdg">—</span><span class="unit">°</span></div></div>
+        <div class="hud-cell" id="cellAlt"><div class="lbl">Alt (GPS)</div><div class="val"><span id="hudAlt">—</span></div></div>
+        <div class="hud-cell" id="cellAgl"><div class="lbl">Alt (AGL)</div><div class="val"><span id="hudAgl">—</span></div></div>
+        <div class="hud-cell" id="cellGps"><div class="lbl">GPS Status</div>
+          <div class="val" style="font-size:13px"><span class="gps-bars" id="hudGpsBars"><span class="b1"></span><span class="b2"></span><span class="b3"></span><span class="b4"></span></span></div>
+        </div>
+        <div class="hud-cell" id="cellVs"><div class="lbl">Vert. Speed</div><div class="val"><span id="hudVs">—</span><span class="unit">fpm</span></div></div>
+        <div class="hud-cell" id="cellBrg"><div class="lbl">Bearing</div><div class="val"><span id="hudBrg">—</span><span class="unit">°</span></div></div>
+        <div class="hud-cell" id="cellFinal"><div class="lbl">Final</div><div class="val" style="font-size:14px"><span id="hudFinal">—</span></div></div>
+        <div class="hud-cell" id="cellDist"><div class="lbl">Dist: Final</div><div class="val"><span id="hudToGo">—</span><span class="unit">nm</span></div></div>
+        <div class="hud-cell" id="cellEte"><div class="lbl">ETE: Final</div><div class="val"><span id="hudEte">—</span></div></div>
+        <div class="hud-bar" id="hudBar">
+          <div class="left"><b id="hudBarGs">— kt</b><span id="hudBarHdg">—°</span><span id="hudBarAlt">— ft</span></div>
+          <div class="right"><span id="hudBarToGo">—</span><span id="hudBarEte">—</span></div>
+        </div>
+        <div class="hud-toggle" id="hudToggle" title="Collapse / expand HUD">▾</div>
+        <div class="hud-stop" id="hudStop" title="Stop live flight">✕</div>`;
+      // Stop map gestures from triggering when interacting with the HUD
+      L.DomEvent.disableClickPropagation(d);
+      L.DomEvent.disableScrollPropagation(d);
+      document.body.appendChild(d);
+      document.body.classList.add('live-on');
+      d.querySelector('#hudToggle').onclick = () => {
+        d.classList.toggle('collapsed');
+        d.querySelector('#hudToggle').textContent = d.classList.contains('collapsed') ? '▴' : '▾';
+        // Map needs a size refresh so Leaflet repaints under the resized ribbon
+        setTimeout(() => map.invalidateSize(), 50);
+      };
+      d.querySelector('#hudStop').onclick = stopLiveFlight;
+      // After insertion, give Leaflet a beat to re-measure its container.
+      setTimeout(() => map.invalidateSize(), 50);
+      return d;
     }
 
     function _fmtPos(lat, lon) {
@@ -3704,28 +3754,100 @@
       el.style.color = isErr ? '#b91c1c' : '#6b7280';
     }
 
+    function _gpsAccuracyTier(accM) {
+      if (!Number.isFinite(accM)) return { bars: 2, cls: '', label: '' };
+      if (accM <= 8)  return { bars: 4, cls: '',     label: '' };
+      if (accM <= 20) return { bars: 3, cls: '',     label: '' };
+      if (accM <= 50) return { bars: 2, cls: 'weak', label: '' };
+      return { bars: 1, cls: 'weak', label: '' };
+    }
+
     function _updateHud(fix) {
       const hud = document.getElementById('liveHud');
       if (!hud) return;
       const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
-      set('hudGs', Number.isFinite(fix.gsKt) ? Math.round(fix.gsKt) : '—');
-      set('hudHdg', Number.isFinite(fix.hdgDeg) ? String(Math.round(fix.hdgDeg)).padStart(3, '0') : '—');
-      set('hudAlt', Number.isFinite(fix.altMslFt) ? Math.round(fix.altMslFt).toLocaleString() : '—');
-      let aglTxt = '—';
-      if (Number.isFinite(fix.altMslFt) && Number.isFinite(live.groundFt)) {
-        const agl = Math.max(0, Math.round(fix.altMslFt - live.groundFt));
-        aglTxt = agl.toLocaleString();
+      const setCls = (id, on, cls) => { const e = document.getElementById(id); if (e) e.classList.toggle(cls, !!on); };
+
+      const gs = Number.isFinite(fix.gsKt) ? Math.round(fix.gsKt) : null;
+      const hdg = Number.isFinite(fix.hdgDeg) ? Math.round(fix.hdgDeg) : null;
+      const alt = Number.isFinite(fix.altMslFt) ? Math.round(fix.altMslFt) : null;
+      const agl = (alt != null && Number.isFinite(live.groundFt))
+        ? Math.max(0, Math.round(alt - live.groundFt)) : null;
+
+      set('hudGs',  gs  != null ? gs.toString()  : '—');
+      set('hudHdg', hdg != null ? String(hdg).padStart(3, '0') : '—');
+      set('hudAlt', alt != null ? alt.toLocaleString() : '—');
+      set('hudAgl', agl != null ? agl.toLocaleString() : '—');
+
+      // Vertical speed (fpm) — derived from altitude delta if available
+      let vs = null;
+      if (alt != null && live.lastAltFt != null && live.lastAltAt) {
+        const dt = (fix.t - live.lastAltAt) / 1000;
+        if (dt > 0.5) vs = Math.round(((alt - live.lastAltFt) / dt) * 60);
       }
-      set('hudAgl', aglTxt);
-      set('hudPos', _fmtPos(fix.lat, fix.lon));
+      if (alt != null && (live.lastAltFt == null || (fix.t - live.lastAltAt) > 1500)) {
+        live.lastAltFt = alt; live.lastAltAt = fix.t;
+      }
+      // Smooth VS lightly
+      if (vs != null) live.smoothVs = (live.smoothVs == null) ? vs : Math.round(0.6 * live.smoothVs + 0.4 * vs);
+      set('hudVs', live.smoothVs != null ? (live.smoothVs > 0 ? '+' + live.smoothVs : String(live.smoothVs)) : '—');
+
+      // Distance / ETE to final destination along the planned route
       const toGo = _distanceToGoNm(fix.lat, fix.lon);
-      set('hudToGo', toGo != null ? `${toGo.toFixed(1)} NM` : '—');
+      set('hudToGo', toGo != null ? toGo.toFixed(1) : '—');
       const ete = (toGo != null && Number.isFinite(fix.gsKt) && fix.gsKt > 5) ? toGo / fix.gsKt : null;
       set('hudEte', _fmtEte(ete));
-      set('hudFixAge', '0s');
+
+      // Bearing to final destination (last waypoint of planned path)
+      const path = (typeof lastProfilePath !== 'undefined' && Array.isArray(lastProfilePath)) ? lastProfilePath : null;
+      let brg = null, finalLabel = null;
+      if (path && path.length) {
+        const dest = path[path.length - 1];
+        brg = Math.round(_bearingDeg([fix.lat, fix.lon], dest));
+        const args = (typeof lastProfileArgs !== 'undefined') ? lastProfileArgs : null;
+        if (args && args[2]) finalLabel = String(args[2]).toUpperCase();
+      }
+      set('hudBrg', brg != null ? String(brg).padStart(3, '0') : '—');
+      set('hudFinal', finalLabel || '—');
+
+      // GPS bars based on horizontal accuracy
+      const tier = _gpsAccuracyTier(fix.accM);
+      const bars = document.getElementById('hudGpsBars');
+      if (bars) {
+        bars.classList.remove('weak', 'lost');
+        if (tier.cls) bars.classList.add(tier.cls);
+        Array.from(bars.children).forEach((b, i) => {
+          b.style.visibility = (i < tier.bars) ? 'visible' : 'hidden';
+        });
+      }
+
+      // Highlight cells like the screenshot:
+      //  green when AGL is comfortably high (>= 500), amber 200-500, red < 200
+      const aglCell = document.getElementById('cellAgl');
+      if (aglCell) {
+        aglCell.classList.remove('ok','warn','alert','dim');
+        if (agl == null) aglCell.classList.add('dim');
+        else if (agl >= 500) aglCell.classList.add('ok');
+        else if (agl >= 200) aglCell.classList.add('warn');
+        else aglCell.classList.add('alert');
+      }
+      const vsCell = document.getElementById('cellVs');
+      if (vsCell) {
+        vsCell.classList.remove('ok','warn','alert','dim');
+        if (live.smoothVs == null) vsCell.classList.add('dim');
+        else if (live.smoothVs >= -100 && live.smoothVs <= 100) vsCell.classList.add('ok');
+      }
+
+      // Collapsed (compact bar) version
+      set('hudBarGs', (gs != null ? gs : '—') + ' kt');
+      set('hudBarHdg', (hdg != null ? String(hdg).padStart(3,'0') : '—') + '°');
+      set('hudBarAlt', (alt != null ? alt.toLocaleString() : '—') + ' ft');
+      set('hudBarToGo', toGo != null ? toGo.toFixed(1) + ' nm' : '—');
+      set('hudBarEte', _fmtEte(ete));
+
       hud.classList.remove('stale', 'lost');
       if (live.lostTimer) clearTimeout(live.lostTimer);
-      live.lostTimer = setTimeout(() => { hud.classList.add('stale'); set('hudFixAge', '5s+'); }, 5000);
+      live.lostTimer = setTimeout(() => { hud.classList.add('stale'); }, 5000);
     }
 
     function _onPosition(pos) {
@@ -3733,6 +3855,7 @@
       const lat = c.latitude, lon = c.longitude;
       const t = pos.timestamp || Date.now();
       const altMslFt = Number.isFinite(c.altitude) ? c.altitude * M_TO_FT : NaN;
+      const accM = Number.isFinite(c.accuracy) ? c.accuracy : NaN;
 
       // Ground speed: prefer device-provided, else derive from previous fix.
       let gsKt = NaN;
@@ -3797,7 +3920,7 @@
       }
 
       const fix = {
-        lat, lon, t, altMslFt,
+        lat, lon, t, altMslFt, accM,
         gsKt: live.smoothGsKt,
         hdgDeg: live.smoothHdgDeg,
       };
@@ -3806,10 +3929,12 @@
     }
 
     function _onPositionError(err) {
-      const map = { 1: 'permission denied', 2: 'position unavailable', 3: 'timeout' };
-      _setLiveStatus(`GPS error: ${map[err.code] || err.message}`, true);
+      const codeMsg = { 1: 'permission denied', 2: 'position unavailable', 3: 'timeout' };
+      _setLiveStatus(`GPS error: ${codeMsg[err.code] || err.message}`, true);
       const hud = document.getElementById('liveHud');
       if (hud) hud.classList.add('lost');
+      const bars = document.getElementById('hudGpsBars');
+      if (bars) { bars.classList.remove('weak'); bars.classList.add('lost'); }
     }
 
     async function startLiveFlight() {
@@ -3821,9 +3946,8 @@
         _setLiveStatus('GPS requires HTTPS. Open this page over https://', true);
         return;
       }
-      if (!live.hudCtl) {
-        live.hudCtl = _buildHud();
-        live.hudCtl.addTo(map);
+      if (!live.hudEl) {
+        live.hudEl = _buildHud();
       }
       _setLiveStatus('Acquiring GPS fix…');
       try {
@@ -3858,9 +3982,11 @@
         live.wakeLock = null;
       }
       if (live.lostTimer) { clearTimeout(live.lostTimer); live.lostTimer = null; }
-      if (live.hudCtl) {
-        try { map.removeControl(live.hudCtl); } catch {}
-        live.hudCtl = null;
+      if (live.hudEl) {
+        try { live.hudEl.remove(); } catch {}
+        live.hudEl = null;
+        document.body.classList.remove('live-on');
+        setTimeout(() => map.invalidateSize(), 50);
       }
       if (live.marker) { try { map.removeLayer(live.marker); } catch {} live.marker = null; }
       if (live.trail) { try { map.removeLayer(live.trail); } catch {} live.trail = null; }
@@ -3868,6 +3994,9 @@
       live.lastFix = null;
       live.smoothGsKt = null;
       live.smoothHdgDeg = null;
+      live.smoothVs = null;
+      live.lastAltFt = null;
+      live.lastAltAt = null;
       live.groundFt = null;
       const btn = document.getElementById('liveBtn');
       btn.textContent = '🛰 Start Live Flight';
