@@ -9,7 +9,7 @@
      - API calls (everything else under /): network-only (planner needs fresh data)
    Bump CACHE_VERSION on any breaking change so old clients drop the cache.
 */
-const CACHE_VERSION = 'gh-v7';
+const CACHE_VERSION = 'gh-v8';
 const APP_CACHE = `${CACHE_VERSION}-app`;
 const TILE_CACHE = `${CACHE_VERSION}-tiles`;
 

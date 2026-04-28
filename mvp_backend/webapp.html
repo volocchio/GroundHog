@@ -1695,6 +1695,22 @@
         lastProfilePath = path;  // store for click-to-map
         profileState.zoom = 1; profileState.panX = 0;  // reset zoom on new route
         drawProfile(data, depLabel, arrLabel, cruiseKt, maxClimbFpm, maxDescentFpm, climbSpeedKt, descentSpeedKt, terrainFollow, legsList, avoidAirspace, maxAgl);
+        // Render map glide corridor here — outside drawProfile so canvas errors can never block it.
+        try {
+          const _glideRatioForCorridor = (() => {
+            const code = document.getElementById('heliType').value;
+            const heli = typeof helicopterData !== 'undefined' ? helicopterData[code] : null;
+            const raw = heli ? heli.autorotation_glide_ratio : 0;
+            return raw > 0 ? raw : 4.0;
+          })();
+          renderMapGlideCorridor(path, data.dist_nm, data.is_water || [], null, data.ground_ft, 6076.12 / _glideRatioForCorridor);
+          const _cs = window._glideCorridorStats || { green: 0, yellow: 0, red: 0, runs: 0, total: 0 };
+          const _pct = _cs.total > 0 ? (n) => `${Math.round(100 * n / _cs.total)}%` : () => '—';
+          setProfileDebugInfo(`[v8] Corridor: ${_pct(_cs.green)} green / ${_pct(_cs.yellow)} yellow / ${_pct(_cs.red)} red • Glide ${_glideRatioForCorridor.toFixed(1)}:1`);
+        } catch (e) {
+          console.warn('[GroundHog] corridor render error', e);
+          setProfileDebugInfo(`[v8] Corridor error: ${e && e.message || e}`);
+        }
       } catch (e) { /* silent */ }
     }
 
@@ -2534,28 +2550,8 @@
         } catch (e) { /* canvas water tinting failed — non-fatal, corridor still renders */ }
       }
 
-      // Always-on continuous slope/glide corridor on the map.
-      // Runs regardless of water detection so the pilot sees landing-risk
-      // colour under every part of the route, not only over water.
-      try {
-        const _glideRatioForCorridor = (() => {
-          const code = document.getElementById('heliType').value;
-          const heli = typeof helicopterData !== 'undefined' ? helicopterData[code] : null;
-          const raw = heli ? heli.autorotation_glide_ratio : 0;
-          return raw > 0 ? raw : 4.0;
-        })();
-        const _descentPerNm = 6076.12 / _glideRatioForCorridor;
-        renderMapGlideCorridor(lastProfilePath, dist, isWater, fa, ground, _descentPerNm);
-        const stats = window._glideCorridorStats || { green: 0, yellow: 0, red: 0, runs: 0, total: 0 };
-        const pct = stats.total > 0 ? (n) => `${Math.round(100 * n / stats.total)}%` : () => '0%';
-        setProfileDebugInfo(
-          `Slope corridor: ${pct(stats.green)} green / ${pct(stats.yellow)} yellow / ${pct(stats.red)} red `
-          + `(${stats.runs} run${stats.runs === 1 ? '' : 's'}) • Water samples: ${waterSampleCount}/${dist.length} • Glide: ${_glideRatioForCorridor.toFixed(1)}:1`
-        );
-      } catch (e) {
-        glideCorridorGroup.clearLayers();
-        setProfileDebugInfo(`Slope corridor error: ${e && e.message || e}`);
-      }
+      // Map glide corridor is now rendered in fetchAndDrawProfile (above drawProfile call),
+      // so canvas errors here can never block it.
 
       // ── Airport markers at each leg boundary (drawn last, on top) ──
       // Scale leg distances so the last airport lands exactly at maxDist
