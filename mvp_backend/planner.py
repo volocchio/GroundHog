@@ -132,6 +132,7 @@ def terrain_avoid_leg(
     glide_ratio: float = 0,
     water_risk: float = 100,
     slope_threshold_deg: float = 15,
+    enforce_slope: bool = False,
     timeout_s: float = 90.0,
 ) -> Optional[LegResult]:
     """Find terrain-avoiding path between airports using grid A*.
@@ -144,6 +145,8 @@ def terrain_avoid_leg(
     avoidance_tag = ""
     if water_risk < 100 and glide_ratio > 0:
         avoidance_tag = f"W{water_risk:.0f}G{glide_ratio:.1f}"
+    if enforce_slope and slope_threshold_deg > 0 and glide_ratio > 0:
+        avoidance_tag += f"S{slope_threshold_deg:.0f}"
     # ── terrain intelligence quick-reject ──
     # Only hard-reject when the precomputed data found a *specific* minimum
     # viable altitude (proving the data covers the corridor).  When
@@ -263,6 +266,31 @@ def terrain_avoid_leg(
                 water_risk=water_risk,
                 slope_threshold_deg=slope_threshold_deg,
             )
+
+        if enforce_slope and glide_ratio > 0 and slope_threshold_deg > 0:
+            # Glide reach assumed from cruise AGL buffer (min_agl_ft, with a
+            # 1000 ft floor so en-route AGL gives realistic glide range).
+            slope_glide_alt = max(min_agl_ft, 1000.0)
+            slope_block_2d = _build_slope_block(
+                grid, elev_ft, n_lat, n_lon,
+                slope_threshold_deg=slope_threshold_deg,
+                glide_ratio=glide_ratio,
+                glide_alt_ft=slope_glide_alt,
+            )
+            if slope_block_2d is not None:
+                # Apply block to passable, but never strand start/goal.
+                si, sj = start
+                gi, gj = goal
+                slope_block_2d[si][sj] = False
+                slope_block_2d[gi][gj] = False
+                for i in range(n_lat):
+                    for j in range(n_lon):
+                        if slope_block_2d[i][j]:
+                            passable[i][j] = False
+                # Re-check start/goal (defensive)
+                if not passable[si][sj] or not passable[gi][gj]:
+                    margin_km += margin_step_km
+                    continue
 
         path_idx = astar_path(grid, passable, start, goal,
                               elev_ft=elev_ft_2d,
@@ -634,6 +662,7 @@ def plan_route_multi_stop(
     glide_ratio: float = 0,
     water_risk: float = 100,
     slope_threshold_deg: float = 15,
+    enforce_slope: bool = False,
 ) -> dict:
     """Multi-stop route planner (unbounded stops) minimizing total time.
 
@@ -742,7 +771,8 @@ def plan_route_multi_stop(
                                         descent_speed_kt=descent_speed_kt,
                                         glide_ratio=glide_ratio,
                                         water_risk=water_risk,
-                                        slope_threshold_deg=slope_threshold_deg)
+                                        slope_threshold_deg=slope_threshold_deg,
+                                        enforce_slope=enforce_slope)
                 if not leg:
                     leg_cache[key] = (float("inf"), float("inf"), float("inf"), [])
                     continue
@@ -771,14 +801,18 @@ def plan_route_multi_stop(
                 heapq.heappush(pq, (new_t, nxt_ap.icao))
 
     if arr.icao not in best_time:
+        suggestions = [
+            "Increase max detour factor",
+            "Increase max MSL",
+            "Decrease min AGL",
+        ]
+        if enforce_slope:
+            suggestions.insert(0, "Disable Enforce Slope or raise the slope threshold")
         return {
             "type": "no_route",
-            "message": "No route found under current constraints.",
-            "suggestions": [
-                "Increase max detour factor",
-                "Increase max MSL",
-                "Decrease min AGL",
-            ],
+            "message": "No slope-safe route found under current constraints." if enforce_slope
+                       else "No route found under current constraints.",
+            "suggestions": suggestions,
             "debug": {
                 "max_leg_nm": max_leg_nm,
                 "expanded_nodes": expanded,
@@ -1223,6 +1257,113 @@ def _detect_water_grid(n_lat: int, n_lon: int, elev_ft: list) -> list[list[bool]
     return is_water
 
 
+def _build_slope_block(grid: GridSpec, elev_ft: list, n_lat: int, n_lon: int,
+                       slope_threshold_deg: float, glide_ratio: float,
+                       glide_alt_ft: float) -> list[list[bool]] | None:
+    """Return a 2D bool mask of cells that must be blocked under enforce-slope.
+
+    A cell is blocked when its local terrain slope (max to any 8-neighbor)
+    exceeds slope_threshold_deg AND the nearest gentle (sub-threshold) cell
+    is farther than the autorotation glide reach from glide_alt_ft above
+    terrain. Cells inside glide reach of a safe-landing cell stay passable
+    even if locally steep — matches the corridor "yellow" definition.
+
+    Returns None if slope filtering is disabled or no cell is steep.
+    """
+    if slope_threshold_deg <= 0 or slope_threshold_deg >= 90 or glide_ratio <= 0:
+        return None
+
+    import math
+    from collections import deque
+
+    # Cell footprint in feet for slope math.
+    mid_lat = grid.lat0 + (n_lat / 2) * grid.dlat
+    nm_per_cell_lat = grid.dlat / _deg_per_km_lat() / 1.852
+    nm_per_cell_lon = grid.dlon / _deg_per_km_lon(mid_lat) / 1.852
+    ft_lat = nm_per_cell_lat * 6076.12
+    ft_lon = nm_per_cell_lon * 6076.12
+    ft_diag = math.hypot(ft_lat, ft_lon)
+    cell_nm = 0.5 * (nm_per_cell_lat + nm_per_cell_lon)
+
+    INF = float("inf")
+    is_steep = [[False] * n_lon for _ in range(n_lat)]
+    any_steep = False
+    for i in range(n_lat):
+        for j in range(n_lon):
+            e_ij = elev_ft[i * n_lon + j]
+            if e_ij == INF:
+                continue
+            max_slope = 0.0
+            for di in (-1, 0, 1):
+                ni = i + di
+                if ni < 0 or ni >= n_lat:
+                    continue
+                for dj in (-1, 0, 1):
+                    if di == 0 and dj == 0:
+                        continue
+                    nj = j + dj
+                    if nj < 0 or nj >= n_lon:
+                        continue
+                    ek = elev_ft[ni * n_lon + nj]
+                    if ek == INF:
+                        continue
+                    if di != 0 and dj != 0:
+                        run_ft = ft_diag
+                    elif di != 0:
+                        run_ft = ft_lat
+                    else:
+                        run_ft = ft_lon
+                    rise_ft = abs(ek - e_ij)
+                    slope_deg = math.degrees(math.atan2(rise_ft, run_ft))
+                    if slope_deg > max_slope:
+                        max_slope = slope_deg
+            if max_slope > slope_threshold_deg:
+                is_steep[i][j] = True
+                any_steep = True
+
+    if not any_steep:
+        return None
+
+    # BFS from every gentle cell; distance is in cell-units (8-connected).
+    dist = [[INF] * n_lon for _ in range(n_lat)]
+    q = deque()
+    for i in range(n_lat):
+        for j in range(n_lon):
+            if not is_steep[i][j]:
+                dist[i][j] = 0.0
+                q.append((i, j))
+    while q:
+        ci, cj = q.popleft()
+        cd = dist[ci][cj]
+        for di in (-1, 0, 1):
+            ni = ci + di
+            if ni < 0 or ni >= n_lat:
+                continue
+            for dj in (-1, 0, 1):
+                if di == 0 and dj == 0:
+                    continue
+                nj = cj + dj
+                if nj < 0 or nj >= n_lon:
+                    continue
+                step = 1.4142 if (di != 0 and dj != 0) else 1.0
+                nd = cd + step
+                if nd < dist[ni][nj]:
+                    dist[ni][nj] = nd
+                    q.append((ni, nj))
+
+    glide_range_nm = max(0.0, glide_alt_ft) * glide_ratio / 6076.12
+    glide_cells = glide_range_nm / cell_nm if cell_nm > 0 else 0.0
+
+    block = [[False] * n_lon for _ in range(n_lat)]
+    any_blocked = False
+    for i in range(n_lat):
+        for j in range(n_lon):
+            if is_steep[i][j] and dist[i][j] > glide_cells:
+                block[i][j] = True
+                any_blocked = True
+    return block if any_blocked else None
+
+
 def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
                       glide_ratio: float, cruise_alt_ft: float,
                       water_risk: float, slope_threshold_deg: float = 15) -> tuple:
@@ -1434,6 +1575,7 @@ def terrain_avoid_leg_streaming(
     glide_ratio: float = 0,
     water_risk: float = 100,
     slope_threshold_deg: float = 15,
+    enforce_slope: bool = False,
 ):
     """Generator that yields A* exploration events for one leg.
 
@@ -1457,6 +1599,8 @@ def terrain_avoid_leg_streaming(
         _atag += "|BORDERS"
     if water_risk < 100 and glide_ratio > 0:
         _atag += f"|W{water_risk:.0f}G{glide_ratio:.1f}S{slope_threshold_deg:.0f}"
+    if enforce_slope and slope_threshold_deg > 0 and glide_ratio > 0:
+        _atag += f"|ES{slope_threshold_deg:.0f}"
     avoidance_tag = _atag
 
     # ── terrain intelligence quick-reject ──
@@ -1663,6 +1807,28 @@ def terrain_avoid_leg_streaming(
                     for i in range(n_lat):
                         for j in range(n_lon):
                             airspace_cost_2d[i][j] += backtrack_cost[i][j]
+
+        # ── Enforce slope: hard-block steep cells beyond glide reach of safe terrain ──
+        if enforce_slope and glide_ratio > 0 and slope_threshold_deg > 0:
+            slope_glide_alt = max(min_agl_ft, 1000.0)
+            slope_block_2d = _build_slope_block(
+                grid, elev_ft, n_lat, n_lon,
+                slope_threshold_deg=slope_threshold_deg,
+                glide_ratio=glide_ratio,
+                glide_alt_ft=slope_glide_alt,
+            )
+            if slope_block_2d is not None:
+                si, sj = start
+                gi, gj = goal
+                slope_block_2d[si][sj] = False
+                slope_block_2d[gi][gj] = False
+                for i in range(n_lat):
+                    for j in range(n_lon):
+                        if slope_block_2d[i][j]:
+                            passable[i][j] = False
+                if not passable[si][sj] or not passable[gi][gj]:
+                    margin_km += margin_step_km
+                    continue
 
         for event in astar_path_streaming(grid, passable, start, goal, yield_every=30,
                                            elev_ft=elev_ft_2d,

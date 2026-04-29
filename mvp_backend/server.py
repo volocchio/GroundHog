@@ -103,6 +103,8 @@ class RouteRequest(BaseModel):
                               description="Water crossing risk tolerance: 0=must glide to shore, 100=ignore water.")
     slope_threshold_deg: float = Field(default=15, ge=5, le=45,
                                        description="Max acceptable landing slope in degrees.")
+    enforce_slope: bool = Field(default=False,
+                                description="If true, planner hard-blocks cells whose terrain slope exceeds slope_threshold_deg AND are beyond autorot glide reach of safer ground.")
     glide_ratio: float = Field(default=4.0, ge=0, le=20,
                                description="Autorotation glide ratio (horizontal:vertical).")
 
@@ -359,6 +361,7 @@ def route(req: RouteRequest):
         glide_ratio=req.glide_ratio,
         water_risk=req.water_risk,
         slope_threshold_deg=req.slope_threshold_deg,
+        enforce_slope=req.enforce_slope,
     )
     return result
 
@@ -588,6 +591,7 @@ def route_stream(req: RouteRequest):
                             glide_ratio=req.glide_ratio,
                             water_risk=req.water_risk,
                             slope_threshold_deg=req.slope_threshold_deg,
+                            enforce_slope=req.enforce_slope,
                         ):
                             if event.get("type") == "path":
                                 event["leg_index"] = global_leg

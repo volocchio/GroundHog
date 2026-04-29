@@ -430,6 +430,10 @@
         <input id="slopeThreshold" type="number" value="15" min="5" max="45" step="1" style="width:70px; text-align:right" title="Max acceptable landing slope in degrees" />
         <span class="muted" style="font-size:12px">° (green &lt;5°, yellow 5–15°, red &gt;15°)</span>
       </div>
+      <div style="display:flex; align-items:center; gap:6px; margin-top:4px">
+        <input type="checkbox" id="enforceSlope" style="width:auto; margin:0" />
+        <label for="enforceSlope" style="margin:0; font-size:12px; cursor:pointer" title="Hard-block route through cells whose terrain slope exceeds the threshold AND are beyond autorot glide reach of safer ground.">Enforce slope (route around red cells)</label>
+      </div>
 
       <label>Apply landing-slope check to:</label>
       <div class="radio-group" style="margin-top:4px">
@@ -3248,6 +3252,7 @@
         water_risk: Number(document.getElementById('waterRisk').value),
         glide_ratio: (helicopterData[document.getElementById('heliType').value] || {}).autorotation_glide_ratio || 4.0,
         slope_threshold_deg: Number(document.getElementById('slopeThreshold').value) || 15,
+        enforce_slope: !!document.getElementById('enforceSlope')?.checked,
         fuel_load_gal: Number(document.getElementById('fuelLoadGal').value) || 0,
         waypoints,
       };
@@ -3756,6 +3761,7 @@
         avoid_borders: payload.avoid_borders,
         water_risk: payload.water_risk,
         slope_threshold_deg: payload.slope_threshold_deg,
+        enforce_slope: payload.enforce_slope,
         autorotation_speed_kt: Number(document.getElementById('autorotSpeedKt').value) || 60,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(routes));
@@ -3832,6 +3838,7 @@
       document.getElementById('avoidBorders').checked = r.avoid_borders !== false;
       document.getElementById('waterRisk').value = r.water_risk != null ? r.water_risk : 0;
       document.getElementById('slopeThreshold').value = r.slope_threshold_deg != null ? r.slope_threshold_deg : 15;
+      if (document.getElementById('enforceSlope')) document.getElementById('enforceSlope').checked = !!r.enforce_slope;
       if (r.autorotation_speed_kt) document.getElementById('autorotSpeedKt').value = r.autorotation_speed_kt;
       updateGlideInfo();
       if (r.avoid_airspace) {
