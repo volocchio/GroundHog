@@ -445,7 +445,7 @@
       </div>
 
       <div style="display:flex; align-items:center; gap:6px; margin:8px 0 0">
-        <label for="autorotSpeedKt" style="margin:0; font-size:13px">Autorotation speed (KIAS)</label>
+        <label id="autorotSpeedLabel" for="autorotSpeedKt" style="margin:0; font-size:13px">Autorotation speed (KIAS)</label>
         <input id="autorotSpeedKt" type="number" value="60" min="30" max="150" step="1" style="width:60px; text-align:right" title="Best autorotation glide speed" />
       </div>
 
@@ -483,7 +483,7 @@
       <div id="map"></div>
       <div id="profileWrap">
         <div class="profile-title">Elevation Profile (side view)
-          <span class="muted" style="font-size:11px; font-weight:normal; margin-left:8px">Blue = detected water, green/yellow/red tint = autorotation landing status for that water segment</span>
+          <span id="profileLandingCaption" class="muted" style="font-size:11px; font-weight:normal; margin-left:8px">Blue = detected water, green/yellow/red tint = autorotation landing status for that water segment</span>
           <span id="profileDebugInfo" class="muted" style="font-size:11px; font-weight:normal; margin-left:8px"></span>
           <span class="profile-controls">
             <label style="font-size:11px; font-weight:normal; margin:0 4px 0 0">Corridor:</label>
@@ -538,6 +538,14 @@
     function updateGlideInfo() {
       const code = document.getElementById('heliType').value;
       const h = helicopterData[code];
+      const isFW = !!(h && h.airframe_class === 'fixed_wing');
+      // Update class-aware labels.
+      const lbl = document.getElementById('autorotSpeedLabel');
+      if (lbl) lbl.textContent = isFW ? 'Best glide speed (KIAS)' : 'Autorotation speed (KIAS)';
+      const cap = document.getElementById('profileLandingCaption');
+      if (cap) cap.textContent = isFW
+        ? 'Blue = detected water, green/yellow/red tint = power-off glide reach for that water segment'
+        : 'Blue = detected water, green/yellow/red tint = autorotation landing status for that water segment';
       const infoDiv = document.getElementById('glideInfo');
       const risk = Number(waterRiskSel.value);
       if (risk >= 100) {
@@ -549,7 +557,8 @@
       const glideNm = (msl * ratio / 6076.12).toFixed(1);
       const mult = risk <= 0 ? 1.0 : risk <= 25 ? 1.5 : risk <= 50 ? 2.0 : 3.0;
       const effNm = (glideNm * mult).toFixed(1);
-      infoDiv.textContent = `Glide ratio ${ratio}:1 • ${glideNm} NM from ${msl}' MSL` + (mult > 1 ? ` • Effective: ${effNm} NM` : '');
+      const prefix = isFW ? 'Power-off glide ratio' : 'Autorotation glide ratio';
+      infoDiv.textContent = `${prefix} ${ratio}:1 • ${glideNm} NM from ${msl}' MSL` + (mult > 1 ? ` • Effective: ${effNm} NM` : '');
     }
 
     // Update glide info when MSL changes
@@ -2996,6 +3005,15 @@
       if (!el) return;
       const cs = window._glideCorridorStats;
       if (!cs || !cs.totalNm || cs.totalNm <= 0) { el.innerHTML = ''; return; }
+      // Class-aware terminology: helicopter -> autorotation; fixed-wing -> power-off glide.
+      const _heli = helicopterData[document.getElementById('heliType').value] || {};
+      const isFW = _heli.airframe_class === 'fixed_wing';
+      const tGlideMode = isFW ? 'power-off glide' : 'autorotation';
+      const tGlideShort = isFW ? 'glide' : 'autorot';
+      const tEmergency = isFW ? 'engine-out glide' : 'engine-out autorotation';
+      const tRatioLabel = isFW ? 'power-off glide ratio' : 'autorotation ratio';
+      const tFlatHazard = isFW ? 'forced-landing field' : 'helicopter-suitable landing site';
+      const _glideRatio = _heli.autorotation_glide_ratio || (isFW ? 9.0 : 4.0);
       const total = cs.totalNm;
       const pctGreen = 100 * cs.greenNm / total;
       const pctYellow = 100 * cs.yellowNm / total;
@@ -3029,18 +3047,18 @@
       const mins = (v) => v < 1 ? v.toFixed(1) : Math.round(v).toString();
       // Build the breakdown rows.
       const rows = [];
-      rows.push(`<div style="display:flex; align-items:center; gap:6px; font-size:12px"><span style="display:inline-block; width:10px; height:10px; background:#22c55e; border-radius:2px"></span><span><b>${pct(pctGreen)}%</b> survivable — gentle terrain or water within glide of shore</span></div>`);
-      rows.push(`<div style="display:flex; align-items:center; gap:6px; font-size:12px"><span style="display:inline-block; width:10px; height:10px; background:#eab308; border-radius:2px"></span><span><b>${pct(pctYellow)}%</b> marginal — 5–${cs.slopeThreshold}° slope, rough but flyable autorot</span></div>`);
-      rows.push(`<div style="display:flex; align-items:center; gap:6px; font-size:12px"><span style="display:inline-block; width:10px; height:10px; background:#ef4444; border-radius:2px"></span><span><b>${pct(pctRed)}%</b> hostile — slope &gt;${cs.slopeThreshold}° or water beyond glide${pctTerrainRed > 0 && pctWaterRed > 0 ? ` (terrain ${pct(pctTerrainRed)}% · water ${pct(pctWaterRed)}%)` : ''}</span></div>`);
+      rows.push(`<div style="display:flex; align-items:center; gap:6px; font-size:12px"><span style="display:inline-block; width:10px; height:10px; background:#22c55e; border-radius:2px"></span><span><b>${pct(pctGreen)}%</b> survivable — gentle terrain or water within ${tGlideShort} of shore</span></div>`);
+      rows.push(`<div style="display:flex; align-items:center; gap:6px; font-size:12px"><span style="display:inline-block; width:10px; height:10px; background:#eab308; border-radius:2px"></span><span><b>${pct(pctYellow)}%</b> marginal — 5–${cs.slopeThreshold}° slope, rough but flyable ${tGlideMode}</span></div>`);
+      rows.push(`<div style="display:flex; align-items:center; gap:6px; font-size:12px"><span style="display:inline-block; width:10px; height:10px; background:#ef4444; border-radius:2px"></span><span><b>${pct(pctRed)}%</b> hostile — slope &gt;${cs.slopeThreshold}° or water beyond ${tGlideShort}${pctTerrainRed > 0 && pctWaterRed > 0 ? ` (terrain ${pct(pctTerrainRed)}% · water ${pct(pctWaterRed)}%)` : ''}</span></div>`);
       const callouts = [];
       if (cs.longestRedRunNm > 0.5) {
         callouts.push(`<li>Longest unsurvivable corridor: <b>${nm(cs.longestRedRunNm)} NM</b> (about <b>${mins(minLongest)} min</b> at ${Math.round(kt)} kt) — if the engine quits inside this window, you're committed to the best of bad options.</li>`);
       }
       if (cs.redNm > 0.5) {
-        callouts.push(`<li>Total time engine-out exposed: <b>${mins(minRed)} min</b> across the route at planned cruise.</li>`);
+        callouts.push(`<li>Total time ${tEmergency} exposed: <b>${mins(minRed)} min</b> across the route at planned cruise.</li>`);
       }
       if (cs.waterRedNm > 0.1 && pctWaterRed >= 5) {
-        callouts.push(`<li>Water exposure beyond glide-to-shore: <b>${nm(cs.waterRedNm)} NM</b> — brief ditching technique and verify life-vests/PFDs aboard.</li>`);
+        callouts.push(`<li>Water exposure beyond ${tGlideShort}-to-shore: <b>${nm(cs.waterRedNm)} NM</b> — brief ditching technique and verify life-vests/PFDs aboard.</li>`);
       }
       if (callouts.length === 0) {
         callouts.push(`<li>No significant unsurvivable segments. Standard emergency briefing applies.</li>`);
@@ -3060,7 +3078,7 @@
           <ul style="margin:8px 0 0 0; padding-left:18px; font-size:12px; color:#374151">
             ${callouts.join('')}
           </ul>
-          <div style="font-size:10px; color:#6b7280; margin-top:6px">Distance-weighted along ${nm(total)} NM. Glide reach computed at the planned helicopter's autorotation ratio. Slope threshold = ${cs.slopeThreshold}°.</div>
+          <div style="font-size:10px; color:#6b7280; margin-top:6px">Distance-weighted along ${nm(total)} NM. Glide reach computed at ${_glideRatio.toFixed(1)}:1 ${tRatioLabel}. Slope threshold = ${cs.slopeThreshold}°.</div>
         </div>
       `;
     }
