@@ -3122,6 +3122,132 @@
       let html = `<div style="font-weight:600; margin-top:10px">Navigation Log</div>`;
       html += `<div style="margin:4px 0; font-size:0.9em">${route}${gcInfo}</div>`;
 
+      // ── Mission Performance Summary (density altitude / ceiling / hover) ──
+      // Always render this when we have any per-leg performance data; it's the
+      // pilot's at-a-glance answer to "can my aircraft actually fly this
+      // mission today at this OAT and weight?"
+      const _isFW = !!(heliInfo && heliInfo.helicopter && heliInfo.helicopter.airframe_class === 'fixed_wing');
+      const _hLegs = legs.filter(l => l.heliPerf);
+      if (heliInfo && _hLegs.length > 0) {
+        const heliDict = heliInfo.helicopter || {};
+        const acName = heliDict.name || heliInfo.departure.name || heliDict.type_code || 'Aircraft';
+        const oat = heliInfo.oat_c;
+        const isa = heliInfo.departure.isa_deviation_c;
+        const isaTxt = `ISA${isa >= 0 ? '+' : ''}${isa}°C`;
+        // Aggregate worst-case across all legs.
+        let maxDaFt = 0, maxDaPhase = '', maxDaLeg = 0;
+        let maxEnroutePa = 0, maxEnrouteLeg = 0;
+        let minRoc = null, minRocLeg = 0, minRocDa = 0;
+        let maxHogeDeficit = 0, maxHogeLeg = 0, maxHogeDa = 0;
+        let maxHigeDeficit = 0, maxHigeLeg = 0, maxHigeDa = 0;
+        let ceilingExceededLegs = [];
+        let blockerLegs = 0, warningLegs = 0;
+        const heliMaxRoc = heliDict.max_roc_fpm || 0;
+        const serviceCeilDa = heliDict.service_ceiling_da_ft || 0;
+        legs.forEach((leg, i) => {
+          const hp = leg.heliPerf; if (!hp) return;
+          if ((hp.blockers || []).length) blockerLegs++;
+          else if ((hp.warnings || []).length) warningLegs++;
+          const phases = hp.phases || {};
+          for (const [name, p] of Object.entries(phases)) {
+            if (!p) continue;
+            if ((p.density_alt_ft || 0) > maxDaFt) {
+              maxDaFt = p.density_alt_ft; maxDaPhase = name; maxDaLeg = i + 1;
+            }
+            if (name === 'enroute_max' && (p.pressure_alt_ft || 0) > maxEnroutePa) {
+              maxEnroutePa = p.pressure_alt_ft; maxEnrouteLeg = i + 1;
+            }
+            const roc = p.max_roc_fpm;
+            if (typeof roc === 'number' && (minRoc === null || roc < minRoc)) {
+              minRoc = roc; minRocLeg = i + 1; minRocDa = p.density_alt_ft || 0;
+            }
+            if (p.at_service_ceiling) ceilingExceededLegs.push(i + 1);
+            if (!_isFW) {
+              const gw = hp.gross_weight_lb || 0;
+              const hoge = p.hoge_max_gw_lb || 0;
+              const hige = p.hige_max_gw_lb || 0;
+              if (gw > 0 && hige > 0 && gw > hige) {
+                const def = gw - hige;
+                if (def > maxHigeDeficit) { maxHigeDeficit = def; maxHigeLeg = i + 1; maxHigeDa = p.density_alt_ft || 0; }
+              } else if (gw > 0 && hoge > 0 && gw > hoge) {
+                const def = gw - hoge;
+                if (def > maxHogeDeficit) { maxHogeDeficit = def; maxHogeLeg = i + 1; maxHogeDa = p.density_alt_ft || 0; }
+              }
+            }
+          }
+        });
+        // Estimated ceiling at current weight & OAT (uses helper already in file).
+        let estCeilMsl = null, plannedMaxMsl = null, ceilingMargin = null;
+        try {
+          const gwForCeil = grossWeightLb || (heliDict.max_gross_weight_lb || 0);
+          estCeilMsl = estimatePerformanceCeilingMsl(heliDict.type_code, oat, gwForCeil);
+          plannedMaxMsl = Number(document.getElementById('maxMsl')?.value) || 0;
+          if (estCeilMsl && plannedMaxMsl) ceilingMargin = estCeilMsl - plannedMaxMsl;
+        } catch (e) { /* non-fatal */ }
+        // Determine status: red (blockers / cannot reach planned), amber (warnings or marginal climb), green (clean).
+        let statusColor, statusBg, statusIcon, statusHeadline;
+        const cantReachPlanned = (ceilingMargin !== null && ceilingMargin < 0);
+        if (blockerLegs > 0 || cantReachPlanned) {
+          statusColor = '#b91c1c'; statusBg = '#fee2e2'; statusIcon = '🚫';
+          statusHeadline = cantReachPlanned
+            ? `${acName} cannot reach planned ${Math.round(plannedMaxMsl).toLocaleString()}' MSL at ${oat}°C — estimated performance ceiling is ${Math.round(estCeilMsl).toLocaleString()}' MSL.`
+            : `${blockerLegs} leg${blockerLegs > 1 ? 's' : ''} have hard performance blockers at this OAT and weight.`;
+        } else if (warningLegs > 0 || (minRoc !== null && minRoc < 200)) {
+          statusColor = '#b45309'; statusBg = '#fffbeb'; statusIcon = '⚠️';
+          statusHeadline = `${acName} can complete this mission, but expect degraded performance at altitude. Brief the marginal segments below.`;
+        } else {
+          statusColor = '#15803d'; statusBg = '#f0fdf4'; statusIcon = '✅';
+          statusHeadline = `${acName} has comfortable performance margins for this mission at ${oat}°C / ${isaTxt}.`;
+        }
+        // Build callout bullets.
+        const bullets = [];
+        if (estCeilMsl && plannedMaxMsl) {
+          const mTxt = ceilingMargin >= 0
+            ? `<span style="color:#15803d">+${Math.round(ceilingMargin).toLocaleString()}' margin</span>`
+            : `<span style="color:#b91c1c">${Math.round(ceilingMargin).toLocaleString()}' shortfall</span>`;
+          bullets.push(`<li>Planned max altitude <b>${Math.round(plannedMaxMsl).toLocaleString()}'</b> MSL vs estimated ceiling <b>${Math.round(estCeilMsl).toLocaleString()}'</b> MSL at ${oat}°C — ${mTxt}.</li>`);
+        }
+        if (maxDaFt > 0) {
+          const ceilPctTxt = serviceCeilDa > 0 ? ` (${Math.round(100 * maxDaFt / serviceCeilDa)}% of service ceiling DA)` : '';
+          bullets.push(`<li>Max density altitude on route: <b>${Math.round(maxDaFt).toLocaleString()}' DA</b>${ceilPctTxt} — ${maxDaPhase.replace('_', ' ')} of leg ${maxDaLeg}.</li>`);
+        }
+        if (minRoc !== null && heliMaxRoc > 0) {
+          const pctRoc = Math.round(100 * minRoc / heliMaxRoc);
+          if (minRoc < 200) bullets.push(`<li>Worst climb performance: only <b>${Math.round(minRoc)} fpm</b> at ${Math.round(minRocDa).toLocaleString()}' DA on leg ${minRocLeg} (${pctRoc}% of sea-level max ${heliMaxRoc} fpm). Plan a long shallow climb — do not expect book numbers.</li>`);
+          else if (minRoc < 400) bullets.push(`<li>Reduced climb performance: <b>${Math.round(minRoc)} fpm</b> at ${Math.round(minRocDa).toLocaleString()}' DA on leg ${minRocLeg} (${pctRoc}% of sea-level).</li>`);
+        }
+        if (!_isFW && maxHigeDeficit > 0) {
+          const fwPG = heliDict.fuel_weight_lb_per_gal || 6.0;
+          bullets.push(`<li><b>HIGE exceeded</b> by ${Math.round(maxHigeDeficit)} lb at ${Math.round(maxHigeDa).toLocaleString()}' DA on leg ${maxHigeLeg}. Plan run-on landing/takeoff or off-load <b>${(maxHigeDeficit / fwPG).toFixed(1)} gal fuel</b> / ${Math.round(maxHigeDeficit)} lb payload.</li>`);
+        } else if (!_isFW && maxHogeDeficit > 0) {
+          const fwPG = heliDict.fuel_weight_lb_per_gal || 6.0;
+          bullets.push(`<li><b>HOGE exceeded</b> by ${Math.round(maxHogeDeficit)} lb at ${Math.round(maxHogeDa).toLocaleString()}' DA on leg ${maxHogeLeg}. Stay in ground effect, no pinnacle/confined ops, or off-load <b>${(maxHogeDeficit / fwPG).toFixed(1)} gal fuel</b> / ${Math.round(maxHogeDeficit)} lb payload.</li>`);
+        }
+        if (ceilingExceededLegs.length > 0) {
+          bullets.push(`<li><b>Service ceiling exceeded</b> on leg${ceilingExceededLegs.length > 1 ? 's' : ''} ${ceilingExceededLegs.join(', ')} — the aircraft physically cannot maintain the altitude these legs demand.</li>`);
+        }
+        if (bullets.length === 0) {
+          bullets.push(`<li>No critical performance flags. Standard density-altitude airmanship still applies on hot/high days.</li>`);
+        }
+        const className = _isFW ? 'Fixed-Wing' : 'Helicopter';
+        const hoverNote = _isFW ? '' : ' hover/HOGE/HIGE,';
+        html += `
+          <div style="margin:8px 0 12px; border:1px solid ${statusColor}33; border-radius:10px; padding:10px 12px; background:${statusBg}">
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px">
+              <div style="font-size:22px; line-height:1">${statusIcon}</div>
+              <div>
+                <div style="font-weight:600; color:#111827">${className} Mission Performance Summary</div>
+                <div style="font-size:12px; color:#374151; margin-top:2px">${statusHeadline}</div>
+              </div>
+            </div>
+            <ul style="margin:6px 0 0 0; padding-left:18px; font-size:12px; color:#374151">
+              ${bullets.join('')}
+            </ul>
+            <div style="font-size:10px; color:#6b7280; margin-top:6px">Conditions: OAT ${oat}°C (${isaTxt}). Per-phase climb,${hoverNote} and ceiling margins evaluated at planned weight and burn. See the per-leg table below for full numbers.</div>
+          </div>
+        `;
+      }
+
       // Departure / Arrival elevation & DA summary
       if (heliInfo) {
         const depElev = heliInfo.departure.pressure_alt_ft;
@@ -3278,11 +3404,14 @@
             + `</div>`;
         });
         if (hasWarnings) {
+          const _isFWAlerts = !!(heliInfo && heliInfo.helicopter && heliInfo.helicopter.airframe_class === 'fixed_wing');
+          const alertTitle = _isFWAlerts ? '✈️ Fixed-Wing Performance Alerts (per leg)' : '🚁 Helicopter Performance Alerts (per leg)';
           html += `<div style="margin-top:10px; border:1px solid #fbbf24; border-radius:8px; padding:8px; background:#fffbeb">`
-            + `<div style="font-weight:600; font-size:0.9em; margin-bottom:4px">🚁 Helicopter Performance Alerts</div>`
+            + `<div style="font-weight:600; font-size:0.9em; margin-bottom:4px">${alertTitle}</div>`
             + perfHtml + `</div>`;
         } else {
-          html += `<div style="margin-top:8px; color:#16a34a; font-size:0.85em">✅ Helicopter performance OK for all legs at current conditions.</div>`;
+          const _isFWOk = !!(heliInfo && heliInfo.helicopter && heliInfo.helicopter.airframe_class === 'fixed_wing');
+          html += `<div style="margin-top:8px; color:#16a34a; font-size:0.85em">✅ ${_isFWOk ? 'Aircraft' : 'Helicopter'} performance OK for all legs at current conditions.</div>`;
         }
       }
 
