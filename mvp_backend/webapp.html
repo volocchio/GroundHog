@@ -1717,10 +1717,10 @@
             const raw = heli ? heli.autorotation_glide_ratio : 0;
             return raw > 0 ? raw : 4.0;
           })();
-          renderMapGlideCorridor(path, data.dist_nm, data.is_water || [], null, data.ground_ft, 6076.12 / _glideRatioForCorridor);
+          renderMapGlideCorridor(path, data.dist_nm, data.is_water || [], window._lastProfileFa || null, data.ground_ft, 6076.12 / _glideRatioForCorridor);
           const _cs = window._glideCorridorStats || { green: 0, yellow: 0, red: 0, runs: 0, total: 0 };
           const _pct = _cs.total > 0 ? (n) => `${Math.round(100 * n / _cs.total)}%` : () => '—';
-          setProfileDebugInfo(`[v8] Corridor: ${_pct(_cs.green)} green / ${_pct(_cs.yellow)} yellow / ${_pct(_cs.red)} red • Glide ${_glideRatioForCorridor.toFixed(1)}:1`);
+          setProfileDebugInfo(`[v9] Corridor: ${_pct(_cs.green)} green / ${_pct(_cs.yellow)} yellow / ${_pct(_cs.red)} red • Glide ${_glideRatioForCorridor.toFixed(1)}:1 (airframe-aware reach)`);
           try { renderRiskAssessment(cruiseKt); } catch (e) { console.warn('[GroundHog] risk assessment render error', e); }
         } catch (e) {
           console.warn('[GroundHog] corridor render error', e);
@@ -2295,6 +2295,12 @@
         }
 
         for (let i = 0; i < dist.length; i++) fa[i] = smoothed[i];
+
+        // Stash the computed flight-altitude array so renderMapGlideCorridor
+        // (called from fetchAndDrawProfile after drawProfile returns) can use
+        // it to compute glide reach per sample. Without this the corridor
+        // colouring is purely slope-based and ignores the aircraft.
+        try { window._lastProfileFa = fa.slice(); } catch (e) { window._lastProfileFa = null; }
 
         ctx.lineWidth = 2;
         ctx.setLineDash([]);
@@ -2892,6 +2898,36 @@
         }
       }
 
+      // Find the gentlest reachable terrain slope along the route within
+      // glide reach of `idx`. Aircraft with a higher glide ratio (fixed-wing
+      // ~9:1 vs helicopter ~4:1) scan a much larger window, so they're more
+      // likely to find a survivable landing patch — which widens green/yellow
+      // bands and narrows red ones. This is the key place the corridor needs
+      // to be airframe-aware.
+      function bestReachableSlope(idx) {
+        const localSlope = slopeAt(idx);
+        if (!haveFa) return localSlope;  // no altitude info → fall back to here-only
+        const altAgl = Math.max(0, fa[idx] - ground[idx]);
+        const reachNm = altAgl / descentPerNm;  // ft / (ft per NM) = NM
+        if (!(reachNm > 0)) return localSlope;
+        let best = localSlope;
+        // Scan backward
+        for (let j = idx - 1; j >= 0; j--) {
+          if ((dist[idx] - dist[j]) > reachNm) break;
+          const s = slopeAt(j);
+          if (s < best) best = s;
+          if (best < 5) return best;
+        }
+        // Scan forward
+        for (let j = idx + 1; j < dist.length; j++) {
+          if ((dist[j] - dist[idx]) > reachNm) break;
+          const s = slopeAt(j);
+          if (s < best) best = s;
+          if (best < 5) return best;
+        }
+        return best;
+      }
+
       // Classify every sample.
       // category: 0 = green, 1 = yellow, 2 = red
       const cat = new Array(dist.length);
@@ -2914,7 +2950,9 @@
             category = 0; // unknown reach → assume reachable (don't scare)
           }
         } else {
-          const s = slopeAt(i);
+          // Use the gentlest landing slope reachable within the aircraft's
+          // power-off glide range, not just the slope directly under us.
+          const s = bestReachableSlope(i);
           if (s < 5) category = 0;
           else if (s <= slopeThreshold) category = 1;
           else category = 2;
