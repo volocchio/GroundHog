@@ -1137,6 +1137,10 @@ def _detect_water_grid(n_lat: int, n_lon: int, elev_ft: list) -> list[list[bool]
                         if flat[ni][nj] and abs(e2d[ni][nj] - ref_e) <= 16.4:
                             visited[ni][nj] = True
                             q.append((ni, nj))
+            # Mark cluster as water if large enough
+            if len(cluster) >= 10:
+                for ci, cj in cluster:
+                    is_water[ci][cj] = True
 
     # Pass 2b: range-based flat detection — catches SRTM lake cells where
     # one cardinal neighbor is a shore cell slightly above lake surface.
@@ -1158,9 +1162,6 @@ def _detect_water_grid(n_lat: int, n_lon: int, elev_ft: list) -> list[list[bool]
                         all_elevs.append(ne)
             if len(all_elevs) >= 3 and (max(all_elevs) - min(all_elevs)) < 50.0:
                 flat[i][j] = True
-            if len(cluster) >= 10:
-                for ci, cj in cluster:
-                    is_water[ci][cj] = True
 
     # Flood-fill from flat seeds: only keep connected clusters ≥ 10 cells
     from collections import deque
@@ -1395,19 +1396,46 @@ def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
     else:
         glide_mult = 3.0
 
-    # Glide range in NM from a conservative crossing altitude.
-    glide_range_nm = max(0.0, cruise_alt_ft) * glide_ratio / 6076.12 * glide_mult
-
     # Cell size in NM (approximate)
     mid_lat = grid.lat0 + (n_lat / 2) * grid.dlat
     cell_nm_lat = grid.dlat / _deg_per_km_lat() / 1.852
     cell_nm_lon = grid.dlon / _deg_per_km_lon(mid_lat) / 1.852
     cell_nm = 0.5 * (cell_nm_lat + cell_nm_lon)
 
-    glide_range_cells = glide_range_nm / cell_nm if cell_nm > 0 else 0
-
     is_water = _detect_water_grid(n_lat, n_lon, elev_ft)
     has_water = any(is_water[i][j] for i in range(n_lat) for j in range(n_lon))
+
+    # Compute glide range using AGL above the water surface, not MSL.
+    # cruise_alt_ft is an MSL value (e.g. 2610 ft MSL over KSZT).  Inland
+    # lakes sit at their own MSL elevation (Pend Oreille ≈ 2026 ft MSL), so
+    # true AGL is cruise_alt_ft − lake_surface_ft.  Using MSL directly
+    # over-estimates glide range by 4–5×, making all cells on a narrow lake
+    # arm appear "within glide" and thus nearly free to cross.
+    if has_water:
+        # Estimate water surface elevation from detected inland water cells
+        # (exclude ocean/void cells which already have e ≤ 0).
+        water_elev_samples = []
+        k = 0
+        for i in range(n_lat):
+            for j in range(n_lon):
+                e = elev_ft[k]
+                k += 1
+                if is_water[i][j] and 0 < e < float("inf"):
+                    water_elev_samples.append(e)
+        if water_elev_samples:
+            # Use 10th-percentile to be robust against noisy shore cells.
+            water_elev_samples.sort()
+            water_surface_ft = water_elev_samples[max(0, len(water_elev_samples) // 10)]
+            eff_agl_ft = max(0.0, cruise_alt_ft - water_surface_ft)
+        else:
+            # All water is ocean (e ≤ 0): cruise_alt_ft IS effectively AGL.
+            eff_agl_ft = cruise_alt_ft
+    else:
+        eff_agl_ft = cruise_alt_ft
+
+    # Glide range in NM from true AGL above the water surface.
+    glide_range_nm = max(0.0, eff_agl_ft) * glide_ratio / 6076.12 * glide_mult
+    glide_range_cells = glide_range_nm / cell_nm if cell_nm > 0 else 0
 
     if not has_water:
         return None, None
