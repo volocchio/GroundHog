@@ -3361,6 +3361,9 @@
         let toIcon = '';
         if (isFuelStop) toIcon = ' <span title="Fuel stop" style="cursor:help">\u26FD</span>';
         else if (isNF) toIcon = ' <span title="No fuel" style="color:#dc2626;font-size:0.75em;cursor:help">NF</span>';
+        if (isLastLeg) {
+          toIcon += ' <span title="Final landing" style="background:#1d4ed8;color:#fff;font-size:0.7em;font-weight:700;padding:1px 5px;border-radius:3px;letter-spacing:0.5px;vertical-align:1px">LANDING</span>';
+        }
 
         html += '<tr style="border-bottom:1px solid #ddd">';
         html += `<td style="padding:2px 6px">${i + 1}${leg.cached ? ' \u26A1' : ''}</td>`;
