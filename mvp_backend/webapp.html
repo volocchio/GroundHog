@@ -3289,14 +3289,30 @@
       // Departure / Arrival elevation & DA summary
       if (heliInfo) {
         const depElev = heliInfo.departure.pressure_alt_ft;
-        const arrElev = heliInfo.arrival.pressure_alt_ft;
+        let arrElev = heliInfo.arrival.pressure_alt_ft;
         const daDep = heliInfo.departure.density_alt_ft;
-        const daArr = heliInfo.arrival.density_alt_ft;
+        let daArr = heliInfo.arrival.density_alt_ft;
+        let arrLabelTxt = 'Arr';
+        // Round-trip: backend's "arrival" is the return-to-dep landing.
+        // Show DA for the user's *true* destination instead by finding the
+        // leg whose `to` matches the typed arr ICAO.
+        const _trueDest = (typeof window !== 'undefined') ? window._userDestIcao : null;
+        if (_trueDest && Array.isArray(legs)) {
+          for (const lg of legs) {
+            const toIc = (lg.to || '').toUpperCase();
+            if (toIc === _trueDest && lg.heliPerf && lg.heliPerf.phases && lg.heliPerf.phases.arrival) {
+              arrElev = lg.heliPerf.phases.arrival.pressure_alt_ft;
+              daArr = lg.heliPerf.phases.arrival.density_alt_ft;
+              arrLabelTxt = `Dest (${_trueDest})`;
+              break;
+            }
+          }
+        }
         const oat = heliInfo.oat_c;
         const isa = heliInfo.departure.isa_deviation_c;
         html += `<div style="margin:2px 0; font-size:0.85em; color:#6b7280">`;
         html += `Dep elev: ${Math.round(depElev)}' · DA ${Math.round(daDep)}' &nbsp;|&nbsp; `;
-        html += `Arr elev: ${Math.round(arrElev)}' · DA ${Math.round(daArr)}' &nbsp;|&nbsp; `;
+        html += `${arrLabelTxt} elev: ${Math.round(arrElev)}' · DA ${Math.round(daArr)}' &nbsp;|&nbsp; `;
         html += `OAT ${oat}°C (ISA${isa >= 0 ? '+' : ''}${isa}°C)`;
         html += `</div>`;
       }
@@ -3519,6 +3535,11 @@
         }
         effectiveArr = dep;
       }
+      // Remember the user's true destination so the summary panel can show
+      // its DA instead of the round-trip return point (which equals dep).
+      try {
+        window._userDestIcao = (roundTrip && arr && arr !== dep) ? arr : null;
+      } catch (e) {}
 
       return {
         dep_icao: dep,
