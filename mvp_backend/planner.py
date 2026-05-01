@@ -1446,21 +1446,24 @@ def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
                     q.append((ni, nj))
 
     # Build cost grids
-    # Within-glide water gets a *graduated* penalty: shore cells ≈ 0, ramping
-    # to WATER_NEAR_EDGE at the edge of glide reach. This keeps the planner
-    # from preferring a high mountain crossing over a short river/strait
-    # that's safely within glide of both shores. Beyond-glide stays heavy.
+    # Within-glide water is treated as essentially free (tiny ramp so the
+    # A* still slightly prefers landing zones vs open water, but nowhere near
+    # enough to route over a mountain). The critical signal is the hard cliff
+    # at the glide-range boundary: beyond-glide water pays WATER_BEYOND so
+    # the planner strongly avoids deep-water cells it cannot glide out of.
+    # NOTE: cost is applied as  step *= (1.0 + cost)  in A*, so even cost=1
+    # doubles the step expense. Keep within-glide cost << 1.
     if water_risk <= 0:
-        WATER_NEAR_EDGE = 12.0   # was 80 — too high; pushed routes over mountains
-        SMOOTH_NEAR_EDGE = 12.0
+        WATER_NEAR_EDGE = 0.2   # 1.2× step at glide edge — practically free
+        SMOOTH_NEAR_EDGE = 0.2
     elif water_risk <= 25:
-        WATER_NEAR_EDGE = 6.0
-        SMOOTH_NEAR_EDGE = 3.0
+        WATER_NEAR_EDGE = 0.1
+        SMOOTH_NEAR_EDGE = 0.1
     elif water_risk <= 50:
-        WATER_NEAR_EDGE = 2.0
-        SMOOTH_NEAR_EDGE = 0.5
+        WATER_NEAR_EDGE = 0.05
+        SMOOTH_NEAR_EDGE = 0.05
     else:
-        WATER_NEAR_EDGE = 0.5
+        WATER_NEAR_EDGE = 0.0
         SMOOTH_NEAR_EDGE = 0.0
     WATER_BEYOND = 200.0   # very heavy cost for cells beyond glide range
     cost = [[0.0] * n_lon for _ in range(n_lat)]
