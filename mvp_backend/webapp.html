@@ -2747,6 +2747,17 @@
     }
 
     function addMarker(lat, lon, label, isEndpoint = false, legLabel = '') {
+      // For @lat,lon custom waypoints the path coords are grid-cell centres
+      // which differ slightly between legs (different grid origins/resolutions).
+      // Parse the exact coordinates from the label so both legs place the pin
+      // at exactly the same position, guaranteeing the de-dup fires correctly.
+      if (label && label.startsWith('@')) {
+        const parts = label.slice(1).split(',');
+        if (parts.length === 2) {
+          const plat = parseFloat(parts[0]), plon = parseFloat(parts[1]);
+          if (!isNaN(plat) && !isNaN(plon)) { lat = plat; lon = plon; }
+        }
+      }
       const displayLabel = legLabel ? `${legLabel} ${label}` : label;
       // De-duplicate: round-trip routes traverse the same waypoint twice
       // (outbound + return), which would stack two pins at one spot. If a
