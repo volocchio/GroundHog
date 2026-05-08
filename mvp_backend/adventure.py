@@ -281,8 +281,13 @@ def search(req: AdventureRequest) -> dict:
         d = _haversine_nm(origin.lat, origin.lon, p.lat, p.lon)
         if d > radius_nm:
             continue
+        # Fast pass: airport + slope + tags + obstacles + HOGE.
+        # Skip Overpass surface survey here (too slow at 500+ POIs);
+        # we run it only on the top-ranked candidates below.
         site = landing_sites.classify_landing(
             p.lat, p.lon, p.tags, airports, provider=provider,
+            heli=heli, oat_c=req.oat_c, gross_weight_lb=req.gross_weight_lb,
+            run_survey=False,
         )
         score = _score(d, radius_nm, site.confidence, vibe_match=True)
         candidates.append({
@@ -296,6 +301,26 @@ def search(req: AdventureRequest) -> dict:
 
     candidates.sort(key=lambda r: r["score"], reverse=True)
     candidates = candidates[: max(1, req.limit)]
+
+    # Slow pass: re-classify the top-N with full surface survey so the
+    # cards the user actually sees have real OSM ground-truth.
+    for cand in candidates:
+        if cand["landing"].get("kind") != "off_airport":
+            continue
+        if cand["landing"].get("confidence") == "red":
+            continue
+        site = landing_sites.classify_landing(
+            cand["poi"]["lat"], cand["poi"]["lon"], cand["poi"]["tags"],
+            airports, provider=provider,
+            heli=heli, oat_c=req.oat_c, gross_weight_lb=req.gross_weight_lb,
+            run_survey=True,
+        )
+        cand["landing"] = site.to_dict()
+        cand["score"] = round(
+            _score(cand["distance_nm"], radius_nm, site.confidence, vibe_match=True),
+            4,
+        )
+    candidates.sort(key=lambda r: r["score"], reverse=True)
 
     return {
         "origin": {"icao": origin.icao, "lat": origin.lat, "lon": origin.lon,
