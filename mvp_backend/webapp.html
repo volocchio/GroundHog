@@ -284,8 +284,12 @@
       <div id="advPanel" style="display:none">
         <div style="font-weight:600">Adventure Mode</div>
         <div class="muted" style="font-size:11px; margin-bottom:6px">
-          Find cool places to land within reach. Pick aircraft, OAT, and weight in the
-          <i>Plan route</i> tab first &mdash; range is computed from your real performance.
+          Find cool places to land within reach &mdash; range is computed from your real performance.
+        </div>
+        <div style="background:#fff7ed; border:1px solid #fdba74; color:#7c2d12; border-radius:6px; padding:8px 10px; font-size:12px; line-height:1.35; margin-bottom:8px">
+          ⚠ <b>Before searching</b>, switch to the <a href="#" id="advJumpPlan" style="color:#7c2d12; text-decoration:underline; font-weight:600">Plan route</a> tab and confirm
+          <b>aircraft</b>, <b>OAT</b>, <b>gross weight</b>, <b>usable fuel</b>, <b>burn</b>, and <b>reserve</b> are correct.
+          Reachable radius is fuel- or time-limited based on those values &mdash; bad inputs = unsafe suggestions.
         </div>
 
         <label>Origin (ICAO or <code>@lat,lon</code>)</label>
@@ -4983,6 +4987,8 @@
       }
       planBtn.addEventListener('click', () => setMode('plan'));
       advBtn.addEventListener('click',  () => setMode('adv'));
+      const jumpPlan = document.getElementById('advJumpPlan');
+      if (jumpPlan) jumpPlan.addEventListener('click', (e) => { e.preventDefault(); setMode('plan'); });
 
       // ── Vibe chips ───────────────────────────────────────────────
       VIBES.forEach(v => {
