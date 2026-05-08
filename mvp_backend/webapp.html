@@ -4939,15 +4939,15 @@
     // ─────────────────────────────────────────────────────────────────
     (function initAdventureMode() {
       const VIBES = [
-        { key: 'hike',        label: '🥾 Hike' },
-        { key: 'camp',        label: '⛺ Camp' },
-        { key: 'fish',        label: '🎣 Fish' },
-        { key: 'ski',         label: '🎿 Ski' },
-        { key: 'hot_springs', label: '♨ Hot springs' },
-        { key: 'scenic',      label: '🏔 Scenic' },
-        { key: 'food',        label: '🍔 Food' },
+        { key: 'hike',        label: '🥾 Hike',        defaultOn: true  },
+        { key: 'camp',        label: '⛺ Camp',        defaultOn: true  },
+        { key: 'fish',        label: '🎣 Fish',        defaultOn: true  },
+        { key: 'ski',         label: '🎿 Ski',         defaultOn: true  },
+        { key: 'hot_springs', label: '♨ Hot springs', defaultOn: true  },
+        { key: 'scenic',      label: '🏔 Scenic',      defaultOn: true  },
+        { key: 'food',        label: '🍔 Food',        defaultOn: false },
       ];
-      const selectedVibes = new Set(VIBES.map(v => v.key));
+      const selectedVibes = new Set(VIBES.filter(v => v.defaultOn).map(v => v.key));
       let advLayer = null;       // Leaflet layerGroup for adventure pins
       let advFavOnly = false;
       let lastResults = [];
@@ -4993,7 +4993,8 @@
       // ── Vibe chips ───────────────────────────────────────────────
       VIBES.forEach(v => {
         const chip = document.createElement('span');
-        chip.className = 'vibe-chip vibe-chip-on';
+        const on = selectedVibes.has(v.key);
+        chip.className = 'vibe-chip' + (on ? ' vibe-chip-on' : '');
         chip.textContent = v.label;
         chip.dataset.key = v.key;
         chip.addEventListener('click', () => {

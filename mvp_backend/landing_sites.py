@@ -118,6 +118,25 @@ def _nearest_airports(poi_lat: float, poi_lon: float,
     return out[:limit]
 
 
+# Wider fallback search radius (nm) when no close airport is found.
+# Used to surface a "land at X, drive/hike to spot" suggestion instead of
+# leaving the user with nothing.
+FALLBACK_AIRPORT_NM = 25.0
+
+
+def _nearest_airport_any(poi_lat: float, poi_lon: float,
+                         airports: dict,
+                         max_nm: float = FALLBACK_AIRPORT_NM):
+    best = None
+    best_d = max_nm
+    for ap in airports.values():
+        d = _haversine_nm(poi_lat, poi_lon, ap.lat, ap.lon)
+        if d < best_d:
+            best = ap
+            best_d = d
+    return (best_d, best) if best is not None else None
+
+
 # ── Public API ─────────────────────────────────────────────────────────
 
 def classify_landing(poi_lat: float, poi_lon: float, poi_tags: dict,
@@ -168,6 +187,25 @@ def classify_landing(poi_lat: float, poi_lon: float, poi_tags: dict,
         notes.append(f"Estimated slope ~{slope:.1f}°")
         notes.append("Verify obstructions, surface, and landowner permission "
                      "before committing.")
+
+    # If off-airport is red, fall back to the nearest airport within a wider
+    # radius so the pilot always has at least one actionable option.
+    if confidence == "red":
+        fb = _nearest_airport_any(poi_lat, poi_lon, airports)
+        if fb is not None:
+            d, ap = fb
+            return LandingSite(
+                kind="heliport" if "H" in (getattr(ap, "facility_use", "") or "") else "airport",
+                name=getattr(ap, "name", ap.icao),
+                lat=ap.lat, lon=ap.lon,
+                elevation_ft=float(getattr(ap, "elevation_ft", 0) or 0),
+                distance_to_poi_nm=round(d, 1),
+                confidence="amber",
+                reason=(f"Land at {ap.icao} ({d:.1f} nm from spot); "
+                        f"original off-airport site rejected — {reason.lower()}"),
+                icao=ap.icao,
+                notes=["Plan ground transport from airport to the spot."] + notes,
+            )
 
     return LandingSite(
         kind="off_airport",
