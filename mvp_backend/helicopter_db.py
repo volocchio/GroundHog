@@ -1085,6 +1085,31 @@ _register(HelicopterModel(
     notes="S-76C++ RFM. Twin Arriel 2S2, 922 SHP each. Offshore / VIP heavy twin.",
 ))
 
+# ── Aérospatiale SA 342J Gazelle ─────────────────────────────────────────
+_register(HelicopterModel(
+    type_code="SA342",
+    name="Aérospatiale SA 342J Gazelle",
+    engine_type="turbine",
+    fuel_type="JETA",
+    max_gross_weight_lb=4410,
+    empty_weight_lb=2202,
+    usable_fuel_gal=118,
+    fuel_weight_lb_per_gal=6.7,
+    service_ceiling_da_ft=13450,
+    autorotation_glide_ratio=4.5,
+    autorotation_speed_kt=80.0,
+    perf_table=[
+        PerfPoint(da_ft=0,    max_roc_fpm=1770, cruise_ktas=140, fuel_burn_gph=50.0, hoge_max_gw_lb=4410, hige_max_gw_lb=4410),
+        PerfPoint(da_ft=2000, max_roc_fpm=1570, cruise_ktas=138, fuel_burn_gph=49.0, hoge_max_gw_lb=4280, hige_max_gw_lb=4410),
+        PerfPoint(da_ft=4000, max_roc_fpm=1360, cruise_ktas=136, fuel_burn_gph=47.8, hoge_max_gw_lb=4100, hige_max_gw_lb=4330),
+        PerfPoint(da_ft=6000, max_roc_fpm=1130, cruise_ktas=133, fuel_burn_gph=46.5, hoge_max_gw_lb=3880, hige_max_gw_lb=4180),
+        PerfPoint(da_ft=8000, max_roc_fpm=890,  cruise_ktas=130, fuel_burn_gph=45.1, hoge_max_gw_lb=3630, hige_max_gw_lb=3990),
+        PerfPoint(da_ft=10000,max_roc_fpm=640,  cruise_ktas=126, fuel_burn_gph=43.7, hoge_max_gw_lb=3350, hige_max_gw_lb=3760),
+        PerfPoint(da_ft=12000,max_roc_fpm=380,  cruise_ktas=121, fuel_burn_gph=42.2, hoge_max_gw_lb=3050, hige_max_gw_lb=3500),
+    ],
+    notes="SA 342J RFM. Astazou XIVH, 858 SHP. Fenestron tail; fast for its class. (SA 341G uses Astazou IIIA, ~590 SHP, ~MGW 3970 lb.)",
+))
+
 _load_external_ceiling_curves()
 
 
