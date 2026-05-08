@@ -284,7 +284,8 @@
       <div id="advPanel" style="display:none">
         <div style="font-weight:600">Adventure Mode</div>
         <div class="muted" style="font-size:11px; margin-bottom:6px">
-          Find cool places to land within reach. Helicopter type + OAT below set cruise speed.
+          Find cool places to land within reach. Pick aircraft, OAT, and weight in the
+          <i>Plan route</i> tab first &mdash; range is computed from your real performance.
         </div>
 
         <label>Origin (ICAO or <code>@lat,lon</code>)</label>
@@ -5084,7 +5085,8 @@
             </div>
             <div class="adv-meta">
               ${r.distance_nm != null ? `${r.distance_nm} nm` : ''}
-              ${r.ete_min_one_way != null ? ` · ETE ${r.ete_min_one_way} min one-way` : ''}
+              ${r.ete_min_one_way != null ? ` · ETE ${r.ete_min_one_way} min` : ''}
+              ${r.fuel_gal_one_way != null ? ` · ${r.fuel_gal_one_way} gal one-way` : ''}
               ${land.icao ? ` · land at <b>${escapeHtml(land.icao)}</b>` : ' · off-airport'}
             </div>`;
           card.addEventListener('click', (ev) => {
@@ -5152,15 +5154,34 @@
         advFavOnly = false;
         statusEl.textContent = 'Searching… (first run on a new region can take 20-30s)';
         resultsEl.innerHTML = '';
+        // Pull aircraft + perf from the Plan-route panel — same source of truth.
         const heliEl = document.getElementById('heliType');
+        const oatEl  = document.getElementById('oatC');
+        const gwEl   = document.getElementById('grossWeightLb');
+        const fuelEl = document.getElementById('usableFuel');
+        const burnEl = document.getElementById('burnGph');
+        const resEl  = document.getElementById('reserveMin');
+        const heliCode = heliEl ? heliEl.value : '';
+        if (!heliCode) {
+          statusEl.innerHTML =
+            '⚠ <b>Pick an aircraft first</b> in the <i>Plan route</i> tab '
+            + '(Helicopter / aircraft type). Adventure range needs cruise speed, '
+            + 'fuel burn, OAT, and weight to know what you can actually reach.';
+          return;
+        }
         const body = {
           origin: document.getElementById('advOrigin').value.trim(),
           time_aloft_min: +timeSlider.value,
           vibes: [...selectedVibes],
-          helicopter_type: heliEl ? heliEl.value : '',
+          helicopter_type: heliCode,
           round_trip: document.getElementById('advRoundTrip').checked,
           limit: 40,
           auto_fetch: true,
+          oat_c: oatEl ? Number(oatEl.value) : 15,
+          gross_weight_lb: gwEl ? Number(gwEl.value) || 0 : 0,
+          usable_fuel_gal: fuelEl ? Number(fuelEl.value) || 0 : 0,
+          fuel_burn_gph: burnEl ? Number(burnEl.value) || 0 : 0,
+          reserve_min: resEl ? Number(resEl.value) || 30 : 30,
         };
         try {
           const r = await fetch('/adventure/search', {
@@ -5169,9 +5190,9 @@
           });
           const data = await r.json();
           if (data.error) { statusEl.textContent = '⚠ ' + data.error; return; }
+          renderPerfBlock(data);
           statusEl.textContent =
-            `Found ${data.count} spots · radius ${data.radius_nm} nm · `
-            + `${data.fetch.fetched} new POIs fetched, `
+            `Found ${data.count} spots · ${data.fetch.fetched} new POIs fetched, `
             + `${data.fetch.cells_skipped} cells cached`;
           await loadFavIds();
           renderResults(data, false);
@@ -5179,6 +5200,52 @@
           statusEl.textContent = '⚠ Search failed: ' + e.message;
         }
       });
+
+      // Performance summary block: shows what the aircraft can actually do
+      // at this OAT/weight/elevation, and which constraint (time vs fuel) is
+      // binding the reach.
+      function renderPerfBlock(data) {
+        const old = document.getElementById('advPerfBlock');
+        if (old) old.remove();
+        const perf = data.performance;
+        const ac = data.aircraft || {};
+        const block = document.createElement('div');
+        block.id = 'advPerfBlock';
+        block.style.cssText =
+          'border:1px solid #cbd5e1; background:#f1f5f9; border-radius:8px; '
+          + 'padding:8px 10px; margin:8px 0; font-size:12px';
+        const isFW = ac.airframe_class === 'fixed_wing';
+        const tag = isFW ? '✈' : '🚁';
+        const binding = data.radius_binding === 'fuel'
+          ? '<b style="color:#b45309">fuel-limited</b>'
+          : '<b style="color:#0369a1">time-limited</b>';
+        let html = `<div style="font-weight:600">${tag} ${escapeHtml(ac.name || ac.type_code || 'Aircraft')}</div>`;
+        if (perf) {
+          html += `<div style="margin-top:3px">`
+            + `Cruise <b>${perf.cruise_ktas} kt</b> · `
+            + `Burn <b>${perf.fuel_burn_gph} gph</b> · `
+            + `DA <b>${perf.density_alt_ft} ft</b> `
+            + `(ISA${perf.isa_deviation_c >= 0 ? '+' : ''}${perf.isa_deviation_c} °C) · `
+            + `GW <b>${perf.gross_weight_lb} lb</b>`
+            + `</div>`;
+        } else {
+          html += `<div style="margin-top:3px; color:#6b7280">No perf table — using planner inputs</div>`;
+        }
+        html += `<div style="margin-top:3px">`
+          + `Time radius <b>${data.time_radius_nm} nm</b> · `
+          + (data.fuel_radius_nm != null
+              ? `Fuel radius <b>${data.fuel_radius_nm} nm</b> · `
+              : 'Fuel radius <i>n/a</i> · ')
+          + `Effective <b>${data.radius_nm} nm</b> (${binding})`
+          + `</div>`;
+        if (perf && perf.warnings && perf.warnings.length) {
+          html += `<div style="margin-top:6px; padding:6px; background:#fef3c7; border:1px solid #f59e0b; border-radius:4px; color:#78350f">`
+            + perf.warnings.map(w => '⚠ ' + escapeHtml(w)).join('<br>')
+            + `</div>`;
+        }
+        statusEl.parentNode.insertBefore(block, statusEl);
+      }
+
 
       favBtn.addEventListener('click', async () => {
         advFavOnly = true;

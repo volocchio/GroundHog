@@ -176,6 +176,40 @@ class AdventureRequest:
     round_trip: bool = True
     limit: int = 25
     auto_fetch: bool = True   # if False, only read from cache
+    # Performance inputs (for DA-adjusted cruise/burn and fuel range cap)
+    oat_c: float = 15.0
+    gross_weight_lb: float = 0.0   # 0 = use heli max GW
+    usable_fuel_gal: float = 0.0   # 0 = use heli usable fuel; if both 0 → no fuel cap
+    fuel_burn_gph: float = 0.0     # override; 0 = derive from heli DB
+    reserve_min: float = 30.0
+
+
+def _perf_at_origin(heli, origin, oat_c: float,
+                    gross_weight_lb: float) -> Optional[dict]:
+    """Density-altitude-corrected performance at the origin elevation.
+
+    Returns None if no helicopter selected. Treats field elevation as
+    pressure altitude (good enough for adventure-radius planning).
+    """
+    if heli is None:
+        return None
+    gw = gross_weight_lb if gross_weight_lb > 0 else None
+    return heli.performance_at(origin.elevation_ft, oat_c, gw)
+
+
+def _fuel_radius_nm(usable_fuel_gal: float, reserve_min: float,
+                    burn_gph: float, cruise_kt: float,
+                    round_trip: bool) -> Optional[float]:
+    """Max one-way reach given usable fuel and reserve. None if any input ≤ 0."""
+    if usable_fuel_gal <= 0 or burn_gph <= 0 or cruise_kt <= 0:
+        return None
+    reserve_gal = (reserve_min / 60.0) * burn_gph
+    flyable_gal = max(0.0, usable_fuel_gal - reserve_gal)
+    endurance_hr = flyable_gal / burn_gph
+    total_nm = endurance_hr * cruise_kt
+    one_way = (total_nm / 2.0) if round_trip else total_nm
+    return max(0.0, one_way * RESERVE_FRACTION)
+
 
 
 def search(req: AdventureRequest) -> dict:
@@ -185,17 +219,50 @@ def search(req: AdventureRequest) -> dict:
     if origin is None:
         return {"error": f"Could not resolve origin '{req.origin}'", "results": []}
 
+    # ── Aircraft + performance ──────────────────────────────────────
+    heli = helicopter_db.get_helicopter(req.helicopter_type) if req.helicopter_type else None
+    perf = _perf_at_origin(heli, origin, req.oat_c, req.gross_weight_lb)
+
+    # Cruise: explicit override > DA-adjusted heli perf > heli sea-level > default.
     cruise = req.cruise_kt
-    if cruise <= 0 and req.helicopter_type:
-        heli = helicopter_db.get_helicopter(req.helicopter_type)
-        if heli and heli.perf_table:
-            cruise = float(heli.perf_table[0].cruise_ktas)
+    if cruise <= 0 and perf and perf.get("cruise_ktas"):
+        cruise = float(perf["cruise_ktas"])
+    if cruise <= 0 and heli and heli.perf_table:
+        cruise = float(heli.perf_table[0].cruise_ktas)
     if cruise <= 0:
         cruise = DEFAULT_CRUISE_KT
 
-    radius_nm = reachable_radius_nm(req.time_aloft_min, cruise, req.round_trip)
+    # Burn: explicit override > DA-adjusted heli perf > sea-level > none.
+    burn = req.fuel_burn_gph
+    if burn <= 0 and perf and perf.get("fuel_burn_gph"):
+        burn = float(perf["fuel_burn_gph"])
+    if burn <= 0 and heli and heli.perf_table:
+        burn = float(heli.perf_table[0].fuel_burn_gph)
+
+    # Usable fuel: explicit override > heli max usable.
+    usable_fuel = req.usable_fuel_gal
+    if usable_fuel <= 0 and heli:
+        usable_fuel = float(heli.usable_fuel_gal)
+
+    time_radius = reachable_radius_nm(req.time_aloft_min, cruise, req.round_trip)
+    fuel_radius = _fuel_radius_nm(usable_fuel, req.reserve_min, burn,
+                                  cruise, req.round_trip)
+
+    # Effective radius is the binding constraint.
+    if fuel_radius is None:
+        radius_nm = time_radius
+        binding = "time"
+    else:
+        if fuel_radius < time_radius:
+            radius_nm = fuel_radius
+            binding = "fuel"
+        else:
+            radius_nm = time_radius
+            binding = "time"
+
     if radius_nm <= 0:
-        return {"error": "Time aloft too short for any range", "results": []}
+        return {"error": "No reachable range — check time, fuel, or aircraft.",
+                "results": []}
 
     south, west, north, east = _bbox_around(origin.lat, origin.lon, radius_nm)
 
@@ -208,7 +275,6 @@ def search(req: AdventureRequest) -> dict:
 
     pois = poi_provider.query(south, west, north, east, vibes, limit=2000)
 
-    # Filter to circle (bbox is square — trim corners) and rank.
     provider = SRTMProvider(cache_dir=_SRTM_DIR)
     candidates = []
     for p in pois:
@@ -218,14 +284,12 @@ def search(req: AdventureRequest) -> dict:
         site = landing_sites.classify_landing(
             p.lat, p.lon, p.tags, airports, provider=provider,
         )
-        if site.confidence == "red":
-            # Keep red but they sink to bottom; the user can see why.
-            pass
         score = _score(d, radius_nm, site.confidence, vibe_match=True)
         candidates.append({
             "poi": p.to_dict(),
             "distance_nm": round(d, 1),
             "ete_min_one_way": round((d / cruise) * 60.0, 1) if cruise > 0 else None,
+            "fuel_gal_one_way": round((d / cruise) * burn, 2) if (cruise > 0 and burn > 0) else None,
             "landing": site.to_dict(),
             "score": round(score, 4),
         })
@@ -236,8 +300,21 @@ def search(req: AdventureRequest) -> dict:
     return {
         "origin": {"icao": origin.icao, "lat": origin.lat, "lon": origin.lon,
                    "name": origin.name, "elevation_ft": origin.elevation_ft},
-        "cruise_kt": cruise,
+        "aircraft": {
+            "type_code": getattr(heli, "type_code", ""),
+            "name": getattr(heli, "name", ""),
+            "airframe_class": getattr(heli, "airframe_class", ""),
+            "selected": heli is not None,
+        },
+        "performance": perf,  # full snapshot or None
+        "cruise_kt": round(cruise, 1),
+        "fuel_burn_gph": round(burn, 2) if burn > 0 else None,
+        "usable_fuel_gal": round(usable_fuel, 1) if usable_fuel > 0 else None,
+        "reserve_min": req.reserve_min,
+        "time_radius_nm": round(time_radius, 1),
+        "fuel_radius_nm": round(fuel_radius, 1) if fuel_radius is not None else None,
         "radius_nm": round(radius_nm, 1),
+        "radius_binding": binding,   # "time" or "fuel"
         "round_trip": req.round_trip,
         "bbox": {"south": south, "west": west, "north": north, "east": east},
         "vibes": vibes,
@@ -245,3 +322,4 @@ def search(req: AdventureRequest) -> dict:
         "count": len(candidates),
         "results": candidates,
     }
+

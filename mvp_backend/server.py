@@ -1073,6 +1073,12 @@ class AdventureSearchRequest(BaseModel):
     round_trip: bool = Field(True)
     limit: int = Field(25, gt=0, le=200)
     auto_fetch: bool = Field(True, description="If true, fetch missing POI cells from Overpass.")
+    # Performance inputs
+    oat_c: float = Field(15.0, description="OAT °C at origin for density-altitude perf.")
+    gross_weight_lb: float = Field(0.0, ge=0, description="Gross weight; 0 = use heli max GW.")
+    usable_fuel_gal: float = Field(0.0, ge=0, description="Usable fuel; 0 = heli default.")
+    fuel_burn_gph: float = Field(0.0, ge=0, description="Burn override; 0 = derive from heli perf at DA.")
+    reserve_min: float = Field(30.0, ge=0, description="Fuel reserve in minutes.")
 
 
 @app.post("/adventure/search")
@@ -1086,6 +1092,11 @@ def adventure_search(req: AdventureSearchRequest):
         round_trip=req.round_trip,
         limit=req.limit,
         auto_fetch=req.auto_fetch,
+        oat_c=req.oat_c,
+        gross_weight_lb=req.gross_weight_lb,
+        usable_fuel_gal=req.usable_fuel_gal,
+        fuel_burn_gph=req.fuel_burn_gph,
+        reserve_min=req.reserve_min,
     ))
 
 
