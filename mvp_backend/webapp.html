@@ -945,6 +945,8 @@
       exploreGroup.clearLayers();
       glideCorridorGroup.clearLayers();
       routeMarkers = [];
+      const _b = document.getElementById('routeIncompleteBanner');
+      if (_b) _b.remove();
       document.getElementById('profileWrap').classList.remove('visible');
       lastProfileArgs = null;
       lastProfilePath = null;
@@ -3863,6 +3865,55 @@
             }
 
             if (event.type === 'no_path') {
+              // Visually mark the route as INCOMPLETE so the user can't
+              // mistake a partial trace for a real plan. Fade & dash all
+              // completed legs, then drop a red dashed "could-not-reach"
+              // segment from the failed leg's origin toward the final
+              // destination, plus a prominent map banner.
+              try {
+                for (const layers of legLayers) {
+                  for (const layer of layers) {
+                    if (layer && typeof layer.setStyle === 'function') {
+                      layer.setStyle({ color: '#9ca3af', dashArray: '6,6', opacity: 0.55 });
+                    }
+                  }
+                }
+                const lastReachedAp = (legsList.length && legsList[legsList.length - 1].to)
+                  ? legsList[legsList.length - 1].to
+                  : event.from;
+                // Try to draw a red dashed line from last-reached coord to
+                // the final destination so the gap is obvious on the map.
+                if (allCoords.length >= 1 && airportLookup && airportLookup[payload.arr_icao]) {
+                  const arrAp = airportLookup[payload.arr_icao];
+                  const last = allCoords[allCoords.length - 1];
+                  const gap = L.polyline([last, [arrAp.lat, arrAp.lon]], {
+                    color: '#dc2626', weight: 3, dashArray: '4,8', opacity: 0.85,
+                  }).addTo(map);
+                  legLayers.push([gap]);
+                }
+                // Map-overlay banner.
+                const oldBanner = document.getElementById('routeIncompleteBanner');
+                if (oldBanner) oldBanner.remove();
+                const banner = document.createElement('div');
+                banner.id = 'routeIncompleteBanner';
+                banner.style.cssText =
+                  'position:absolute; top:10px; left:50%; transform:translateX(-50%); '
+                  + 'z-index:9999; background:#fee2e2; border:2px solid #dc2626; '
+                  + 'color:#991b1b; padding:10px 16px; border-radius:8px; '
+                  + 'font-weight:600; font-size:13px; max-width:560px; text-align:center; '
+                  + 'box-shadow:0 4px 12px rgba(0,0,0,0.15)';
+                banner.innerHTML =
+                  '⚠ <b>Route INCOMPLETE.</b> Reached only ' + escapeHtml(lastReachedAp || '?')
+                  + '. Could not find a fuel-feasible, terrain-avoiding path '
+                  + escapeHtml(event.from || '?') + ' → ' + escapeHtml(event.to || '?')
+                  + ' → ' + escapeHtml(payload.arr_icao) + '.<br>'
+                  + '<span style="font-weight:400; font-size:12px">'
+                  + 'Try: raise <i>Max MSL</i>, lower <i>Min AGL</i>, increase <i>Max detour</i>, '
+                  + 'or add a manual waypoint near a workable corridor.</span>';
+                const mapEl = document.getElementById('map');
+                if (mapEl) mapEl.appendChild(banner);
+              } catch (e) { /* visual-only; never block the error flow */ }
+
               // render partial nav log with completed legs + failed leg
               if (legsList.length > 0) {
                 renderNavLog({
