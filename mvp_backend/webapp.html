@@ -1347,7 +1347,10 @@
       document.getElementById('burnGph').value = d.fuel_burn_gph;
       document.getElementById('fuelType').value = h.fuel_type;
       document.getElementById('bewLb').value = h.empty_weight_lb;
-      document.getElementById('fuelLoadGal').value = Math.min(30, Number(d.usable_fuel_gal) || 30);
+      // Default fuel load = full usable for this aircraft. The pilot can
+      // dial it down for weight reasons; previously we capped at 30 gal,
+      // which was nonsense for anything bigger than an R22.
+      document.getElementById('fuelLoadGal').value = Number(d.usable_fuel_gal) || 0;
       document.getElementById('autorotSpeedKt').value = h.autorotation_speed_kt || 60;
       document.getElementById('grossWeightLb').value = 0;
       updateWeightBuildUp();
@@ -1458,7 +1461,7 @@
           document.getElementById('usableFuel').value = h.defaults.usable_fuel_gal;
           document.getElementById('burnGph').value = h.defaults.fuel_burn_gph;
           document.getElementById('fuelType').value = h.fuel_type;
-          document.getElementById('fuelLoadGal').value = Math.min(30, Number(h.defaults.usable_fuel_gal) || 30);
+          document.getElementById('fuelLoadGal').value = Number(h.defaults.usable_fuel_gal) || 0;
           document.getElementById('autorotSpeedKt').value = h.autorotation_speed_kt || 60;
         }
       }
