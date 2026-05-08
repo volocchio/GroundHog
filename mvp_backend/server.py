@@ -1057,6 +1057,71 @@ def get_airspace(
     return result
 
 
+# ── adventure mode ─────────────────────────────────────────────────────
+from mvp_backend import adventure as _adventure
+from mvp_backend import poi_provider as _poi_provider
+
+
+class AdventureSearchRequest(BaseModel):
+    origin: str = Field(..., description="ICAO code or @lat,lon")
+    time_aloft_min: float = Field(60.0, gt=0, le=600,
+                                  description="Total time aloft budget (min). If round_trip, halved for one-way leg.")
+    vibes: list[str] = Field(default_factory=list,
+                             description="Subset of: hike, camp, fish, ski, hot_springs, scenic, food. Empty = all.")
+    helicopter_type: str = Field("", description="Heli type code; used to derive cruise speed if cruise_kt not given.")
+    cruise_kt: float = Field(0.0, ge=0)
+    round_trip: bool = Field(True)
+    limit: int = Field(25, gt=0, le=200)
+    auto_fetch: bool = Field(True, description="If true, fetch missing POI cells from Overpass.")
+
+
+@app.post("/adventure/search")
+def adventure_search(req: AdventureSearchRequest):
+    return _adventure.search(_adventure.AdventureRequest(
+        origin=req.origin,
+        time_aloft_min=req.time_aloft_min,
+        vibes=req.vibes or None,
+        helicopter_type=req.helicopter_type,
+        cruise_kt=req.cruise_kt,
+        round_trip=req.round_trip,
+        limit=req.limit,
+        auto_fetch=req.auto_fetch,
+    ))
+
+
+@app.get("/adventure/vibes")
+def adventure_vibes():
+    """List supported vibe categories."""
+    return {"vibes": list(_poi_provider.VALID_VIBES)}
+
+
+@app.get("/adventure/cache/stats")
+def adventure_cache_stats():
+    return _poi_provider.stats()
+
+
+class FavoriteRequest(BaseModel):
+    user_key: str = Field(..., min_length=1, max_length=128,
+                          description="Opaque per-device id (frontend stores in localStorage).")
+    poi_id: str
+    payload: dict = Field(default_factory=dict)
+
+
+@app.get("/adventure/favorites")
+def favorites_list(user_key: str = Query(..., min_length=1, max_length=128)):
+    return _adventure.list_favorites(user_key)
+
+
+@app.post("/adventure/favorites/add")
+def favorites_add(req: FavoriteRequest):
+    return _adventure.add_favorite(req.user_key, req.poi_id, req.payload)
+
+
+@app.post("/adventure/favorites/remove")
+def favorites_remove(req: FavoriteRequest):
+    return _adventure.remove_favorite(req.user_key, req.poi_id)
+
+
 # ── background precomputation ─────────────────────────────────────────
 
 _bg_thread: threading.Thread | None = None

@@ -224,6 +224,47 @@
       pointer-events: none;
     }
     .ac-marker svg { transform-origin: 50% 50%; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6)); }
+
+    /* Adventure Mode */
+    .mode-tab {
+      flex: 1; padding: 8px 10px; font-size: 13px; font-weight: 600;
+      border: 1px solid #d1d5db; background: #f9fafb; color: #6b7280;
+      border-radius: 8px; cursor: pointer;
+    }
+    .mode-tab-active { background: #1d4ed8; color: #fff; border-color: #1d4ed8; }
+    .vibe-chip {
+      padding: 5px 10px; font-size: 12px; border: 1px solid #d1d5db;
+      background: #fff; color: #374151; border-radius: 999px; cursor: pointer;
+      user-select: none;
+    }
+    .vibe-chip-on { background: #1d4ed8; color: #fff; border-color: #1d4ed8; }
+    .adv-card {
+      border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px;
+      margin-bottom: 8px; background: #fff; cursor: pointer;
+    }
+    .adv-card:hover { background: #f9fafb; }
+    .adv-card.adv-card-fav { border-color: #f59e0b; background: #fffbeb; }
+    .adv-conf { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; vertical-align:middle; }
+    .adv-conf-green  { background: #16a34a; }
+    .adv-conf-amber  { background: #f59e0b; }
+    .adv-conf-red    { background: #dc2626; }
+    .adv-meta { font-size: 11px; color: #6b7280; margin-top: 4px; }
+    .adv-fav-btn {
+      float: right; background: transparent; border: none; cursor: pointer;
+      font-size: 16px; color: #d1d5db; padding: 0; width: auto; margin: 0;
+    }
+    .adv-fav-btn.on { color: #f59e0b; }
+    .adv-pin {
+      width: 22px; height: 22px; border-radius: 50% 50% 50% 0;
+      transform: rotate(-45deg); border: 2px solid #fff;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 10px; color: #fff; font-weight: 700;
+    }
+    .adv-pin span { transform: rotate(45deg); }
+    .adv-pin-green { background: #16a34a; }
+    .adv-pin-amber { background: #f59e0b; }
+    .adv-pin-red   { background: #dc2626; }
   </style>
 </head>
 <body>
@@ -234,6 +275,47 @@
 
   <div class="wrap">
     <div class="card">
+      <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px">
+        <button type="button" id="modePlanBtn" class="mode-tab mode-tab-active">Plan route</button>
+        <button type="button" id="modeAdvBtn" class="mode-tab">🏔 Find adventure</button>
+      </div>
+
+      <!-- ── Adventure Mode panel ────────────────────────────────────── -->
+      <div id="advPanel" style="display:none">
+        <div style="font-weight:600">Adventure Mode</div>
+        <div class="muted" style="font-size:11px; margin-bottom:6px">
+          Find cool places to land within reach. Helicopter type + OAT below set cruise speed.
+        </div>
+
+        <label>Origin (ICAO or <code>@lat,lon</code>)</label>
+        <input id="advOrigin" value="KSZT" />
+
+        <label style="margin-top:6px">Time aloft (one-way if not round-trip)</label>
+        <div style="display:flex; gap:8px; align-items:center">
+          <input id="advTimeAloft" type="range" min="15" max="240" step="5" value="60" style="flex:1" />
+          <span id="advTimeAloftVal" style="min-width:60px; font-variant-numeric:tabular-nums">60 min</span>
+        </div>
+
+        <div class="watch-row" style="margin-top:6px">
+          <input type="checkbox" id="advRoundTrip" checked style="width:auto" />
+          <label for="advRoundTrip" style="margin:0; display:inline; font-size:13px">Round trip (halve range)</label>
+        </div>
+
+        <label style="margin-top:8px">Vibes</label>
+        <div id="advVibes" style="display:flex; flex-wrap:wrap; gap:4px">
+          <!-- vibe chips injected by JS -->
+        </div>
+
+        <div style="margin-top:10px; display:flex; gap:6px">
+          <button id="advGoBtn" type="button" style="margin:0">Find adventures</button>
+          <button id="advFavBtn" type="button" style="margin:0; background:#f3f4f6; color:#374151; border:1px solid #d1d5db; width:auto; padding:6px 10px; font-size:12px" title="Show saved favorites">★ Saved</button>
+        </div>
+        <div id="advStatus" class="muted" style="margin-top:8px"></div>
+        <div id="advResults" style="margin-top:10px; max-height:420px; overflow:auto"></div>
+      </div>
+
+      <!-- ── Original Plan-route panel ───────────────────────────────── -->
+      <div id="planPanel">
       <div style="font-weight:600">Inputs</div>
 
       <label>Departure ICAO</label>
@@ -477,6 +559,7 @@
       <div id="status" class="muted" style="margin-top:10px"></div>
       <div id="error" class="err" style="margin-top:8px"></div>
       <div id="cacheStats" class="muted" style="margin-top:12px; font-size:0.8em; border-top:1px solid #ddd; padding-top:6px"></div>
+      </div><!-- /#planPanel -->
     </div>
 
     <div class="card">
@@ -4845,6 +4928,271 @@
           .catch((err) => console.warn('SW registration failed:', err));
       });
     }
+
+    // ─────────────────────────────────────────────────────────────────
+    // ADVENTURE MODE
+    // ─────────────────────────────────────────────────────────────────
+    (function initAdventureMode() {
+      const VIBES = [
+        { key: 'hike',        label: '🥾 Hike' },
+        { key: 'camp',        label: '⛺ Camp' },
+        { key: 'fish',        label: '🎣 Fish' },
+        { key: 'ski',         label: '🎿 Ski' },
+        { key: 'hot_springs', label: '♨ Hot springs' },
+        { key: 'scenic',      label: '🏔 Scenic' },
+        { key: 'food',        label: '🍔 Food' },
+      ];
+      const selectedVibes = new Set(VIBES.map(v => v.key));
+      let advLayer = null;       // Leaflet layerGroup for adventure pins
+      let advFavOnly = false;
+      let lastResults = [];
+
+      // Stable per-device user key (saved in localStorage).
+      function userKey() {
+        let k = localStorage.getItem('gh_user_key');
+        if (!k) {
+          k = 'u_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+          localStorage.setItem('gh_user_key', k);
+        }
+        return k;
+      }
+
+      // ── DOM refs ─────────────────────────────────────────────────
+      const planBtn   = document.getElementById('modePlanBtn');
+      const advBtn    = document.getElementById('modeAdvBtn');
+      const planPanel = document.getElementById('planPanel');
+      const advPanel  = document.getElementById('advPanel');
+      const vibesEl   = document.getElementById('advVibes');
+      const goBtn     = document.getElementById('advGoBtn');
+      const favBtn    = document.getElementById('advFavBtn');
+      const statusEl  = document.getElementById('advStatus');
+      const resultsEl = document.getElementById('advResults');
+      const timeSlider = document.getElementById('advTimeAloft');
+      const timeVal    = document.getElementById('advTimeAloftVal');
+      if (!planBtn || !advBtn) return;  // safety: panel not rendered
+
+      // ── Mode toggle ──────────────────────────────────────────────
+      function setMode(mode) {
+        const adv = mode === 'adv';
+        advPanel.style.display  = adv ? '' : 'none';
+        planPanel.style.display = adv ? 'none' : '';
+        planBtn.classList.toggle('mode-tab-active', !adv);
+        advBtn.classList.toggle('mode-tab-active', adv);
+        if (!adv && advLayer) advLayer.clearLayers();
+      }
+      planBtn.addEventListener('click', () => setMode('plan'));
+      advBtn.addEventListener('click',  () => setMode('adv'));
+
+      // ── Vibe chips ───────────────────────────────────────────────
+      VIBES.forEach(v => {
+        const chip = document.createElement('span');
+        chip.className = 'vibe-chip vibe-chip-on';
+        chip.textContent = v.label;
+        chip.dataset.key = v.key;
+        chip.addEventListener('click', () => {
+          if (selectedVibes.has(v.key)) {
+            selectedVibes.delete(v.key);
+            chip.classList.remove('vibe-chip-on');
+          } else {
+            selectedVibes.add(v.key);
+            chip.classList.add('vibe-chip-on');
+          }
+        });
+        vibesEl.appendChild(chip);
+      });
+
+      // ── Time slider live label ───────────────────────────────────
+      function fmtMin(n) {
+        n = +n;
+        if (n >= 60) {
+          const h = Math.floor(n / 60), m = n % 60;
+          return m ? `${h}h ${m}m` : `${h}h`;
+        }
+        return `${n} min`;
+      }
+      timeSlider.addEventListener('input', () => { timeVal.textContent = fmtMin(timeSlider.value); });
+      timeVal.textContent = fmtMin(timeSlider.value);
+
+      // ── Map pin helpers ──────────────────────────────────────────
+      function ensureLayer() {
+        if (!advLayer) advLayer = L.layerGroup().addTo(map);
+        return advLayer;
+      }
+      function pinIcon(conf) {
+        const cls = conf === 'green' ? 'adv-pin-green'
+                  : conf === 'amber' ? 'adv-pin-amber' : 'adv-pin-red';
+        return L.divIcon({
+          className: '',
+          html: `<div class="adv-pin ${cls}"><span></span></div>`,
+          iconSize: [22, 22], iconAnchor: [11, 22],
+        });
+      }
+      function vibeEmoji(v) {
+        const m = { hike:'🥾', camp:'⛺', fish:'🎣', ski:'🎿',
+                    hot_springs:'♨', scenic:'🏔', food:'🍔' };
+        return m[v] || '📍';
+      }
+
+      // ── Render results ───────────────────────────────────────────
+      function renderResults(data, isFavView) {
+        lastResults = data.results || data || [];
+        const layer = ensureLayer();
+        layer.clearLayers();
+        resultsEl.innerHTML = '';
+
+        if (!lastResults.length) {
+          resultsEl.innerHTML = `<div class="muted" style="padding:8px">No results.${isFavView ? '' : ' Try widening time or adding vibes.'}</div>`;
+          return;
+        }
+
+        // Summary
+        if (!isFavView && data.origin) {
+          const head = document.createElement('div');
+          head.className = 'muted';
+          head.style.cssText = 'font-size:11px; margin-bottom:6px';
+          head.textContent =
+            `${data.count} spots within ~${data.radius_nm} nm · `
+            + `cruise ${Math.round(data.cruise_kt)} kt · `
+            + (data.round_trip ? 'round-trip budget' : 'one-way budget');
+          resultsEl.appendChild(head);
+        }
+
+        const favIds = new Set((window._advFavIds || []));
+        lastResults.forEach((r, i) => {
+          const poi = r.poi || r._poi || {};
+          const land = r.landing || r._landing || {};
+          const isFav = favIds.has(poi.id);
+
+          const pin = L.marker([poi.lat, poi.lon], { icon: pinIcon(land.confidence || 'red') })
+            .addTo(layer)
+            .bindPopup(
+              `<b>${vibeEmoji(poi.vibe)} ${escapeHtml(poi.name)}</b><br>`
+              + `<span class="muted">${poi.vibe}</span><br>`
+              + `${(r.distance_nm ?? '?')} nm · ETE ${(r.ete_min_one_way ?? '?')} min one-way<br>`
+              + `<b>Landing:</b> <span class="adv-conf adv-conf-${land.confidence}"></span>${escapeHtml(land.reason || '')}`
+              + (land.icao ? `<br><a href="#" onclick="document.getElementById('arr').value='${land.icao}';return false;">Plan route to ${land.icao}</a>` : '')
+            );
+
+          const card = document.createElement('div');
+          card.className = 'adv-card' + (isFav ? ' adv-card-fav' : '');
+          card.innerHTML = `
+            <button class="adv-fav-btn ${isFav ? 'on' : ''}" data-poi="${escapeAttr(poi.id)}" title="Save / unsave">★</button>
+            <div style="font-weight:600">${vibeEmoji(poi.vibe)} ${escapeHtml(poi.name)}</div>
+            <div class="adv-meta">
+              <span class="adv-conf adv-conf-${land.confidence || 'red'}"></span>
+              ${escapeHtml(land.reason || '')}
+            </div>
+            <div class="adv-meta">
+              ${r.distance_nm != null ? `${r.distance_nm} nm` : ''}
+              ${r.ete_min_one_way != null ? ` · ETE ${r.ete_min_one_way} min one-way` : ''}
+              ${land.icao ? ` · land at <b>${escapeHtml(land.icao)}</b>` : ' · off-airport'}
+            </div>`;
+          card.addEventListener('click', (ev) => {
+            if (ev.target.classList.contains('adv-fav-btn')) return;
+            map.setView([poi.lat, poi.lon], 11);
+            pin.openPopup();
+          });
+          card.querySelector('.adv-fav-btn').addEventListener('click', async (ev) => {
+            ev.stopPropagation();
+            const btn = ev.currentTarget;
+            const poiId = btn.dataset.poi;
+            if (btn.classList.contains('on')) {
+              await fetch('/adventure/favorites/remove', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ user_key: userKey(), poi_id: poiId, payload: {} }),
+              });
+              btn.classList.remove('on');
+              card.classList.remove('adv-card-fav');
+              if (window._advFavIds) {
+                const ix = window._advFavIds.indexOf(poiId);
+                if (ix >= 0) window._advFavIds.splice(ix, 1);
+              }
+            } else {
+              await fetch('/adventure/favorites/add', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ user_key: userKey(), poi_id: poiId, payload: r }),
+              });
+              btn.classList.add('on');
+              card.classList.add('adv-card-fav');
+              window._advFavIds = window._advFavIds || [];
+              if (!window._advFavIds.includes(poiId)) window._advFavIds.push(poiId);
+            }
+          });
+          resultsEl.appendChild(card);
+        });
+
+        // Auto-fit map to results.
+        if (lastResults.length) {
+          const bounds = L.latLngBounds(
+            lastResults.map(r => [(r.poi || r._poi).lat, (r.poi || r._poi).lon])
+          );
+          if (data.origin) bounds.extend([data.origin.lat, data.origin.lon]);
+          try { map.fitBounds(bounds.pad(0.15)); } catch (e) {}
+        }
+      }
+
+      function escapeHtml(s) {
+        return String(s ?? '').replace(/[&<>"']/g, c =>
+          ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      }
+      function escapeAttr(s) { return escapeHtml(s); }
+
+      // Pre-load favorite IDs to highlight stars.
+      async function loadFavIds() {
+        try {
+          const r = await fetch('/adventure/favorites?user_key=' + encodeURIComponent(userKey()));
+          const favs = await r.json();
+          window._advFavIds = (favs || []).map(f => (f.poi || {}).id || f.poi_id).filter(Boolean);
+        } catch (e) { window._advFavIds = []; }
+      }
+      loadFavIds();
+
+      // ── Search ───────────────────────────────────────────────────
+      goBtn.addEventListener('click', async () => {
+        advFavOnly = false;
+        statusEl.textContent = 'Searching… (first run on a new region can take 20-30s)';
+        resultsEl.innerHTML = '';
+        const heliEl = document.getElementById('heliType');
+        const body = {
+          origin: document.getElementById('advOrigin').value.trim(),
+          time_aloft_min: +timeSlider.value,
+          vibes: [...selectedVibes],
+          helicopter_type: heliEl ? heliEl.value : '',
+          round_trip: document.getElementById('advRoundTrip').checked,
+          limit: 40,
+          auto_fetch: true,
+        };
+        try {
+          const r = await fetch('/adventure/search', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body),
+          });
+          const data = await r.json();
+          if (data.error) { statusEl.textContent = '⚠ ' + data.error; return; }
+          statusEl.textContent =
+            `Found ${data.count} spots · radius ${data.radius_nm} nm · `
+            + `${data.fetch.fetched} new POIs fetched, `
+            + `${data.fetch.cells_skipped} cells cached`;
+          await loadFavIds();
+          renderResults(data, false);
+        } catch (e) {
+          statusEl.textContent = '⚠ Search failed: ' + e.message;
+        }
+      });
+
+      favBtn.addEventListener('click', async () => {
+        advFavOnly = true;
+        statusEl.textContent = 'Loading favorites…';
+        const r = await fetch('/adventure/favorites?user_key=' + encodeURIComponent(userKey()));
+        const favs = await r.json();
+        // Favorites store the full result snapshot from /adventure/search.
+        // Normalize to the same shape renderResults expects.
+        const results = favs.map(f => f);
+        statusEl.textContent = `${results.length} saved adventure${results.length === 1 ? '' : 's'}`;
+        window._advFavIds = results.map(r => (r.poi || {}).id).filter(Boolean);
+        renderResults({ results, count: results.length }, true);
+      });
+    })();
   </script>
 </body>
 </html>
