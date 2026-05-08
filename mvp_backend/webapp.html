@@ -5195,6 +5195,27 @@
             method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(body),
           });
+          // Cloudflare / proxy timeouts return HTML error pages, which would
+          // blow up JSON.parse with "Unexpected token '<'". Sniff the
+          // content-type and surface a useful message instead.
+          const ct = (r.headers.get('content-type') || '').toLowerCase();
+          if (!ct.includes('application/json')) {
+            const txt = await r.text();
+            const isCfTimeout = /error code: 524|cloudflare/i.test(txt);
+            const isCfError   = /error code: 5\d\d/i.test(txt);
+            if (isCfTimeout) {
+              statusEl.innerHTML =
+                '⏱ <b>First-run timeout (Cloudflare 524).</b> The region is cold — '
+                + 'POIs and surface survey are still warming. Wait ~30 seconds and try again; '
+                + 'subsequent searches in this area will be much faster.';
+            } else if (isCfError) {
+              statusEl.textContent = '⚠ Server error ' + r.status + '. Try again in a moment.';
+            } else {
+              statusEl.textContent = '⚠ Search failed: HTTP ' + r.status
+                + ' (' + (ct || 'unknown content') + ')';
+            }
+            return;
+          }
           const data = await r.json();
           if (data.error) { statusEl.textContent = '⚠ ' + data.error; return; }
           renderPerfBlock(data);

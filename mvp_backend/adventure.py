@@ -304,10 +304,19 @@ def search(req: AdventureRequest) -> dict:
 
     # Slow pass: re-classify the top-N with full surface survey so the
     # cards the user actually sees have real OSM ground-truth.
+    # Bounded by a wall-clock budget so we always return inside Cloudflare's
+    # 100s edge timeout — uncovered candidates keep their fast-pass verdict.
+    import time as _time
+    _SURVEY_BUDGET_S = 70.0
+    _t0 = _time.monotonic()
+    surveyed = 0
     for cand in candidates:
         if cand["landing"].get("kind") != "off_airport":
             continue
         if cand["landing"].get("confidence") == "red":
+            continue
+        if _time.monotonic() - _t0 > _SURVEY_BUDGET_S:
+            cand["landing"]["survey_skipped"] = "time_budget"
             continue
         site = landing_sites.classify_landing(
             cand["poi"]["lat"], cand["poi"]["lon"], cand["poi"]["tags"],
@@ -320,6 +329,7 @@ def search(req: AdventureRequest) -> dict:
             _score(cand["distance_nm"], radius_nm, site.confidence, vibe_match=True),
             4,
         )
+        surveyed += 1
     candidates.sort(key=lambda r: r["score"], reverse=True)
 
     return {
