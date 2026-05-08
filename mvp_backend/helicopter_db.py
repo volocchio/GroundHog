@@ -902,6 +902,189 @@ _register(HelicopterModel(
     notes="Piper Archer III POH. Lycoming O-360-A4M, 180 HP.",
 ))
 
+# ── Bell 505 Jet Ranger X ────────────────────────────────────────────────
+_register(HelicopterModel(
+    type_code="B505",
+    name="Bell 505 Jet Ranger X",
+    engine_type="turbine",
+    fuel_type="JETA",
+    max_gross_weight_lb=3680,
+    empty_weight_lb=2120,
+    usable_fuel_gal=92,
+    fuel_weight_lb_per_gal=6.7,
+    service_ceiling_da_ft=18000,
+    autorotation_glide_ratio=4.5,
+    autorotation_speed_kt=75.0,
+    perf_table=[
+        PerfPoint(da_ft=0,    max_roc_fpm=1500, cruise_ktas=125, fuel_burn_gph=28.0, hoge_max_gw_lb=3680, hige_max_gw_lb=3680),
+        PerfPoint(da_ft=2000, max_roc_fpm=1320, cruise_ktas=123, fuel_burn_gph=27.5, hoge_max_gw_lb=3580, hige_max_gw_lb=3680),
+        PerfPoint(da_ft=4000, max_roc_fpm=1130, cruise_ktas=121, fuel_burn_gph=26.9, hoge_max_gw_lb=3450, hige_max_gw_lb=3600),
+        PerfPoint(da_ft=6000, max_roc_fpm=920,  cruise_ktas=118, fuel_burn_gph=26.2, hoge_max_gw_lb=3280, hige_max_gw_lb=3490),
+        PerfPoint(da_ft=8000, max_roc_fpm=700,  cruise_ktas=115, fuel_burn_gph=25.4, hoge_max_gw_lb=3080, hige_max_gw_lb=3340),
+        PerfPoint(da_ft=10000,max_roc_fpm=480,  cruise_ktas=111, fuel_burn_gph=24.6, hoge_max_gw_lb=2860, hige_max_gw_lb=3170),
+        PerfPoint(da_ft=12000,max_roc_fpm=270,  cruise_ktas=107, fuel_burn_gph=23.8, hoge_max_gw_lb=2620, hige_max_gw_lb=2980),
+        PerfPoint(da_ft=14000,max_roc_fpm=90,   cruise_ktas=102, fuel_burn_gph=22.9, hoge_max_gw_lb=2370, hige_max_gw_lb=2770),
+    ],
+    notes="Bell 505 RFM. Arrius 2R, 504 SHP (derated). Glass cockpit, 4-blade tail rotor.",
+))
+
+# ── Airbus H135 / EC135 P3 ───────────────────────────────────────────────
+_register(HelicopterModel(
+    type_code="H135",
+    name="Airbus H135 / EC135 P3 (twin)",
+    engine_type="turbine",
+    fuel_type="JETA",
+    max_gross_weight_lb=6415,
+    empty_weight_lb=3737,
+    usable_fuel_gal=180,
+    fuel_weight_lb_per_gal=6.7,
+    service_ceiling_da_ft=20000,
+    autorotation_glide_ratio=5.0,
+    autorotation_speed_kt=75.0,
+    perf_table=[
+        PerfPoint(da_ft=0,    max_roc_fpm=2000, cruise_ktas=137, fuel_burn_gph=72.0, hoge_max_gw_lb=6415, hige_max_gw_lb=6415),
+        PerfPoint(da_ft=2000, max_roc_fpm=1820, cruise_ktas=135, fuel_burn_gph=70.5, hoge_max_gw_lb=6300, hige_max_gw_lb=6415),
+        PerfPoint(da_ft=4000, max_roc_fpm=1620, cruise_ktas=133, fuel_burn_gph=68.8, hoge_max_gw_lb=6100, hige_max_gw_lb=6320),
+        PerfPoint(da_ft=6000, max_roc_fpm=1400, cruise_ktas=131, fuel_burn_gph=67.0, hoge_max_gw_lb=5860, hige_max_gw_lb=6180),
+        PerfPoint(da_ft=8000, max_roc_fpm=1170, cruise_ktas=128, fuel_burn_gph=65.0, hoge_max_gw_lb=5570, hige_max_gw_lb=5980),
+        PerfPoint(da_ft=10000,max_roc_fpm=920,  cruise_ktas=125, fuel_burn_gph=62.8, hoge_max_gw_lb=5240, hige_max_gw_lb=5730),
+        PerfPoint(da_ft=12000,max_roc_fpm=660,  cruise_ktas=121, fuel_burn_gph=60.4, hoge_max_gw_lb=4880, hige_max_gw_lb=5440),
+        PerfPoint(da_ft=14000,max_roc_fpm=400,  cruise_ktas=117, fuel_burn_gph=57.8, hoge_max_gw_lb=4490, hige_max_gw_lb=5110),
+        PerfPoint(da_ft=16000,max_roc_fpm=170,  cruise_ktas=112, fuel_burn_gph=55.0, hoge_max_gw_lb=4080, hige_max_gw_lb=4750),
+    ],
+    notes="H135 P3 RFM. Twin Arrius 2B2plus, 633 SHP each. EMS / law enforcement workhorse, full Cat A.",
+))
+
+# ── Airbus H145 / EC145 ──────────────────────────────────────────────────
+_register(HelicopterModel(
+    type_code="H145",
+    name="Airbus H145 / EC145 (twin)",
+    engine_type="turbine",
+    fuel_type="JETA",
+    max_gross_weight_lb=8378,
+    empty_weight_lb=4685,
+    usable_fuel_gal=219,
+    fuel_weight_lb_per_gal=6.7,
+    service_ceiling_da_ft=18000,
+    autorotation_glide_ratio=5.0,
+    autorotation_speed_kt=75.0,
+    perf_table=[
+        PerfPoint(da_ft=0,    max_roc_fpm=2400, cruise_ktas=135, fuel_burn_gph=92.0, hoge_max_gw_lb=8378, hige_max_gw_lb=8378),
+        PerfPoint(da_ft=2000, max_roc_fpm=2160, cruise_ktas=133, fuel_burn_gph=90.0, hoge_max_gw_lb=8200, hige_max_gw_lb=8378),
+        PerfPoint(da_ft=4000, max_roc_fpm=1900, cruise_ktas=131, fuel_burn_gph=88.0, hoge_max_gw_lb=7950, hige_max_gw_lb=8260),
+        PerfPoint(da_ft=6000, max_roc_fpm=1620, cruise_ktas=128, fuel_burn_gph=85.5, hoge_max_gw_lb=7640, hige_max_gw_lb=8080),
+        PerfPoint(da_ft=8000, max_roc_fpm=1330, cruise_ktas=125, fuel_burn_gph=83.0, hoge_max_gw_lb=7280, hige_max_gw_lb=7820),
+        PerfPoint(da_ft=10000,max_roc_fpm=1030, cruise_ktas=121, fuel_burn_gph=80.2, hoge_max_gw_lb=6870, hige_max_gw_lb=7510),
+        PerfPoint(da_ft=12000,max_roc_fpm=720,  cruise_ktas=117, fuel_burn_gph=77.2, hoge_max_gw_lb=6420, hige_max_gw_lb=7150),
+        PerfPoint(da_ft=14000,max_roc_fpm=410,  cruise_ktas=112, fuel_burn_gph=74.0, hoge_max_gw_lb=5930, hige_max_gw_lb=6740),
+    ],
+    notes="H145 D3 RFM. Twin Arriel 2E, 894 SHP each. Fenestron tail rotor; EMS / utility / SAR.",
+))
+
+# ── Leonardo AW109 GrandNew ──────────────────────────────────────────────
+_register(HelicopterModel(
+    type_code="AW109",
+    name="Leonardo AW109 GrandNew (twin)",
+    engine_type="turbine",
+    fuel_type="JETA",
+    max_gross_weight_lb=7000,
+    empty_weight_lb=4255,
+    usable_fuel_gal=193,
+    fuel_weight_lb_per_gal=6.7,
+    service_ceiling_da_ft=19600,
+    autorotation_glide_ratio=5.0,
+    autorotation_speed_kt=80.0,
+    perf_table=[
+        PerfPoint(da_ft=0,    max_roc_fpm=2200, cruise_ktas=154, fuel_burn_gph=82.0, hoge_max_gw_lb=7000, hige_max_gw_lb=7000),
+        PerfPoint(da_ft=2000, max_roc_fpm=2000, cruise_ktas=152, fuel_burn_gph=80.5, hoge_max_gw_lb=6850, hige_max_gw_lb=7000),
+        PerfPoint(da_ft=4000, max_roc_fpm=1780, cruise_ktas=150, fuel_burn_gph=78.8, hoge_max_gw_lb=6650, hige_max_gw_lb=6920),
+        PerfPoint(da_ft=6000, max_roc_fpm=1540, cruise_ktas=147, fuel_burn_gph=76.8, hoge_max_gw_lb=6400, hige_max_gw_lb=6780),
+        PerfPoint(da_ft=8000, max_roc_fpm=1280, cruise_ktas=144, fuel_burn_gph=74.5, hoge_max_gw_lb=6100, hige_max_gw_lb=6580),
+        PerfPoint(da_ft=10000,max_roc_fpm=1010, cruise_ktas=140, fuel_burn_gph=72.0, hoge_max_gw_lb=5760, hige_max_gw_lb=6320),
+        PerfPoint(da_ft=12000,max_roc_fpm=730,  cruise_ktas=135, fuel_burn_gph=69.3, hoge_max_gw_lb=5380, hige_max_gw_lb=6010),
+        PerfPoint(da_ft=14000,max_roc_fpm=460,  cruise_ktas=130, fuel_burn_gph=66.5, hoge_max_gw_lb=4970, hige_max_gw_lb=5650),
+        PerfPoint(da_ft=16000,max_roc_fpm=200,  cruise_ktas=124, fuel_burn_gph=63.5, hoge_max_gw_lb=4530, hige_max_gw_lb=5240),
+    ],
+    notes="AW109 GrandNew RFM. Twin PW207C, 735 SHP each. Fast light-twin VIP / EMS.",
+))
+
+# ── Bell 429 GlobalRanger ────────────────────────────────────────────────
+_register(HelicopterModel(
+    type_code="B429",
+    name="Bell 429 GlobalRanger (twin)",
+    engine_type="turbine",
+    fuel_type="JETA",
+    max_gross_weight_lb=7500,
+    empty_weight_lb=4750,
+    usable_fuel_gal=217,
+    fuel_weight_lb_per_gal=6.7,
+    service_ceiling_da_ft=20000,
+    autorotation_glide_ratio=5.0,
+    autorotation_speed_kt=78.0,
+    perf_table=[
+        PerfPoint(da_ft=0,    max_roc_fpm=2100, cruise_ktas=140, fuel_burn_gph=78.0, hoge_max_gw_lb=7500, hige_max_gw_lb=7500),
+        PerfPoint(da_ft=2000, max_roc_fpm=1900, cruise_ktas=138, fuel_burn_gph=76.5, hoge_max_gw_lb=7350, hige_max_gw_lb=7500),
+        PerfPoint(da_ft=4000, max_roc_fpm=1690, cruise_ktas=136, fuel_burn_gph=74.8, hoge_max_gw_lb=7150, hige_max_gw_lb=7400),
+        PerfPoint(da_ft=6000, max_roc_fpm=1460, cruise_ktas=134, fuel_burn_gph=72.9, hoge_max_gw_lb=6900, hige_max_gw_lb=7250),
+        PerfPoint(da_ft=8000, max_roc_fpm=1220, cruise_ktas=131, fuel_burn_gph=70.8, hoge_max_gw_lb=6610, hige_max_gw_lb=7050),
+        PerfPoint(da_ft=10000,max_roc_fpm=970,  cruise_ktas=128, fuel_burn_gph=68.4, hoge_max_gw_lb=6280, hige_max_gw_lb=6800),
+        PerfPoint(da_ft=12000,max_roc_fpm=710,  cruise_ktas=124, fuel_burn_gph=65.9, hoge_max_gw_lb=5900, hige_max_gw_lb=6500),
+        PerfPoint(da_ft=14000,max_roc_fpm=440,  cruise_ktas=119, fuel_burn_gph=63.2, hoge_max_gw_lb=5500, hige_max_gw_lb=6160),
+        PerfPoint(da_ft=16000,max_roc_fpm=180,  cruise_ktas=114, fuel_burn_gph=60.4, hoge_max_gw_lb=5050, hige_max_gw_lb=5780),
+    ],
+    notes="Bell 429 RFM. Twin PW207D1, 625 SHP each. IFR-capable EMS / corporate.",
+))
+
+# ── Airbus AS355 TwinStar / EC355 ────────────────────────────────────────
+_register(HelicopterModel(
+    type_code="AS355",
+    name="Airbus AS355NP TwinStar (twin)",
+    engine_type="turbine",
+    fuel_type="JETA",
+    max_gross_weight_lb=5732,
+    empty_weight_lb=3300,
+    usable_fuel_gal=192,
+    fuel_weight_lb_per_gal=6.7,
+    service_ceiling_da_ft=14100,
+    autorotation_glide_ratio=4.8,
+    autorotation_speed_kt=78.0,
+    perf_table=[
+        PerfPoint(da_ft=0,    max_roc_fpm=1500, cruise_ktas=120, fuel_burn_gph=68.0, hoge_max_gw_lb=5732, hige_max_gw_lb=5732),
+        PerfPoint(da_ft=2000, max_roc_fpm=1330, cruise_ktas=118, fuel_burn_gph=66.5, hoge_max_gw_lb=5550, hige_max_gw_lb=5732),
+        PerfPoint(da_ft=4000, max_roc_fpm=1140, cruise_ktas=116, fuel_burn_gph=65.0, hoge_max_gw_lb=5320, hige_max_gw_lb=5640),
+        PerfPoint(da_ft=6000, max_roc_fpm=940,  cruise_ktas=113, fuel_burn_gph=63.2, hoge_max_gw_lb=5040, hige_max_gw_lb=5470),
+        PerfPoint(da_ft=8000, max_roc_fpm=720,  cruise_ktas=110, fuel_burn_gph=61.3, hoge_max_gw_lb=4730, hige_max_gw_lb=5240),
+        PerfPoint(da_ft=10000,max_roc_fpm=490,  cruise_ktas=106, fuel_burn_gph=59.3, hoge_max_gw_lb=4380, hige_max_gw_lb=4970),
+        PerfPoint(da_ft=12000,max_roc_fpm=260,  cruise_ktas=102, fuel_burn_gph=57.2, hoge_max_gw_lb=4000, hige_max_gw_lb=4660),
+    ],
+    notes="AS355NP RFM. Twin Arrius 1A1, 503 SHP each. Older twin in utility / EMS / news roles.",
+))
+
+# ── Sikorsky S-76C++ ─────────────────────────────────────────────────────
+_register(HelicopterModel(
+    type_code="S76",
+    name="Sikorsky S-76C++ (twin)",
+    engine_type="turbine",
+    fuel_type="JETA",
+    max_gross_weight_lb=11700,
+    empty_weight_lb=7007,
+    usable_fuel_gal=287,
+    fuel_weight_lb_per_gal=6.7,
+    service_ceiling_da_ft=15000,
+    autorotation_glide_ratio=5.5,
+    autorotation_speed_kt=85.0,
+    perf_table=[
+        PerfPoint(da_ft=0,    max_roc_fpm=1800, cruise_ktas=155, fuel_burn_gph=140.0, hoge_max_gw_lb=11700, hige_max_gw_lb=11700),
+        PerfPoint(da_ft=2000, max_roc_fpm=1620, cruise_ktas=153, fuel_burn_gph=137.0, hoge_max_gw_lb=11500, hige_max_gw_lb=11700),
+        PerfPoint(da_ft=4000, max_roc_fpm=1430, cruise_ktas=150, fuel_burn_gph=134.0, hoge_max_gw_lb=11200, hige_max_gw_lb=11580),
+        PerfPoint(da_ft=6000, max_roc_fpm=1230, cruise_ktas=147, fuel_burn_gph=130.5, hoge_max_gw_lb=10800, hige_max_gw_lb=11380),
+        PerfPoint(da_ft=8000, max_roc_fpm=1010, cruise_ktas=143, fuel_burn_gph=126.8, hoge_max_gw_lb=10300, hige_max_gw_lb=11100),
+        PerfPoint(da_ft=10000,max_roc_fpm=780,  cruise_ktas=139, fuel_burn_gph=123.0, hoge_max_gw_lb=9700, hige_max_gw_lb=10720),
+        PerfPoint(da_ft=12000,max_roc_fpm=540,  cruise_ktas=134, fuel_burn_gph=119.0, hoge_max_gw_lb=9020, hige_max_gw_lb=10260),
+    ],
+    notes="S-76C++ RFM. Twin Arriel 2S2, 922 SHP each. Offshore / VIP heavy twin.",
+))
+
 _load_external_ceiling_curves()
 
 
