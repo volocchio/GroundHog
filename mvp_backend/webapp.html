@@ -512,6 +512,40 @@
       </select>
       <div id="glideInfo" class="muted" style="font-size:11px; margin:2px 0"></div>
 
+      <details style="margin:4px 0 6px 0; font-size:11px; background:#fef3c7; border:1px solid #fbbf24; border-radius:4px; padding:4px 8px">
+        <summary style="cursor:pointer; font-weight:600; color:#78350f">⚠ Why the planner penalizes water heavily — risk reference</summary>
+        <div style="margin-top:6px; line-height:1.45; color:#451a03">
+          <p style="margin:4px 0"><b>Helicopter ditching is not the same as a fixed-wing ditching.</b>
+          High CG + no watertight hull → most helicopters invert and sink within 30–60 seconds.
+          Drowning, not impact, is the dominant fatality mode for non-floats ships.</p>
+          <ul style="margin:4px 0 4px 16px; padding:0">
+            <li><b>~15%</b> persistent fatality rate in helicopter ditchings worldwide
+              <span class="muted">(NATO STO / EASA HUE study)</span></li>
+            <li><b>43%</b> survival in 1971–1992 worldwide civil heli water impacts
+              <span class="muted">(UK CAA CAP1145)</span></li>
+            <li><b>80%+</b> survival North Sea ops <i>only with</i> EFS floats, immersion suits, life rafts, HUET training</li>
+            <li>Compare general aviation (mostly fixed-wing): <b>~90%</b> ditching survival
+              <span class="muted">(Aviation Safety Magazine)</span> — fixed-wings float for minutes upright</li>
+          </ul>
+          <p style="margin:4px 0"><b>Practical implication for inland VFR in a non-floats piston:</b>
+          a controlled autorotation into timber on an unprepared shore typically beats a mid-lake
+          ditching on probability. The rotor system is destroyed; the pilot walks out. Cold-water
+          immersion (Lake Pend Oreille runs 40–55 °F most of the year) collapses the survival
+          window further: useful consciousness ≈ 15–30 min, swimming ability ≈ 1–2 min before
+          cold-shock incapacitation.</p>
+          <p style="margin:4px 0; font-style:italic; color:#7c2d12">
+            Setting "Ignore water" is appropriate only with floats + immersion gear + warm water +
+            short crossings within glide. The planner does <b>not</b> currently know whether your
+            ship has floats; until it does, treat all water as a no-floats crossing.
+          </p>
+          <p style="margin:4px 0; font-size:10px" class="muted">
+            Sources: NATO STO ditching-landing series; EASA HUE Final Report; UK CAA CAP1145
+            (helicopter water impact survivability); Aviation Safety Magazine "Myths of Ditching".
+            This is a planning aid, not authoritative safety guidance — PIC retains responsibility.
+          </p>
+        </div>
+      </details>
+
       <label>Landing slope threshold (degrees)</label>
       <div style="display:flex; align-items:center; gap:8px">
         <input id="slopeThreshold" type="number" value="15" min="5" max="45" step="1" style="width:70px; text-align:right" title="Max acceptable landing slope in degrees" />
