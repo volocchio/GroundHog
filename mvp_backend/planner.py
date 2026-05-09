@@ -1556,17 +1556,17 @@ def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
     #   - depth ramp: extra penalty proportional to distance-from-shore so
     #     shoreline-hugging beats mid-lake even when both are within glide.
     if water_risk <= 0:
-        WATER_BASE = 0.30      # strict: noticeable preference for land
-        WATER_DEPTH = 0.50     # extra at mid-lake / glide edge
+        WATER_BASE = 3.0       # strict: water is ~4× land step — dominant
+        WATER_DEPTH = 3.0      # mid-lake even worse
     elif water_risk <= 25:
-        WATER_BASE = 0.20
-        WATER_DEPTH = 0.30
+        WATER_BASE = 1.5       # conservative: water clearly worse than hills
+        WATER_DEPTH = 1.5
     elif water_risk <= 50:
-        WATER_BASE = 0.10
-        WATER_DEPTH = 0.20
+        WATER_BASE = 0.5
+        WATER_DEPTH = 0.7
     else:
-        WATER_BASE = 0.05
-        WATER_DEPTH = 0.10
+        WATER_BASE = 0.15
+        WATER_DEPTH = 0.25
     WATER_BEYOND = 200.0   # very heavy cost for cells beyond glide range
     cost = [[0.0] * n_lon for _ in range(n_lat)]
     smooth_cost = [[0.0] * n_lon for _ in range(n_lat)]
@@ -1945,7 +1945,7 @@ def terrain_avoid_leg_streaming(
             slope_soft_cost = _build_slope_cost(
                 grid, elev_ft, n_lat, n_lon,
                 slope_threshold_deg=slope_threshold_deg,
-                max_penalty=4.0,
+                max_penalty=1.0,
             )
             if slope_soft_cost is not None:
                 if airspace_cost_2d is None:
