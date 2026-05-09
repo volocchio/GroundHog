@@ -519,7 +519,7 @@
       </div>
       <div style="display:flex; align-items:center; gap:6px; margin-top:4px">
         <input type="checkbox" id="enforceSlope" style="width:auto; margin:0" />
-        <label for="enforceSlope" style="margin:0; font-size:12px; cursor:pointer" title="Hard-block route through cells whose terrain slope exceeds the threshold AND are beyond autorot glide reach of safer ground.">Enforce slope (route around red cells)</label>
+        <label for="enforceSlope" style="margin:0; font-size:12px; cursor:pointer" title="Hard-block route through cells whose terrain slope exceeds the threshold AND are beyond autorotation glide reach of safer ground.">Enforce slope (route around red cells)</label>
       </div>
 
       <label>Apply landing-slope check to:</label>
@@ -3151,7 +3151,7 @@
       const _heli = helicopterData[document.getElementById('heliType').value] || {};
       const isFW = _heli.airframe_class === 'fixed_wing';
       const tGlideMode = isFW ? 'power-off glide' : 'autorotation';
-      const tGlideShort = isFW ? 'glide' : 'autorot';
+      const tGlideShort = isFW ? 'glide' : 'autorotation';
       const tEmergency = isFW ? 'engine-out glide' : 'engine-out autorotation';
       const tRatioLabel = isFW ? 'power-off glide ratio' : 'autorotation ratio';
       const tFlatHazard = isFW ? 'forced-landing field' : 'helicopter-suitable landing site';
