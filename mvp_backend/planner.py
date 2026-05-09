@@ -1581,8 +1581,10 @@ def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
                 smooth_cost[i][j] = WATER_NEAR_EDGE + beyond
             has_cost = True
 
-    # Apply slope penalty: for each water cell, check adjacent shore cells
-    # If any shore slope exceeds threshold, apply heavy cost
+    # Apply slope penalty: for cells BEYOND glide reach, if adjacent shore
+    # is steep (canyon-like), add extra cost so the planner won't fly into
+    # an unlandable fjord. Within-glide water cells are skipped — they're
+    # legitimate shoreline-hugging routes and the user can ditch ashore.
     if slope_threshold_deg > 0 and slope_threshold_deg < 90:
         import math
         
@@ -1600,6 +1602,9 @@ def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
         for i in range(n_lat):
             for j in range(n_lon):
                 if not is_water[i][j]:
+                    continue
+                # Skip within-glide water — shoreline routes are OK there.
+                if dist[i][j] <= glide_range_cells:
                     continue
                 
                 # Check all 8 adjacent cells for shore
@@ -1921,7 +1926,7 @@ def terrain_avoid_leg_streaming(
             slope_soft_cost = _build_slope_cost(
                 grid, elev_ft, n_lat, n_lon,
                 slope_threshold_deg=slope_threshold_deg,
-                max_penalty=1.5,
+                max_penalty=4.0,
             )
             if slope_soft_cost is not None:
                 if airspace_cost_2d is None:
