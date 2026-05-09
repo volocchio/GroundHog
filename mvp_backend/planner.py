@@ -1555,18 +1555,28 @@ def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
     #     equal-length land routes win. Doubles roughly with each risk tier.
     #   - depth ramp: extra penalty proportional to distance-from-shore so
     #     shoreline-hugging beats mid-lake even when both are within glide.
+    # NOTE: cost is applied as  step *= (1.0 + cost)  in A*. For non-floats
+    # piston ships (the current default), drowning is the dominant fatality
+    # mode in helicopter ditching (NATO/EASA HUE study: ~15% mortality, almost
+    # all from underwater escape failure). A controlled auto into timber on
+    # an unprepared shore beats ditching mid-lake on probability \u2014 the
+    # rotor system is destroyed but the pilot walks out. Therefore water
+    # should outrank moderate slope penalties by a large margin.
+    #
+    # TODO: when helicopter_db gains has_floats, multiply BASE/DEPTH by 0.2
+    # for float-equipped ships. For now, no-floats is the safe default.
     if water_risk <= 0:
-        WATER_BASE = 3.0       # strict: water is ~4× land step — dominant
-        WATER_DEPTH = 3.0      # mid-lake even worse
+        WATER_BASE = 8.0       # strict: shoreline already 9\u00d7 land step
+        WATER_DEPTH = 8.0      # mid-lake ~17\u00d7 land
     elif water_risk <= 25:
-        WATER_BASE = 1.5       # conservative: water clearly worse than hills
-        WATER_DEPTH = 1.5
+        WATER_BASE = 4.0       # conservative: shoreline 5\u00d7 land, mid-lake 9\u00d7
+        WATER_DEPTH = 4.0
     elif water_risk <= 50:
-        WATER_BASE = 0.5
-        WATER_DEPTH = 0.7
+        WATER_BASE = 1.5
+        WATER_DEPTH = 1.5
     else:
-        WATER_BASE = 0.15
-        WATER_DEPTH = 0.25
+        WATER_BASE = 0.3
+        WATER_DEPTH = 0.3
     WATER_BEYOND = 200.0   # very heavy cost for cells beyond glide range
     cost = [[0.0] * n_lon for _ in range(n_lat)]
     smooth_cost = [[0.0] * n_lon for _ in range(n_lat)]
