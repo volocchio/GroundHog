@@ -541,6 +541,28 @@ def route_stream(req: RouteRequest):
                     seg_num_legs = len(sequence) - 1
                     leg_offset = sum(len(s) - 1 for s in all_sequences)
 
+                    # If we already attempted (and partially streamed) a prior
+                    # candidate sequence in this segment, tell the client to
+                    # discard those stale legs before we stream the new one.
+                    # Without this the UI keeps the dead-end leg(s) appended
+                    # to the legsList and renders nonsense like
+                    # KSZT→KCOE  (orphan from failed seq #1)
+                    # KSZT→KHRF  (real first leg of seq #2)
+                    if seq_idx > 0:
+                        yield (
+                            "data: "
+                            + json.dumps({
+                                "type": "reroute",
+                                "message": (
+                                    f"Trying alternate fuel-stop sequence "
+                                    f"({seq_idx + 1}/{len(sequences_pool)}) for "
+                                    f"{seg_dep.icao} → {seg_arr.icao}\u2026"
+                                ),
+                                "keep_legs": leg_offset,
+                            })
+                            + "\n\n"
+                        )
+
                     # Build flattened stops list for route_plan event
                     # Only include actual fuel stops (exclude -NF waypoints)
                     flat_stops = []
