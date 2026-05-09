@@ -711,6 +711,8 @@
     const obstacleGroup = L.layerGroup().addTo(map);
     const airspaceGroup = L.layerGroup().addTo(map);
     const glideCorridorGroup = L.layerGroup().addTo(map);
+    // Safe-landing OSM polygons. Off by default — Overpass call is not free.
+    const landingAreasGroup = L.layerGroup();
 
     openTopo.addTo(map);  // default to OpenTopoMap
 
@@ -725,6 +727,7 @@
       '<span class="layer-swatch" style="background:#2060cc"></span> Airspace': airspaceGroup,
       '<span class="layer-swatch" style="background:#cc3300"></span> Obstacles (FAA)': obstacleGroup,
       '<span class="layer-swatch" style="background:#16a34a"></span> Glide Corridor': glideCorridorGroup,
+      '<span class="layer-swatch" style="background:#15803d; opacity:0.5"></span> Safe Landings (OSM)': landingAreasGroup,
     }, { position: 'topright', collapsed: true }).addTo(map);
 
     let exploreGroup = L.layerGroup().addTo(map);
@@ -870,6 +873,80 @@
     }
 
     map.on('moveend', _debounce(loadObstacles, 300));
+
+    /* ── Safe-landing-areas layer (OSM, slope-filtered) ─────────── */
+    let _laFetchController = null;
+    const LA_MIN_ZOOM = 10;          // Overpass cost guard
+    const LA_KIND_STYLE = {
+      airstrip:  { color: '#1d4ed8', fill: '#3b82f6' },
+      farmland:  { color: '#15803d', fill: '#22c55e' },
+      meadow:    { color: '#15803d', fill: '#4ade80' },
+      grass:     { color: '#15803d', fill: '#86efac' },
+      grassland: { color: '#15803d', fill: '#86efac' },
+      golf:      { color: '#0f766e', fill: '#5eead4' },
+      park:      { color: '#15803d', fill: '#bbf7d0' },
+      unknown:   { color: '#6b7280', fill: '#d1d5db' },
+    };
+
+    async function loadLandingAreas() {
+      if (!map.hasLayer(landingAreasGroup)) return;
+      const z = map.getZoom();
+      landingAreasGroup.clearLayers();
+      if (z < LA_MIN_ZOOM) {
+        L.popup({ closeButton: false, autoClose: true })
+          .setLatLng(map.getCenter())
+          .setContent('<div style="font-size:12px">Zoom in to load Safe Landings</div>')
+          .openOn(map);
+        return;
+      }
+      const b = map.getBounds();
+      const sqDeg = (b.getNorth() - b.getSouth()) * (b.getEast() - b.getWest());
+      if (sqDeg > 0.5) return;  // server will refuse anyway
+
+      const slopeDeg = Number(document.getElementById('slopeThreshold')?.value) || 15;
+      const params = new URLSearchParams({
+        south: b.getSouth().toFixed(4),
+        north: b.getNorth().toFixed(4),
+        west: b.getWest().toFixed(4),
+        east: b.getEast().toFixed(4),
+        max_slope_deg: String(slopeDeg),
+      });
+      if (_laFetchController) _laFetchController.abort();
+      _laFetchController = new AbortController();
+      try {
+        const r = await fetch('/landing-areas?' + params, { signal: _laFetchController.signal });
+        const data = await r.json();
+        if (data.bbox_too_large) return;
+        if (data.error) {
+          console.warn('Landing areas error:', data.error);
+          return;
+        }
+        for (const f of (data.features || [])) {
+          const style = LA_KIND_STYLE[f.kind] || LA_KIND_STYLE.unknown;
+          const poly = L.polygon(f.ring, {
+            color: style.color, weight: 1, opacity: 0.85,
+            fillColor: style.fill, fillOpacity: 0.30,
+            interactive: true,
+          });
+          const acres = Math.round(f.area_sq_nm * 845.4);  // 1 nm² ≈ 845.4 ac
+          poly.bindTooltip(
+            `<b>${f.label}</b><br>Slope ${f.slope_deg}° · ${Math.round(f.elev_ft)}' MSL`
+            + (acres > 0 ? ` · ~${acres.toLocaleString()} ac` : ''),
+            { sticky: true }
+          );
+          poly.addTo(landingAreasGroup);
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') console.warn('Landing areas load error:', e);
+      }
+    }
+
+    map.on('overlayadd', (e) => {
+      if (e.layer === landingAreasGroup) loadLandingAreas();
+    });
+    map.on('moveend', _debounce(loadLandingAreas, 400));
+    document.getElementById('slopeThreshold')?.addEventListener('change',
+      _debounce(loadLandingAreas, 200));
 
     /* ── Airspace layer ─────────────────────────────────────────── */
     const AIRSPACE_MIN_ZOOM = 7;

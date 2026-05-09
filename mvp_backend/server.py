@@ -26,6 +26,7 @@ from mvp_backend.grid_astar import _haversine_nm
 from mvp_backend import route_cache
 from mvp_backend import terrain_intel
 from mvp_backend import helicopter_db
+from mvp_backend import landing_areas as _landing_areas
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -989,6 +990,23 @@ def get_obstacles(
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# ── safe-landing-areas endpoint (OSM-derived, slope-filtered) ────────
+
+@app.get("/landing-areas")
+def get_landing_areas(
+    south: float = Query(...), north: float = Query(...),
+    west: float = Query(...), east: float = Query(...),
+    max_slope_deg: float = Query(8.0, ge=1.0, le=45.0),
+):
+    """Return landable OSM polygons (farmland / meadow / grass /
+    grassland / golf / park / aerodrome / airstrip / helipad) inside the
+    bbox, filtered by terrain slope sampled at each polygon centroid.
+    Cached aggressively so repeat panning is free.
+    """
+    return _landing_areas.query_bbox(south, north, west, east,
+                                     max_slope_deg=max_slope_deg)
 
 
 # ── airspace endpoint ────────────────────────────────────────────────
