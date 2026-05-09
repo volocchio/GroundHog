@@ -1148,8 +1148,8 @@ def _detect_water_grid(n_lat: int, n_lon: int, elev_ft: list) -> list[list[bool]
 
     # Pass 2b: range-based flat detection — catches SRTM lake cells where
     # one cardinal neighbor is a shore cell slightly above lake surface.
-    # Mark cell as flat if the full elevation range (self + all cardinal
-    # neighbors) is < 50 ft (≈15 m), indicating a very gently varying surface.
+    # 12 ft (~3.5 m) range to qualify; loose thresholds (50 ft) flagged
+    # the entire Columbia Basin / Great Plains as inland water.
     for i in range(n_lat):
         for j in range(n_lon):
             if flat[i][j] or is_water[i][j]:
@@ -1164,7 +1164,7 @@ def _detect_water_grid(n_lat: int, n_lon: int, elev_ft: list) -> list[list[bool]
                     ne = e2d[ni][nj]
                     if ne != float("inf"):
                         all_elevs.append(ne)
-            if len(all_elevs) >= 3 and (max(all_elevs) - min(all_elevs)) < 50.0:
+            if len(all_elevs) >= 3 and (max(all_elevs) - min(all_elevs)) < 12.0:
                 flat[i][j] = True
 
     # Flood-fill from flat seeds: only keep connected clusters ≥ 10 cells
@@ -1194,8 +1194,11 @@ def _detect_water_grid(n_lat: int, n_lon: int, elev_ft: list) -> list[list[bool]
 
     # Pass 2b: range-based flat detection — catches SRTM lake cells where
     # one cardinal neighbor is a shore cell slightly above lake surface.
-    # Mark cell as flat2b if full elevation range (self + all cardinal
-    # neighbors) < 50 ft (≈15 m).
+    # Real water reflects radar uniformly; SRTM noise on a true lake surface
+    # is sub-metre. We use 12 ft (~3.5 m) as the absolute ceiling for
+    # "this can only be water" — at 50 ft we were flagging the entire
+    # Columbia Basin / Great Plains as inland seas because farmland is
+    # genuinely that flat at 1km grid resolution.
     flat2b = [[False] * n_lon for _ in range(n_lat)]
     for i in range(n_lat):
         for j in range(n_lon):
@@ -1211,9 +1214,11 @@ def _detect_water_grid(n_lat: int, n_lon: int, elev_ft: list) -> list[list[bool]
                     ne = e2d[ni][nj]
                     if ne != float("inf"):
                         all_elevs.append(ne)
-            if len(all_elevs) >= 3 and (max(all_elevs) - min(all_elevs)) < 50.0:
+            if len(all_elevs) >= 3 and (max(all_elevs) - min(all_elevs)) < 12.0:
                 flat2b[i][j] = True
-    # BFS flood-fill on flat2b seeds, clusters ≥ 10
+    # BFS flood-fill on flat2b seeds, clusters ≥ 25 cells (≈25 km² at 1km
+    # grid — covers Lake CdA, Roosevelt, Moses Lake; rejects flat farmland
+    # patches that are typically narrower).
     visited2b = [[False] * n_lon for _ in range(n_lat)]
     for i in range(n_lat):
         for j in range(n_lon):
@@ -1230,18 +1235,19 @@ def _detect_water_grid(n_lat: int, n_lon: int, elev_ft: list) -> list[list[bool]
                 for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
                     ni, nj = ci + di, cj + dj
                     if 0 <= ni < n_lat and 0 <= nj < n_lon and not visited2b[ni][nj]:
-                        if flat2b[ni][nj] and abs(e2d[ni][nj] - ref_e) <= 16.4:
+                        if flat2b[ni][nj] and abs(e2d[ni][nj] - ref_e) <= 8.0:
                             visited2b[ni][nj] = True
                             q.append((ni, nj))
-            if len(cluster2b) >= 10:
+            if len(cluster2b) >= 25:
                 for ci, cj in cluster2b:
                     is_water[ci][cj] = True
 
     # Dilation pass: expand water clusters by 1 cell to fill SRTM sampling gaps
     # (1km grid cells may sample the shore instead of the lake center).
-    # Only expand to cells within 300 ft of an adjacent water cell's elevation
-    # so mountains are not absorbed.
-    _DILATION_ELEV_TOL_FT = 300.0
+    # 30 ft (~10m) elevation tolerance — a real shore is rarely more than 10m
+    # above lake surface in the very next 1km cell. Was 300 ft, which absorbed
+    # entire mountain flanks adjacent to coastal cells.
+    _DILATION_ELEV_TOL_FT = 30.0
     for _dil in range(3):  # 3 passes to bridge gaps in large lake coverage
         new_water = [row[:] for row in is_water]
         for i in range(n_lat):
