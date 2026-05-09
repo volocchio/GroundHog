@@ -502,6 +502,7 @@
         <label style="margin:0; display:flex; align-items:center; gap:3px"><input type="checkbox" value="B" class="adsb-gate" style="width:auto" /> Class B</label>
         <label style="margin:0; display:flex; align-items:center; gap:3px"><input type="checkbox" value="C" class="adsb-gate" style="width:auto" /> Class C</label>
         <label style="margin:0; display:flex; align-items:center; gap:3px"><input type="checkbox" value="D" style="width:auto" /> Class D</label>
+        <label style="margin:0; display:flex; align-items:center; gap:3px" title="Hard-block active FAA TFRs in the planner. Falls back to advisory display if the FAA feed is unreachable."><input type="checkbox" id="avoidTfrs" checked style="width:auto" /> 🚫 Active TFRs</label>
       </div>
 
       <label>Max detour factor: <span id="detourVal">1.8</span>x</label>
@@ -563,10 +564,6 @@
       <div style="display:flex; align-items:center; gap:6px; margin-top:4px">
         <input type="checkbox" id="useLandcover" style="width:auto; margin:0" />
         <label for="useLandcover" style="margin:0; font-size:12px; cursor:pointer" title="Use OSM landcover (highways = bonus, forest/urban = penalty) as a planner cost layer. Slower planning, smarter routes. Toggle the 'Roads & Landcover (OSM)' map layer to visualise.">🛣️ Use OSM landcover for routing (slower)</label>
-      </div>
-      <div style="display:flex; align-items:center; gap:6px; margin-top:4px">
-        <input type="checkbox" id="avoidTfrs" style="width:auto; margin:0" checked />
-        <label for="avoidTfrs" style="margin:0; font-size:12px; cursor:pointer" title="Hard-block active FAA TFRs in the planner. Falls back to advisory display if the FAA feed is unreachable.">🚫 Avoid active FAA TFRs</label>
       </div>
 
       <label>Apply landing-slope check to:</label>
@@ -4032,7 +4029,9 @@
         obstacle_radius_nm: Number(document.getElementById('obsRadius').value) || 0,
         obstacle_clearance_ft: Number(document.getElementById('obsClearance').value) || 500,
         adsb_out: document.getElementById('adsbOut').checked,
-        avoid_airspace: [...document.querySelectorAll('#avoidChecks input:checked')].map(cb => cb.value),
+        avoid_airspace: [...document.querySelectorAll('#avoidChecks input[type="checkbox"]:checked')]
+                          .filter(cb => cb.value && cb.id !== 'avoidTfrs')
+                          .map(cb => cb.value),
         avoid_borders: document.getElementById('avoidBorders').checked,
         water_risk: Number(document.getElementById('waterRisk').value),
         has_floats: !!document.getElementById('hasFloats')?.checked,
@@ -4702,8 +4701,12 @@
       updateGlideInfo();
       if (r.avoid_airspace) {
         document.querySelectorAll('#avoidChecks input[type="checkbox"]:not(:disabled)').forEach(cb => {
+          if (cb.id === 'avoidTfrs') return;  // TFR has its own field
           cb.checked = r.avoid_airspace.includes(cb.value);
         });
+      }
+      if (document.getElementById('avoidTfrs')) {
+        document.getElementById('avoidTfrs').checked = r.avoid_tfrs !== false;
       }
       updateWeightBuildUp();
       // Auto-run the route so map and profile populate immediately
