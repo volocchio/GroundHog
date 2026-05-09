@@ -564,6 +564,10 @@
         <input type="checkbox" id="useLandcover" style="width:auto; margin:0" />
         <label for="useLandcover" style="margin:0; font-size:12px; cursor:pointer" title="Use OSM landcover (highways = bonus, forest/urban = penalty) as a planner cost layer. Slower planning, smarter routes. Toggle the 'Roads & Landcover (OSM)' map layer to visualise.">🛣️ Use OSM landcover for routing (slower)</label>
       </div>
+      <div style="display:flex; align-items:center; gap:6px; margin-top:4px">
+        <input type="checkbox" id="avoidTfrs" style="width:auto; margin:0" checked />
+        <label for="avoidTfrs" style="margin:0; font-size:12px; cursor:pointer" title="Hard-block active FAA TFRs in the planner. Falls back to advisory display if the FAA feed is unreachable.">🚫 Avoid active FAA TFRs</label>
+      </div>
 
       <label>Apply landing-slope check to:</label>
       <div class="radio-group" style="margin-top:4px">
@@ -758,6 +762,8 @@
     const landingAreasGroup = L.layerGroup();
     // OSM landcover (roads/forest/urban). Off by default — Overpass cost.
     const landcoverGroup = L.layerGroup();
+    // Active FAA TFRs. ON by default — these are flight-safety-critical.
+    const tfrGroup = L.layerGroup().addTo(map);
     // Pins inserted by user clicks / Add-Waypoint actions. Persist until clearMap.
     const customWaypointGroup = L.layerGroup().addTo(map);
     let _clickPin = null;  // transient pin marking last map click
@@ -815,6 +821,7 @@
       '<span class="layer-swatch" style="background:#16a34a"></span> Glide Corridor': glideCorridorGroup,
       '<span class="layer-swatch" style="background:#15803d; opacity:0.5"></span> Safe Landings (OSM)': landingAreasGroup,
       '<span class="layer-swatch" style="background:#92400e; opacity:0.5"></span> Roads &amp; Landcover (OSM)': landcoverGroup,
+      '<span class="layer-swatch" style="background:#dc2626; opacity:0.6"></span> Active TFRs (FAA)': tfrGroup,
     }, { position: 'topright', collapsed: true }).addTo(map);
 
     let exploreGroup = L.layerGroup().addTo(map);
@@ -1101,6 +1108,59 @@
       if (e.layer === landcoverGroup) loadLandcover();
     });
     map.on('moveend', _debounce(loadLandcover, 400));
+
+    /* ── Active TFRs (FAA) ───────────────────────────────────────
+       Refreshes from /tfrs on map move. Cached server-side ~15 min.
+       Polygons are rendered red dashed with a popup showing NOTAM ID,
+       altitude band, effective/expire UTC, and description. The same
+       data is also fed to the planner as a hard block when the user
+       checks "Avoid active FAA TFRs". */
+    let _tfrFetchController = null;
+    async function loadTfrs() {
+      if (!map.hasLayer(tfrGroup)) return;
+      tfrGroup.clearLayers();
+      const b = map.getBounds();
+      // Cap the bbox so we don't request continent-wide TFRs.
+      const sqDeg = (b.getNorth() - b.getSouth()) * (b.getEast() - b.getWest());
+      if (sqDeg > 80) return;
+      const params = new URLSearchParams({
+        south: b.getSouth().toFixed(3),
+        north: b.getNorth().toFixed(3),
+        west: b.getWest().toFixed(3),
+        east: b.getEast().toFixed(3),
+      });
+      if (_tfrFetchController) _tfrFetchController.abort();
+      _tfrFetchController = new AbortController();
+      try {
+        const r = await fetch('/tfrs?' + params, { signal: _tfrFetchController.signal });
+        const data = await r.json();
+        for (const t of (data || [])) {
+          if (!t.polygon || t.polygon.length < 3) continue;
+          const poly = L.polygon(t.polygon, {
+            color: '#dc2626', weight: 2, opacity: 0.9,
+            fillColor: '#dc2626', fillOpacity: 0.15,
+            dashArray: '6 4',
+          });
+          const altBand = `${Math.round(t.min_alt_ft || 0)}' \u2013 ${Math.round(t.max_alt_ft || 0)}' MSL`;
+          const desc = (t.description || '').replace(/</g, '&lt;');
+          poly.bindPopup(
+            `<b>\ud83d\udeab TFR ${t.notam}</b><br>${altBand}` +
+            (t.effective ? `<br><b>Effective:</b> ${t.effective}` : '') +
+            (t.expires ? `<br><b>Expires:</b> ${t.expires}` : '') +
+            (desc ? `<br><br>${desc.slice(0, 800)}` : '')
+          );
+          poly.addTo(tfrGroup);
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') console.warn('TFR load error:', e);
+      }
+    }
+    map.on('overlayadd', (e) => {
+      if (e.layer === tfrGroup) loadTfrs();
+    });
+    map.on('moveend', _debounce(loadTfrs, 600));
+    // Initial load on page open (TFRs are on by default).
+    setTimeout(loadTfrs, 1500);
 
     /* ── Airspace layer ─────────────────────────────────────────── */
     const AIRSPACE_MIN_ZOOM = 7;
@@ -3805,6 +3865,47 @@
 
       html += '</tbody></table>';
 
+      // ── Risk-exposure summary (aggregate across legs) ──
+      const _expLegs = legs.filter(l => l.exposure && l.exposure.total_nm);
+      if (_expLegs.length > 0) {
+        let totNm = 0, water = 0, forest = 0, urban = 0, road = 0;
+        _expLegs.forEach(l => {
+          const e = l.exposure;
+          const nm = e.total_nm || 0;
+          totNm  += nm;
+          water  += nm * (e.water_pct || 0) / 100;
+          forest += nm * (e.forest_pct || 0) / 100;
+          urban  += nm * (e.urban_pct || 0) / 100;
+          road   += nm * (e.road_corridor_pct || 0) / 100;
+        });
+        if (totNm > 0) {
+          const pct = (n) => (100 * n / totNm).toFixed(1);
+          const lcOn = !!document.getElementById('useLandcover')?.checked;
+          html += '<details style="margin-top:8px; padding:8px; border:1px solid #d1d5db; border-radius:8px; background:#f9fafb">'
+                + '<summary style="cursor:pointer; font-weight:600; color:#374151">'
+                + '🛡️ Risk exposure along route '
+                + `<span class="muted" style="font-weight:400">(${totNm.toFixed(1)} nm total)</span>`
+                + '</summary>'
+                + '<div style="display:grid; grid-template-columns:auto 1fr auto; gap:4px 12px; margin-top:8px; font-size:13px">'
+                + `<span>🌊 Water (SRTM ocean):</span>`
+                +   `<span title="Distance over below-sea-level cells. Inland lakes are not detected here \u2014 only ocean voids. The planner's water-cost model is more accurate.">SRTM-sampled</span>`
+                +   `<span style="text-align:right; font-weight:600; color:${water/totNm > 0.10 ? '#dc2626' : '#166534'}">${pct(water)}%</span>`
+                + `<span>🌲 Forest (OSM):</span>`
+                +   `<span class="muted">${lcOn ? 'rotor-strike risk in autorot' : 'enable landcover for data'}</span>`
+                +   `<span style="text-align:right; font-weight:600; color:${forest/totNm > 0.40 ? '#dc2626' : forest/totNm > 0.20 ? '#d97706' : '#166534'}">${pct(forest)}%</span>`
+                + `<span>🏘️ Urban (OSM):</span>`
+                +   `<span class="muted">${lcOn ? 'wires/buildings, no run-on' : 'enable landcover for data'}</span>`
+                +   `<span style="text-align:right; font-weight:600; color:${urban/totNm > 0.10 ? '#dc2626' : urban/totNm > 0.03 ? '#d97706' : '#166534'}">${pct(urban)}%</span>`
+                + `<span>🛣️ Road corridor (OSM):</span>`
+                +   `<span class="muted">${lcOn ? 'walk-out + emergency landing surface' : 'enable landcover for data'}</span>`
+                +   `<span style="text-align:right; font-weight:600; color:#166534">${pct(road)}%</span>`
+                + '</div>'
+                + (lcOn ? '' :
+                   '<div class="muted" style="margin-top:6px; font-size:11px">Tip: tick "🛣️ Use OSM landcover for routing" to populate forest/urban/road exposure.</div>')
+                + '</details>';
+        }
+      }
+
       // ── Helicopter performance warnings per leg ──
       const heliLegs = legs.filter(l => l.heliPerf);
       if (heliLegs.length > 0) {
@@ -3939,6 +4040,7 @@
         slope_threshold_deg: Number(document.getElementById('slopeThreshold').value) || 15,
         enforce_slope: !!document.getElementById('enforceSlope')?.checked,
         use_landcover: !!document.getElementById('useLandcover')?.checked,
+        avoid_tfrs: !!document.getElementById('avoidTfrs')?.checked,
         fuel_load_gal: Number(document.getElementById('fuelLoadGal').value) || 0,
         waypoints,
       };
@@ -4010,6 +4112,26 @@
               const statusEl = document.getElementById('status');
               statusEl.innerHTML += `<br><span style="color:#6366f1">🚁 ${h.name} • OAT ${event.oat_c}°C (ISA${isa_dev >= 0 ? '+' : ''}${isa_dev}°C) • `
                 + `DA at dep: ${da_dep} ft • DA at arr: ${da_arr} ft</span>`;
+            }
+
+            if (event.type === 'da_climb_haircut') {
+              // Planner is using a derated max ROC because of density altitude.
+              // Show this so the pilot knows their 800 fpm "config" is being
+              // treated as ~520 fpm at this PA/OAT for terrain avoidance.
+              const statusEl = document.getElementById('status');
+              const color = event.pct_of_requested < 50 ? '#b91c1c' : '#b45309';
+              statusEl.innerHTML += `<br><span style="color:${color}">📉 DA haircut: planner using `
+                + `${event.effective_fpm} fpm climb (${event.pct_of_requested}% of `
+                + `${event.requested_fpm} fpm requested) for hot/high terrain checks.</span>`;
+            }
+
+            if (event.type === 'tfr_warning') {
+              // Active FAA TFR(s) intersect this leg. Always show as a warning,
+              // regardless of whether the planner is hard-blocking them — the
+              // pilot needs to know.
+              const errDiv = document.getElementById('error');
+              const lines = (event.tfrs || []).map(t => `${t.notam} — ${t.description || '(no description)'}`);
+              errDiv.innerHTML += `<div style="color:#b91c1c; margin-bottom:4px">🚫 <b>Active TFR on leg ${event.from} → ${event.to}:</b><br>${lines.join('<br>')}</div>`;
             }
 
             if (event.type === 'helicopter_warning') {
@@ -4115,6 +4237,7 @@
                 cached: !!event.cached,
                 _coords: event.coords,  // stash for reroute recovery
                 heliPerf: event.helicopter_perf || null,
+                exposure: event.exposure || null,
               });
 
               // fit to overall bounds

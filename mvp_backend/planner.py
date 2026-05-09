@@ -1825,6 +1825,7 @@ def terrain_avoid_leg_streaming(
     enforce_slope: bool = False,
     use_landcover: bool = False,
     landcover_features: list | None = None,
+    tfr_polygons: list | None = None,
 ):
     """Generator that yields A* exploration events for one leg.
 
@@ -1852,6 +1853,8 @@ def terrain_avoid_leg_streaming(
             _atag += "F"
     if use_landcover and landcover_features:
         _atag += f"|LC{len(landcover_features)}"
+    if tfr_polygons:
+        _atag += f"|TFR{len(tfr_polygons)}"
     if enforce_slope and slope_threshold_deg > 0 and glide_ratio > 0:
         _atag += f"|ES{slope_threshold_deg:.0f}"
     # Soft slope-preference penalty is always-on when slope_threshold_deg>0;
@@ -2005,6 +2008,48 @@ def terrain_avoid_leg_streaming(
         # rasterize obstacles into passable grid
         if obstacle_radius_nm > 0:
             _rasterize_obstacles(grid, passable, max_msl_ft, obstacle_radius_nm, obstacle_clearance_ft)
+            if not passable[start[0]][start[1]] or not passable[goal[0]][goal[1]]:
+                margin_km += margin_step_km
+                continue
+
+        # ── TFR hard-block ──
+        # TFRs are treated as Prohibited airspace: any cell whose
+        # planning-altitude band overlaps the TFR's vertical band gets
+        # passable=False. We can't always escape vertically (TFRs often
+        # extend SFC\u201418000') so be pragmatic: if vertical escape is
+        # impossible at this max_msl_ft, block.
+        if tfr_polygons:
+            for tfr in tfr_polygons:
+                ring_latlon = tfr.get("polygon") or []
+                if len(ring_latlon) < 3:
+                    continue
+                # Convert to (lon, lat) tuples for _point_in_polygon.
+                ring = [(pt[1], pt[0]) for pt in ring_latlon]
+                tfr_min = float(tfr.get("min_alt_ft") or 0.0)
+                tfr_max = float(tfr.get("max_alt_ft") or 60000.0)
+                # Vertical escape: can we fly above the TFR ceiling at
+                # max_msl_ft, or below its floor at min_agl?
+                can_go_over = max_msl_ft >= tfr_max + 100.0
+                # We don't know terrain per-cell here cheaply; assume the
+                # TFR floor is hard-blocking unless we can clearly fly
+                # over it. (Most active TFRs are SFC-XXX so floor escape
+                # is rare anyway.)
+                if can_go_over:
+                    continue
+                rlons = [c[0] for c in ring]
+                rlats = [c[1] for c in ring]
+                rmin_lat, rmax_lat = min(rlats), max(rlats)
+                rmin_lon, rmax_lon = min(rlons), max(rlons)
+                i0 = max(0, int((rmin_lat - grid.lat0) / grid.dlat))
+                i1 = min(grid.n_lat - 1, int((rmax_lat - grid.lat0) / grid.dlat) + 1)
+                j0 = max(0, int((rmin_lon - grid.lon0) / grid.dlon))
+                j1 = min(grid.n_lon - 1, int((rmax_lon - grid.lon0) / grid.dlon) + 1)
+                for i in range(i0, i1 + 1):
+                    lat = grid.lat0 + i * grid.dlat
+                    for j in range(j0, j1 + 1):
+                        lon = grid.lon0 + j * grid.dlon
+                        if _point_in_polygon(lon, lat, ring):
+                            passable[i][j] = False
             if not passable[start[0]][start[1]] or not passable[goal[0]][goal[1]]:
                 margin_km += margin_step_km
                 continue

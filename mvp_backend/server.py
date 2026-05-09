@@ -28,6 +28,7 @@ from mvp_backend import terrain_intel
 from mvp_backend import helicopter_db
 from mvp_backend import landing_areas as _landing_areas
 from mvp_backend import landcover as _landcover
+from mvp_backend import tfrs as _tfrs
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -63,6 +64,174 @@ def elevation(lat: float = Query(..., ge=-90, le=90),
         "elevation_m": float(elev_m),
         "elevation_ft": float(meters_to_feet(elev_m)),
     }
+
+
+def _point_in_ring(lat: float, lon: float, ring: list) -> bool:
+    """Standard ray-casting point-in-polygon. ring = [[lat,lon], ...]."""
+    n = len(ring)
+    if n < 3:
+        return False
+    inside = False
+    j = n - 1
+    for i in range(n):
+        yi, xi = ring[i][0], ring[i][1]
+        yj, xj = ring[j][0], ring[j][1]
+        if ((yi > lat) != (yj > lat)) and (lon < (xj - xi) * (lat - yi) / ((yj - yi) or 1e-12) + xi):
+            inside = not inside
+        j = i
+    return inside
+
+
+def _compute_leg_exposure(coords: list, landcover_features: list | None) -> dict:
+    """Walk a leg's coords (plus SRTM) and return % distance over each
+    landcover class plus % over water. Used by the UI risk-management panel.
+
+    Returns a dict like:
+      {"total_nm": 12.4, "water_pct": 18.2, "forest_pct": 41.0,
+       "urban_pct": 3.1, "road_corridor_pct": 8.6, "open_pct": 0.0}
+
+    Numbers are mid-segment samples, weighted by segment length. Roads use
+    a 0.005° (~0.3 nm) tube around the polyline since they are linear
+    features, not polygons. Water is sampled via SRTM (e <= 0 = ocean,
+    NaN = void → not counted). Inland lakes are detected only if the
+    landcover query returned an `open` polygon over them, which it
+    usually doesn't — true inland lake detection lives in the planner's
+    _detect_water_grid. For exposure stats we accept this limitation and
+    flag SRTM-detected ocean water only.
+    """
+    if not coords or len(coords) < 2:
+        return {}
+    # Bin features by kind for cheap iteration.
+    polys_by_kind: dict[str, list] = {"forest": [], "urban": [], "open": []}
+    roads: list[list] = []
+    for f in (landcover_features or []):
+        kind = f.get("kind")
+        ring = f.get("ring") or []
+        if kind == "road":
+            if len(ring) >= 2:
+                roads.append(ring)
+        elif kind in polys_by_kind and len(ring) >= 3:
+            polys_by_kind[kind].append(ring)
+
+    # Pre-build SRTM provider lazily (only if we are going to sample water).
+    provider = None
+    try:
+        provider = SRTMProvider(cache_dir=os.path.join(ROOT, "mvp_backend", "srtm_cache"))
+    except Exception:
+        provider = None
+
+    ROAD_HALO_DEG = 0.005   # ~0.3 nm tube around the road polyline
+    totals = {"forest": 0.0, "urban": 0.0, "open": 0.0,
+              "road_corridor": 0.0, "water": 0.0}
+    total_nm = 0.0
+
+    for k in range(len(coords) - 1):
+        lat0, lon0 = coords[k][0], coords[k][1]
+        lat1, lon1 = coords[k + 1][0], coords[k + 1][1]
+        seg_nm = _haversine_nm(lat0, lon0, lat1, lon1)
+        if seg_nm <= 0:
+            continue
+        mlat = 0.5 * (lat0 + lat1)
+        mlon = 0.5 * (lon0 + lon1)
+        total_nm += seg_nm
+
+        # Polygon hit-tests (mutually NOT exclusive — a forest can sit
+        # inside an "open" landuse polygon; we record both).
+        for kind, polys in polys_by_kind.items():
+            for ring in polys:
+                if _point_in_ring(mlat, mlon, ring):
+                    totals[kind] += seg_nm
+                    break
+
+        # Road tube test: any road segment whose endpoints bracket the
+        # midpoint within ROAD_HALO_DEG counts.
+        on_road = False
+        for r in roads:
+            for i in range(len(r) - 1):
+                ay, ax = r[i][0], r[i][1]
+                by, bx = r[i + 1][0], r[i + 1][1]
+                # Quick bbox reject
+                if (mlat < min(ay, by) - ROAD_HALO_DEG
+                        or mlat > max(ay, by) + ROAD_HALO_DEG
+                        or mlon < min(ax, bx) - ROAD_HALO_DEG
+                        or mlon > max(ax, bx) + ROAD_HALO_DEG):
+                    continue
+                # Distance from (mlat,mlon) to segment (a,b) in degree-space.
+                dx, dy = bx - ax, by - ay
+                if dx == 0 and dy == 0:
+                    continue
+                t = max(0.0, min(1.0, ((mlon - ax) * dx + (mlat - ay) * dy)
+                                       / (dx * dx + dy * dy)))
+                px, py = ax + t * dx, ay + t * dy
+                if abs(px - mlon) <= ROAD_HALO_DEG and abs(py - mlat) <= ROAD_HALO_DEG:
+                    on_road = True
+                    break
+            if on_road:
+                break
+        if on_road:
+            totals["road_corridor"] += seg_nm
+
+        # Water sample (SRTM ocean voids only — see docstring caveat).
+        if provider is not None:
+            try:
+                e = provider.get_many_m([(mlat, mlon)])[0]
+                if e == e and e <= 0.0:   # not NaN AND at/below sea level
+                    totals["water"] += seg_nm
+            except Exception:
+                pass
+
+    if total_nm <= 0:
+        return {}
+    out = {"total_nm": round(total_nm, 2)}
+    for k, nm in totals.items():
+        out[f"{k}_pct"] = round(100.0 * nm / total_nm, 1)
+    return out
+
+
+def _density_altitude_ft(pressure_alt_ft: float, oat_c: float) -> float:
+    """ISA-deviation density altitude approximation.
+
+    DA = PA + 120 ft per °C above ISA at that pressure altitude.
+    ISA temp at PA: 15 \u2212 1.98 \u00d7 PA / 1000 (\u00b0C).
+
+    Good to ~50 ft for any altitude a piston heli will see; the textbook
+    formula has a barometric pressure term we don't have at planning time.
+    """
+    isa_c = 15.0 - 1.98 * (pressure_alt_ft / 1000.0)
+    return pressure_alt_ft + 120.0 * (oat_c - isa_c)
+
+
+def _da_adjusted_climb_fpm(req: "RouteRequest", heli) -> float:
+    """Scale the user's max_climb_fpm down for density-altitude effects.
+
+    Piston-helicopter ROC degrades roughly linearly with DA from sea-level
+    rated value to zero at the absolute (DA) ceiling. We use:
+
+      factor = max(0.20, 1 \u2212 cruise_DA / abs_ceiling_DA)
+
+    Floor at 20% so we never zero-out the climb-rate edge constraint and
+    accidentally make every cell impassable. The user is shown a warning
+    in the perf panel when DA is high; the planner just gets a smaller
+    ROC budget per edge, which forces it around steep climbs.
+
+    Inputs:
+      cruise_DA  derived from req.max_msl_ft (planning ceiling) and req.oat_c
+      abs_ceil   helicopter_db.service_ceiling_da_ft if a heli was selected,
+                 else 14000 ft (typical piston single).
+    """
+    if req.max_climb_fpm <= 0:
+        return req.max_climb_fpm
+    cruise_pa = max(0.0, req.max_msl_ft)
+    cruise_da = _density_altitude_ft(cruise_pa, req.oat_c)
+    abs_ceil = 14000.0
+    if heli is not None and getattr(heli, "service_ceiling_da_ft", 0):
+        abs_ceil = float(heli.service_ceiling_da_ft) or abs_ceil
+    factor = 1.0 - (cruise_da / abs_ceil)
+    if factor < 0.20:
+        factor = 0.20
+    if factor > 1.0:
+        factor = 1.0
+    return req.max_climb_fpm * factor
 
 
 class RouteRequest(BaseModel):
@@ -107,6 +276,8 @@ class RouteRequest(BaseModel):
                              description="Pop-out emergency floats (EFS) installed. Reduces water-cost penalty in planner.")
     use_landcover: bool = Field(default=False,
                                 description="Use OSM landcover (roads/forest/urban) as a planner cost layer. Slower planning, smarter routes.")
+    avoid_tfrs: bool = Field(default=True,
+                             description="Hard-block active FAA TFRs in the planner. Falls back to advisory-only display if the FAA feed is unreachable.")
     slope_threshold_deg: float = Field(default=15, ge=5, le=45,
                                        description="Max acceptable landing slope in degrees.")
     enforce_slope: bool = Field(default=False,
@@ -348,6 +519,13 @@ def route(req: RouteRequest):
                                  max_climb_fpm=req.max_climb_fpm, max_descent_fpm=req.max_descent_fpm,
                                  climb_speed_kt=req.climb_speed_kt, descent_speed_kt=req.descent_speed_kt)
 
+    # ── Density-altitude ROC haircut ──
+    # Scale the user's max_climb_fpm down for the planning ceiling's DA.
+    # This makes hot/high days physically harder and forces the planner
+    # around steeper terrain instead of magically climbing over it.
+    _heli_for_da = helicopter_db.get_helicopter(req.helicopter_type) if req.helicopter_type else None
+    _eff_climb_fpm = _da_adjusted_climb_fpm(req, _heli_for_da)
+
     result = plan_route_multi_stop(
         dep=dep,
         arr=arr,
@@ -360,7 +538,7 @@ def route(req: RouteRequest):
         min_agl_ft=req.min_agl_ft,
         required_fuel=req.required_fuel,
         max_detour_factor=req.max_detour_factor,
-        max_climb_fpm=req.max_climb_fpm,
+        max_climb_fpm=_eff_climb_fpm,
         max_descent_fpm=req.max_descent_fpm,
         climb_speed_kt=req.climb_speed_kt,
         descent_speed_kt=req.descent_speed_kt,
@@ -462,6 +640,21 @@ def route_stream(req: RouteRequest):
 
         # ── Helicopter performance check (departure) ──
         heli = helicopter_db.get_helicopter(req.helicopter_type) if req.helicopter_type else None
+        # Density-altitude-adjusted climb-rate budget for the planner.
+        # See _da_adjusted_climb_fpm for derivation. Computed once up-front
+        # because cruise ceiling and OAT don't change leg-to-leg.
+        eff_climb_fpm = _da_adjusted_climb_fpm(req, heli)
+        if req.max_climb_fpm > 0 and eff_climb_fpm < req.max_climb_fpm:
+            yield (
+                "data: "
+                + json.dumps({
+                    "type": "da_climb_haircut",
+                    "requested_fpm": round(req.max_climb_fpm),
+                    "effective_fpm": round(eff_climb_fpm),
+                    "pct_of_requested": round(100.0 * eff_climb_fpm / req.max_climb_fpm, 1),
+                })
+                + "\n\n"
+            )
         if heli:
             gw = req.gross_weight_lb if req.gross_weight_lb > 0 else None
             dep_perf = heli.performance_at(dep.elevation_ft, req.oat_c, gw)
@@ -619,12 +812,44 @@ def route_stream(req: RouteRequest):
                             except Exception:
                                 leg_lc_features = None
 
+                        # Pre-fetch active TFRs for this leg's bbox.
+                        # 0.25\u00b0 margin matches landcover; cached for ~15 min.
+                        # If the FAA feed is unreachable we get back [] and
+                        # planning continues normally.
+                        leg_tfrs = None
+                        if req.avoid_tfrs:
+                            try:
+                                margin = 0.25
+                                ts = min(from_ap.lat, to_ap.lat) - margin
+                                tn = max(from_ap.lat, to_ap.lat) + margin
+                                tw = min(from_ap.lon, to_ap.lon) - margin
+                                te = max(from_ap.lon, to_ap.lon) + margin
+                                leg_tfrs = _tfrs.get_active_tfrs(bbox=(ts, tw, tn, te)) or []
+                                if leg_tfrs:
+                                    _tfr_summary = [
+                                        {"notam": t["notam"], "description": (t.get("description") or "")[:200]}
+                                        for t in leg_tfrs
+                                    ]
+                                    yield (
+                                        "data: "
+                                        + json.dumps({
+                                            "type": "tfr_warning",
+                                            "leg_index": global_leg,
+                                            "from": from_ap.icao,
+                                            "to": to_ap.icao,
+                                            "tfrs": _tfr_summary,
+                                        })
+                                        + "\n\n"
+                                    )
+                            except Exception:
+                                leg_tfrs = None
+
                         for event in terrain_avoid_leg_streaming(
                             from_ap, to_ap,
                             max_msl_ft=req.max_msl_ft,
                             min_agl_ft=req.min_agl_ft,
                             max_detour_factor=eff_detour,
-                            max_climb_fpm=req.max_climb_fpm,
+                            max_climb_fpm=eff_climb_fpm,
                             max_descent_fpm=req.max_descent_fpm,
                             cruise_speed_kt=req.cruise_speed_kt,
                             climb_speed_kt=req.climb_speed_kt,
@@ -641,6 +866,7 @@ def route_stream(req: RouteRequest):
                             enforce_slope=req.enforce_slope,
                             use_landcover=req.use_landcover,
                             landcover_features=leg_lc_features,
+                            tfr_polygons=leg_tfrs,
                         ):
                             if event.get("type") == "path":
                                 event["leg_index"] = global_leg
@@ -652,6 +878,16 @@ def route_stream(req: RouteRequest):
                                 if to_ap.icao in waypoint_via:
                                     event["to_via"] = True
                                 seg_last_leg_dist = event.get("dist_nm", 0.0)
+                                # ── Per-leg exposure stats (risk panel) ──
+                                # Always emit; landcover-derived stats are
+                                # 0 when the user hasn't opted into landcover,
+                                # but the SRTM-based water % is always useful.
+                                try:
+                                    event["exposure"] = _compute_leg_exposure(
+                                        event.get("coords") or [], leg_lc_features,
+                                    )
+                                except Exception:
+                                    event["exposure"] = {}
                                 # ── Attach helicopter performance for this leg ──
                                 if heli:
                                     max_terr = event.get("max_terrain_ft", max(from_ap.elevation_ft, to_ap.elevation_ft))
@@ -1044,6 +1280,23 @@ def get_landcover(
     urban, open. Used both as a map overlay and as a planner cost input
     when use_landcover=True is sent on /route/stream."""
     return _landcover.query_bbox(south, north, west, east)
+
+
+@app.get("/tfrs")
+def get_tfrs(
+    south: float = Query(...), north: float = Query(...),
+    west: float = Query(...), east: float = Query(...),
+):
+    """Return active FAA TFRs intersecting the bbox.
+
+    Refreshes from the FAA TFR feed every ~15 min. If the feed is down,
+    serves the last cached snapshot (which may be empty on a cold cache).
+    Wrapped in try/except — TFR data must NEVER take down the API.
+    """
+    try:
+        return _tfrs.get_active_tfrs(bbox=(south, west, north, east))
+    except Exception:
+        return []
 
 
 # ── airspace endpoint ────────────────────────────────────────────────
