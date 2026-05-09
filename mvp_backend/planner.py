@@ -257,8 +257,9 @@ def terrain_avoid_leg(
 
         water_cost_2d = None
         if glide_ratio > 0 and water_risk < 100:
-            water_alt_ft = min(max_msl_ft, max(a.elevation_ft + min_agl_ft,
-                                               b.elevation_ft + min_agl_ft))
+            # See note in terrain_avoid_leg_streaming: respect the planner's
+            # ceiling rather than assuming min-AGL ground-hugging cruise.
+            water_alt_ft = max_msl_ft
             water_cost_2d, _ = _build_water_cost(
                 grid, elev_ft, passable,
                 glide_ratio=glide_ratio,
@@ -1863,8 +1864,15 @@ def terrain_avoid_leg_streaming(
 
         # ── Water avoidance cost ──
         if glide_ratio > 0 and water_risk < 100:
-            water_alt_ft = min(max_msl_ft, max(a.elevation_ft + min_agl_ft,
-                                               b.elevation_ft + min_agl_ft))
+            # Use the planner's ceiling (max_msl_ft) as the assumed cruise
+            # altitude over water. Previously this took min(max_msl_ft,
+            # airport_elev + min_agl), which assumed the ship hugs the
+            # ground at min-AGL all the way \u2014 yielding ~600 AGL over a
+            # 2000' lake from 2100' airports, i.e. <1 nm glide reach. That
+            # made every meaningful water crossing look unreachable and
+            # forced wide land detours. The user already set the planning
+            # ceiling; respect it.
+            water_alt_ft = max_msl_ft
             water_cost_2d, smooth_water_cost_2d = _build_water_cost(
                 grid, elev_ft, passable,
                 glide_ratio=glide_ratio, cruise_alt_ft=water_alt_ft,
