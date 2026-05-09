@@ -713,6 +713,47 @@
     const glideCorridorGroup = L.layerGroup().addTo(map);
     // Safe-landing OSM polygons. Off by default — Overpass call is not free.
     const landingAreasGroup = L.layerGroup();
+    // Pins inserted by user clicks / Add-Waypoint actions. Persist until clearMap.
+    const customWaypointGroup = L.layerGroup().addTo(map);
+    let _clickPin = null;  // transient pin marking last map click
+
+    // Color a pin by waypoint mode: VIA=orange flyover, NF=gray no-fuel stop, fuel=purple stop.
+    function _waypointPinColor(mode) {
+      if (mode === 'VIA') return '#ea580c';
+      if (mode === true) return '#6b7280';      // -NF
+      if (mode === false) return '#9333ea';     // fuel stop
+      return '#2563eb';                         // generic / dep-arr
+    }
+    function _waypointPinLabel(mode) {
+      if (mode === 'VIA') return 'Flyover';
+      if (mode === true) return 'Stop (no fuel)';
+      if (mode === false) return 'Stop (fuel)';
+      return 'Waypoint';
+    }
+    // Drop a colored, labeled pin marking an inserted waypoint. Returns the marker.
+    window.dropWaypointPin = function(lat, lon, mode, label) {
+      const color = _waypointPinColor(mode);
+      const kind = _waypointPinLabel(mode);
+      const m = L.circleMarker([lat, lon], {
+        radius: 8, color: '#111', weight: 2,
+        fillColor: color, fillOpacity: 0.9,
+      }).bindTooltip(`<b>${label || kind}</b><br>${kind}`, {
+        direction: 'top', offset: [0, -8], permanent: false,
+      });
+      m.addTo(customWaypointGroup);
+      // brief pulse so the user sees it appear
+      const halo = L.circleMarker([lat, lon], {
+        radius: 8, color: color, weight: 3,
+        fillOpacity: 0, opacity: 0.9,
+      }).addTo(customWaypointGroup);
+      let r = 8, op = 0.9;
+      const iv = setInterval(() => {
+        r += 3; op -= 0.12;
+        if (op <= 0) { clearInterval(iv); customWaypointGroup.removeLayer(halo); return; }
+        halo.setRadius(r); halo.setStyle({ opacity: op });
+      }, 50);
+      return m;
+    };
 
     openTopo.addTo(map);  // default to OpenTopoMap
 
@@ -817,6 +858,8 @@
       const token = icao + suffix;
       const existing = wpInput.value.trim();
       wpInput.value = existing ? existing + ' ' + token : token;
+      const ap = airportLookup[icao];
+      if (ap) dropWaypointPin(ap.lat, ap.lon, mode, icao);
       map.closePopup();
     };
 
@@ -1021,6 +1064,8 @@
       layerGroup.clearLayers();
       exploreGroup.clearLayers();
       glideCorridorGroup.clearLayers();
+      customWaypointGroup.clearLayers();
+      _clickPin = null;
       routeMarkers = [];
       const _b = document.getElementById('routeIncompleteBanner');
       if (_b) _b.remove();
@@ -1088,6 +1133,15 @@
       const token = code + suffix;
       const existing = wpInput.value.trim();
       wpInput.value = existing ? existing + ' ' + token : token;
+      // Parse @lat,lon and drop a persistent pin so the user sees the insert.
+      const m = code.match(/^@(-?\d+\.?\d*),(-?\d+\.?\d*)$/);
+      if (m) {
+        const lat = parseFloat(m[1]), lon = parseFloat(m[2]);
+        const label = `${lat.toFixed(3)}°, ${lon.toFixed(3)}°`;
+        dropWaypointPin(lat, lon, mode, label);
+      }
+      // Clear the transient click-pin since it's now a real waypoint.
+      if (_clickPin) { customWaypointGroup.removeLayer(_clickPin); _clickPin = null; }
       map.closePopup();
     };
 
@@ -1116,8 +1170,22 @@
       const lon = e.latlng.lng;
       const code = `@${lat.toFixed(5)},${lon.toFixed(5)}`;
 
+      // Drop a transient pin IMMEDIATELY at the clicked location so the user
+      // gets visual confirmation before the elevation fetch resolves.
+      if (_clickPin) customWaypointGroup.removeLayer(_clickPin);
+      _clickPin = L.circleMarker([lat, lon], {
+        radius: 7, color: '#111', weight: 2,
+        fillColor: '#fbbf24', fillOpacity: 0.95,
+      }).bindTooltip('Click point — choose action in popup', {
+        direction: 'top', offset: [0, -7],
+      }).addTo(customWaypointGroup);
+
       // Show loading popup immediately
       const popup = L.popup().setLatLng(e.latlng).setContent('Loading elevation…').openOn(map);
+      popup.on('remove', () => {
+        // If popup closes without an Add-Waypoint action, drop the click pin.
+        if (_clickPin) { customWaypointGroup.removeLayer(_clickPin); _clickPin = null; }
+      });
 
       try {
         const res = await fetch(`/elevation?lat=${lat}&lon=${lon}`);
