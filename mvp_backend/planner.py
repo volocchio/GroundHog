@@ -1365,6 +1365,71 @@ def _build_slope_block(grid: GridSpec, elev_ft: list, n_lat: int, n_lon: int,
     return block if any_blocked else None
 
 
+def _build_slope_cost(grid: GridSpec, elev_ft: list, n_lat: int, n_lon: int,
+                      slope_threshold_deg: float,
+                      max_penalty: float = 1.5) -> list[list[float]] | None:
+    """Return a 2D *soft* slope-penalty grid (cost multiplier per cell).
+
+    Unlike `_build_slope_block` (hard reject under enforce_slope), this is
+    a graduated cost so the A* is *nudged* toward gentler terrain even
+    when the user hasn't ticked enforce-slope. Penalty ramps from 0 at
+    half-threshold to `max_penalty` at 2× threshold.
+    """
+    if slope_threshold_deg <= 0 or slope_threshold_deg >= 90:
+        return None
+
+    import math
+    INF = float("inf")
+    mid_lat = grid.lat0 + (n_lat / 2) * grid.dlat
+    nm_per_cell_lat = grid.dlat / _deg_per_km_lat() / 1.852
+    nm_per_cell_lon = grid.dlon / _deg_per_km_lon(mid_lat) / 1.852
+    ft_lat = nm_per_cell_lat * 6076.12
+    ft_lon = nm_per_cell_lon * 6076.12
+    ft_diag = math.hypot(ft_lat, ft_lon)
+
+    # Penalty ramp: zero up to soft_floor, full at hard_ceiling.
+    soft_floor_deg = 0.5 * slope_threshold_deg
+    hard_ceil_deg = 2.0 * slope_threshold_deg
+    span = max(1e-6, hard_ceil_deg - soft_floor_deg)
+
+    cost = [[0.0] * n_lon for _ in range(n_lat)]
+    any_cost = False
+    for i in range(n_lat):
+        for j in range(n_lon):
+            e_ij = elev_ft[i * n_lon + j]
+            if e_ij == INF:
+                continue
+            max_slope = 0.0
+            for di in (-1, 0, 1):
+                ni = i + di
+                if ni < 0 or ni >= n_lat:
+                    continue
+                for dj in (-1, 0, 1):
+                    if di == 0 and dj == 0:
+                        continue
+                    nj = j + dj
+                    if nj < 0 or nj >= n_lon:
+                        continue
+                    ek = elev_ft[ni * n_lon + nj]
+                    if ek == INF:
+                        continue
+                    if di != 0 and dj != 0:
+                        run_ft = ft_diag
+                    elif di != 0:
+                        run_ft = ft_lat
+                    else:
+                        run_ft = ft_lon
+                    rise_ft = abs(ek - e_ij)
+                    slope_deg = math.degrees(math.atan2(rise_ft, run_ft))
+                    if slope_deg > max_slope:
+                        max_slope = slope_deg
+            if max_slope > soft_floor_deg:
+                ratio = min(1.0, (max_slope - soft_floor_deg) / span)
+                cost[i][j] = ratio * max_penalty
+                any_cost = True
+    return cost if any_cost else None
+
+
 def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
                       glide_ratio: float, cruise_alt_ft: float,
                       water_risk: float, slope_threshold_deg: float = 15) -> tuple:
@@ -1636,6 +1701,10 @@ def terrain_avoid_leg_streaming(
         _atag += f"|W{water_risk:.0f}G{glide_ratio:.1f}S{slope_threshold_deg:.0f}"
     if enforce_slope and slope_threshold_deg > 0 and glide_ratio > 0:
         _atag += f"|ES{slope_threshold_deg:.0f}"
+    # Soft slope-preference penalty is always-on when slope_threshold_deg>0;
+    # bake it into the cache key so different thresholds don't collide.
+    if slope_threshold_deg > 0:
+        _atag += f"|SS{slope_threshold_deg:.0f}"
     avoidance_tag = _atag
 
     # ── terrain intelligence quick-reject ──
@@ -1842,6 +1911,31 @@ def terrain_avoid_leg_streaming(
                     for i in range(n_lat):
                         for j in range(n_lon):
                             airspace_cost_2d[i][j] += backtrack_cost[i][j]
+
+        # ── Soft slope-preference penalty ──
+        # Always-on graduated cost so the planner *prefers* gentle terrain
+        # over steep ridges even when the user hasn't ticked enforce-slope.
+        # Without this, A* picks shortest distance and routinely sends the
+        # ship over a 6000' ridge when a flat valley sits 3 nm to the east.
+        if slope_threshold_deg > 0:
+            slope_soft_cost = _build_slope_cost(
+                grid, elev_ft, n_lat, n_lon,
+                slope_threshold_deg=slope_threshold_deg,
+                max_penalty=1.5,
+            )
+            if slope_soft_cost is not None:
+                if airspace_cost_2d is None:
+                    airspace_cost_2d = slope_soft_cost
+                else:
+                    for i in range(n_lat):
+                        for j in range(n_lon):
+                            airspace_cost_2d[i][j] += slope_soft_cost[i][j]
+                if airspace_only_cost_2d is None:
+                    airspace_only_cost_2d = [row[:] for row in slope_soft_cost]
+                else:
+                    for i in range(n_lat):
+                        for j in range(n_lon):
+                            airspace_only_cost_2d[i][j] += slope_soft_cost[i][j]
 
         # ── Enforce slope: hard-block steep cells beyond glide reach of safe terrain ──
         if enforce_slope and glide_ratio > 0 and slope_threshold_deg > 0:
