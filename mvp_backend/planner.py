@@ -1546,19 +1546,27 @@ def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
     # at the glide-range boundary: beyond-glide water pays WATER_BEYOND so
     # the planner strongly avoids deep-water cells it cannot glide out of.
     # NOTE: cost is applied as  step *= (1.0 + cost)  in A*, so even cost=1
-    # doubles the step expense. Keep within-glide cost << 1.
+    # doubles the step expense. Keep within-glide cost << 1 BUT non-trivial
+    # so the planner doesn't gleefully cut straight across deep water when a
+    # shoreline route of similar length exists.
+    #
+    # Cost layers per cell (additive):
+    #   - WATER_BASE: a flat "you're over water" tax \u2014 tiny, but enough so
+    #     equal-length land routes win. Doubles roughly with each risk tier.
+    #   - depth ramp: extra penalty proportional to distance-from-shore so
+    #     shoreline-hugging beats mid-lake even when both are within glide.
     if water_risk <= 0:
-        WATER_NEAR_EDGE = 0.2   # 1.2× step at glide edge — practically free
-        SMOOTH_NEAR_EDGE = 0.2
+        WATER_BASE = 0.30      # strict: noticeable preference for land
+        WATER_DEPTH = 0.50     # extra at mid-lake / glide edge
     elif water_risk <= 25:
-        WATER_NEAR_EDGE = 0.1
-        SMOOTH_NEAR_EDGE = 0.1
+        WATER_BASE = 0.20
+        WATER_DEPTH = 0.30
     elif water_risk <= 50:
-        WATER_NEAR_EDGE = 0.05
-        SMOOTH_NEAR_EDGE = 0.05
+        WATER_BASE = 0.10
+        WATER_DEPTH = 0.20
     else:
-        WATER_NEAR_EDGE = 0.0
-        SMOOTH_NEAR_EDGE = 0.0
+        WATER_BASE = 0.05
+        WATER_DEPTH = 0.10
     WATER_BEYOND = 200.0   # very heavy cost for cells beyond glide range
     cost = [[0.0] * n_lon for _ in range(n_lat)]
     smooth_cost = [[0.0] * n_lon for _ in range(n_lat)]
@@ -1569,17 +1577,20 @@ def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
                 continue
             d = dist[i][j]
             if d <= glide_range_cells:
-                # Linear ramp from 0 at shore to WATER_NEAR_EDGE at glide edge.
+                # Base water tax + linear depth ramp from 0 at shore to
+                # WATER_DEPTH at glide edge. Shoreline cells therefore cost
+                # ~WATER_BASE; mid-lake cells cost WATER_BASE + WATER_DEPTH.
                 frac = (d / glide_range_cells) if glide_range_cells > 0 else 0.0
-                cost[i][j] = WATER_NEAR_EDGE * frac
-                smooth_cost[i][j] = SMOOTH_NEAR_EDGE * frac
+                c = WATER_BASE + WATER_DEPTH * frac
+                cost[i][j] = c
+                smooth_cost[i][j] = c
             else:
                 # Scale penalty by how far beyond glide range
                 excess = (d - glide_range_cells) / max(1.0, glide_range_cells)
                 beyond = WATER_BEYOND * min(excess, 3.0)
-                cost[i][j] = WATER_NEAR_EDGE + beyond
+                cost[i][j] = WATER_BASE + WATER_DEPTH + beyond
                 # smoother gets the same heavy penalty — blocks dangerous shortcuts
-                smooth_cost[i][j] = WATER_NEAR_EDGE + beyond
+                smooth_cost[i][j] = WATER_BASE + WATER_DEPTH + beyond
             has_cost = True
 
     # Apply slope penalty: for cells BEYOND glide reach, if adjacent shore
