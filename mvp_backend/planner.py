@@ -131,6 +131,7 @@ def terrain_avoid_leg(
     descent_speed_kt: float = 0,
     glide_ratio: float = 0,
     water_risk: float = 100,
+    has_floats: bool = False,
     slope_threshold_deg: float = 15,
     enforce_slope: bool = False,
     timeout_s: float = 90.0,
@@ -145,6 +146,8 @@ def terrain_avoid_leg(
     avoidance_tag = ""
     if water_risk < 100 and glide_ratio > 0:
         avoidance_tag = f"W{water_risk:.0f}G{glide_ratio:.1f}"
+        if has_floats:
+            avoidance_tag += "FL"
     if enforce_slope and slope_threshold_deg > 0 and glide_ratio > 0:
         avoidance_tag += f"S{slope_threshold_deg:.0f}"
     # ── terrain intelligence quick-reject ──
@@ -264,8 +267,8 @@ def terrain_avoid_leg(
                 grid, elev_ft, passable,
                 glide_ratio=glide_ratio,
                 cruise_alt_ft=water_alt_ft,
-                water_risk=water_risk,
-                slope_threshold_deg=slope_threshold_deg,
+                water_risk=water_risk,                slope_threshold_deg=slope_threshold_deg,
+                has_floats=has_floats,
             )
 
         if enforce_slope and glide_ratio > 0 and slope_threshold_deg > 0:
@@ -1431,9 +1434,114 @@ def _build_slope_cost(grid: GridSpec, elev_ft: list, n_lat: int, n_lon: int,
     return cost if any_cost else None
 
 
+def _build_landcover_cost(grid: GridSpec, n_lat: int, n_lon: int,
+                          features: list) -> list[list[float]] | None:
+    """Rasterise OSM landcover features into a per-cell cost delta grid.
+
+    `features` is the list returned by mvp_backend.landcover.query_bbox():
+      [{"kind": "road|forest|urban|open", "cost_delta": float,
+        "ring": [[lat,lon], ...]}, ...]
+
+    Polygons (forest, urban, open) are filled with their cost_delta.
+    Roads (open polylines) stamp a NEGATIVE bonus along the line plus a
+    1-cell halo so the planner is nudged onto road corridors.
+
+    Per-cell cost is summed and clamped to [-0.5, +1.5] so a single
+    layer can't dominate the planner over slope/water/airspace signals.
+    """
+    if not features:
+        return None
+    cost = [[0.0] * n_lon for _ in range(n_lat)]
+    any_cost = False
+
+    lat0 = grid.lat0
+    lon0 = grid.lon0
+    dlat = grid.dlat
+    dlon = grid.dlon
+
+    def _ll_to_ij(lat: float, lon: float):
+        i = int(round((lat - lat0) / dlat))
+        j = int(round((lon - lon0) / dlon))
+        if i < 0 or i >= n_lat or j < 0 or j >= n_lon:
+            return None
+        return (i, j)
+
+    def _fill_poly(ring: list, delta: float) -> None:
+        nonlocal any_cost
+        if len(ring) < 3:
+            return
+        pts = [((p[0] - lat0) / dlat, (p[1] - lon0) / dlon) for p in ring]
+        i_min = max(0, int(min(p[0] for p in pts)))
+        i_max = min(n_lat - 1, int(max(p[0] for p in pts)) + 1)
+        if i_max < i_min:
+            return
+        for i in range(i_min, i_max + 1):
+            xs: list[float] = []
+            for k in range(len(pts) - 1):
+                y1, x1 = pts[k]
+                y2, x2 = pts[k + 1]
+                if (y1 <= i < y2) or (y2 <= i < y1):
+                    if y2 == y1:
+                        continue
+                    t = (i - y1) / (y2 - y1)
+                    xs.append(x1 + t * (x2 - x1))
+            xs.sort()
+            for s in range(0, len(xs) - 1, 2):
+                j_lo = max(0, int(xs[s]))
+                j_hi = min(n_lon - 1, int(xs[s + 1]))
+                for j in range(j_lo, j_hi + 1):
+                    cost[i][j] += delta
+                    any_cost = True
+
+    def _stamp_line(ring: list, delta: float) -> None:
+        nonlocal any_cost
+        for k in range(len(ring) - 1):
+            a = _ll_to_ij(ring[k][0], ring[k][1])
+            b = _ll_to_ij(ring[k + 1][0], ring[k + 1][1])
+            if not a or not b:
+                continue
+            i0, j0 = a
+            i1, j1 = b
+            steps = max(abs(i1 - i0), abs(j1 - j0)) + 1
+            for s in range(steps + 1):
+                t = s / max(1, steps)
+                i = int(round(i0 + (i1 - i0) * t))
+                j = int(round(j0 + (j1 - j0) * t))
+                for di in (-1, 0, 1):
+                    for dj in (-1, 0, 1):
+                        ni, nj = i + di, j + dj
+                        if 0 <= ni < n_lat and 0 <= nj < n_lon:
+                            mult = 1.0 if (di == 0 and dj == 0) else 0.5
+                            cost[ni][nj] += delta * mult
+                            any_cost = True
+
+    for f in features:
+        ring = f.get('ring') or []
+        delta = float(f.get('cost_delta') or 0.0)
+        if delta == 0.0 or not ring:
+            continue
+        if f.get('kind') == 'road':
+            _stamp_line(ring, delta)
+        else:
+            _fill_poly(ring, delta)
+
+    if not any_cost:
+        return None
+
+    for i in range(n_lat):
+        for j in range(n_lon):
+            v = cost[i][j]
+            if v < -0.5:
+                cost[i][j] = -0.5
+            elif v > 1.5:
+                cost[i][j] = 1.5
+    return cost
+
+
 def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
                       glide_ratio: float, cruise_alt_ft: float,
-                      water_risk: float, slope_threshold_deg: float = 15) -> tuple:
+                      water_risk: float, slope_threshold_deg: float = 15,
+                      has_floats: bool = False) -> tuple:
     """Build a 2D cost grid penalizing water cells beyond autorotation glide range.
 
     Water is detected via _detect_water_grid (ocean voids AND inland lakes).
@@ -1578,6 +1686,17 @@ def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
         WATER_BASE = 0.3
         WATER_DEPTH = 0.3
     WATER_BEYOND = 200.0   # very heavy cost for cells beyond glide range
+    # Pop-out emergency floats (EFS) materially change the math: a successful
+    # float-equipped ditch is closer to a precautionary off-airport landing
+    # than to drowning. NTSB/CAA data show ~80%+ survival for amphib/float
+    # helicopters in controlled water touchdowns vs ~85% mortality for
+    # non-floats inversion. Knock the within-glide water tax down ~5x so
+    # the planner will accept short overwater shortcuts when floats are
+    # installed. Beyond-glide water still gets the heavy WATER_BEYOND
+    # penalty (no glide reach = no controlled touchdown, even with floats).
+    if has_floats:
+        WATER_BASE *= 0.2
+        WATER_DEPTH *= 0.2
     cost = [[0.0] * n_lon for _ in range(n_lat)]
     smooth_cost = [[0.0] * n_lon for _ in range(n_lat)]
     has_cost = False
@@ -1701,8 +1820,11 @@ def terrain_avoid_leg_streaming(
     avoid_borders: bool = True,
     glide_ratio: float = 0,
     water_risk: float = 100,
+    has_floats: bool = False,
     slope_threshold_deg: float = 15,
     enforce_slope: bool = False,
+    use_landcover: bool = False,
+    landcover_features: list | None = None,
 ):
     """Generator that yields A* exploration events for one leg.
 
@@ -1726,6 +1848,10 @@ def terrain_avoid_leg_streaming(
         _atag += "|BORDERS"
     if water_risk < 100 and glide_ratio > 0:
         _atag += f"|W{water_risk:.0f}G{glide_ratio:.1f}S{slope_threshold_deg:.0f}"
+        if has_floats:
+            _atag += "F"
+    if use_landcover and landcover_features:
+        _atag += f"|LC{len(landcover_features)}"
     if enforce_slope and slope_threshold_deg > 0 and glide_ratio > 0:
         _atag += f"|ES{slope_threshold_deg:.0f}"
     # Soft slope-preference penalty is always-on when slope_threshold_deg>0;
@@ -1899,6 +2025,7 @@ def terrain_avoid_leg_streaming(
                 glide_ratio=glide_ratio, cruise_alt_ft=water_alt_ft,
                 water_risk=water_risk,
                 slope_threshold_deg=slope_threshold_deg,
+                has_floats=has_floats,
             )
             if water_cost_2d is not None:
                 if airspace_cost_2d is None:
@@ -1970,6 +2097,27 @@ def terrain_avoid_leg_streaming(
                     for i in range(n_lat):
                         for j in range(n_lon):
                             airspace_only_cost_2d[i][j] += slope_soft_cost[i][j]
+
+        # ── Soft landcover preference (OSM) ──
+        # Optional: when use_landcover=True and the server pre-fetched the
+        # bbox features, raster them into a per-cell cost delta and add it
+        # to the planner's cost grid. Bonuses for road corridors, penalties
+        # for forest/urban. Always-on when the flag is set.
+        if use_landcover and landcover_features:
+            lc_cost = _build_landcover_cost(grid, n_lat, n_lon, landcover_features)
+            if lc_cost is not None:
+                if airspace_cost_2d is None:
+                    airspace_cost_2d = [row[:] for row in lc_cost]
+                else:
+                    for i in range(n_lat):
+                        for j in range(n_lon):
+                            airspace_cost_2d[i][j] += lc_cost[i][j]
+                if airspace_only_cost_2d is None:
+                    airspace_only_cost_2d = [row[:] for row in lc_cost]
+                else:
+                    for i in range(n_lat):
+                        for j in range(n_lon):
+                            airspace_only_cost_2d[i][j] += lc_cost[i][j]
 
         # ── Enforce slope: hard-block steep cells beyond glide reach of safe terrain ──
         if enforce_slope and glide_ratio > 0 and slope_threshold_deg > 0:

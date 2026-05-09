@@ -355,6 +355,11 @@
       </select>
       <div id="heliInfo" class="muted" style="margin-top:2px; font-size:11px"></div>
 
+      <div style="display:flex; align-items:center; gap:6px; margin-top:4px">
+        <input type="checkbox" id="hasFloats" style="width:auto; margin:0" />
+        <label for="hasFloats" style="margin:0; font-size:12px; cursor:pointer" title="Pop-out emergency floats (EFS) installed. Reduces water-crossing penalty in the planner ~5x. Use only if you actually have floats AND immersion gear.">Pop-out floats (EFS) installed</label>
+      </div>
+
       <div style="margin-top:8px; border:1px solid #e0e7ff; border-radius:8px; padding:8px; background:#f5f7ff">
         <div style="font-weight:600; font-size:12px; color:#4338ca; margin-bottom:4px">My Aircraft</div>
         <div style="display:flex; gap:6px; align-items:center;">
@@ -555,6 +560,10 @@
         <input type="checkbox" id="enforceSlope" style="width:auto; margin:0" />
         <label for="enforceSlope" style="margin:0; font-size:12px; cursor:pointer" title="Hard-block route through cells whose terrain slope exceeds the threshold AND are beyond autorotation glide reach of safer ground.">Enforce slope (route around red cells)</label>
       </div>
+      <div style="display:flex; align-items:center; gap:6px; margin-top:4px">
+        <input type="checkbox" id="useLandcover" style="width:auto; margin:0" />
+        <label for="useLandcover" style="margin:0; font-size:12px; cursor:pointer" title="Use OSM landcover (highways = bonus, forest/urban = penalty) as a planner cost layer. Slower planning, smarter routes. Toggle the 'Roads & Landcover (OSM)' map layer to visualise.">🛣️ Use OSM landcover for routing (slower)</label>
+      </div>
 
       <label>Apply landing-slope check to:</label>
       <div class="radio-group" style="margin-top:4px">
@@ -747,6 +756,8 @@
     const glideCorridorGroup = L.layerGroup().addTo(map);
     // Safe-landing OSM polygons. Off by default — Overpass call is not free.
     const landingAreasGroup = L.layerGroup();
+    // OSM landcover (roads/forest/urban). Off by default — Overpass cost.
+    const landcoverGroup = L.layerGroup();
     // Pins inserted by user clicks / Add-Waypoint actions. Persist until clearMap.
     const customWaypointGroup = L.layerGroup().addTo(map);
     let _clickPin = null;  // transient pin marking last map click
@@ -803,6 +814,7 @@
       '<span class="layer-swatch" style="background:#cc3300"></span> Obstacles (FAA)': obstacleGroup,
       '<span class="layer-swatch" style="background:#16a34a"></span> Glide Corridor': glideCorridorGroup,
       '<span class="layer-swatch" style="background:#15803d; opacity:0.5"></span> Safe Landings (OSM)': landingAreasGroup,
+      '<span class="layer-swatch" style="background:#92400e; opacity:0.5"></span> Roads &amp; Landcover (OSM)': landcoverGroup,
     }, { position: 'topright', collapsed: true }).addTo(map);
 
     let exploreGroup = L.layerGroup().addTo(map);
@@ -1024,6 +1036,71 @@
     map.on('moveend', _debounce(loadLandingAreas, 400));
     document.getElementById('slopeThreshold')?.addEventListener('change',
       _debounce(loadLandingAreas, 200));
+
+    /* ── Landcover layer (OSM roads / forest / urban) ───────────── */
+    let _lcFetchController = null;
+    const LC_MIN_ZOOM = 9;
+    const LC_KIND_STYLE = {
+      road:   { color: '#92400e', fill: '#fbbf24', weight: 2,   fillOp: 0.0 },
+      forest: { color: '#166534', fill: '#16a34a', weight: 1,   fillOp: 0.20 },
+      urban:  { color: '#7f1d1d', fill: '#ef4444', weight: 1,   fillOp: 0.25 },
+      open:   { color: '#a16207', fill: '#fde68a', weight: 1,   fillOp: 0.10 },
+    };
+
+    async function loadLandcover() {
+      if (!map.hasLayer(landcoverGroup)) return;
+      const z = map.getZoom();
+      landcoverGroup.clearLayers();
+      if (z < LC_MIN_ZOOM) {
+        L.popup({ closeButton: false, autoClose: true })
+          .setLatLng(map.getCenter())
+          .setContent('<div style="font-size:12px">Zoom in to load Landcover</div>')
+          .openOn(map);
+        return;
+      }
+      const b = map.getBounds();
+      const sqDeg = (b.getNorth() - b.getSouth()) * (b.getEast() - b.getWest());
+      if (sqDeg > 2.0) return;  // server cap
+
+      const params = new URLSearchParams({
+        south: b.getSouth().toFixed(4),
+        north: b.getNorth().toFixed(4),
+        west: b.getWest().toFixed(4),
+        east: b.getEast().toFixed(4),
+      });
+      if (_lcFetchController) _lcFetchController.abort();
+      _lcFetchController = new AbortController();
+      try {
+        const r = await fetch('/landcover?' + params, { signal: _lcFetchController.signal });
+        const data = await r.json();
+        if (data.bbox_too_large || data.error) return;
+        for (const f of (data.features || [])) {
+          const style = LC_KIND_STYLE[f.kind] || LC_KIND_STYLE.open;
+          const layer = (f.kind === 'road')
+            ? L.polyline(f.ring, {
+                color: style.color, weight: style.weight, opacity: 0.85,
+              })
+            : L.polygon(f.ring, {
+                color: style.color, weight: style.weight, opacity: 0.6,
+                fillColor: style.fill, fillOpacity: style.fillOp,
+                interactive: false,
+              });
+          const sign = f.cost_delta < 0 ? '−' : '+';
+          layer.bindTooltip(
+            `<b>${f.kind}</b><br>planner cost ${sign}${Math.abs(f.cost_delta).toFixed(2)}`,
+            { sticky: true }
+          );
+          layer.addTo(landcoverGroup);
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') console.warn('Landcover load error:', e);
+      }
+    }
+
+    map.on('overlayadd', (e) => {
+      if (e.layer === landcoverGroup) loadLandcover();
+    });
+    map.on('moveend', _debounce(loadLandcover, 400));
 
     /* ── Airspace layer ─────────────────────────────────────────── */
     const AIRSPACE_MIN_ZOOM = 7;
@@ -1534,6 +1611,10 @@
       document.getElementById('fuelLoadGal').value = Number(d.usable_fuel_gal) || 0;
       document.getElementById('autorotSpeedKt').value = h.autorotation_speed_kt || 60;
       document.getElementById('grossWeightLb').value = 0;
+      // Default the floats checkbox from the model's standard equipment list.
+      // User can override per-flight (some operators add floats aftermarket).
+      const fl = document.getElementById('hasFloats');
+      if (fl) fl.checked = !!h.has_floats;
       updateWeightBuildUp();
       // Re-filter My Aircraft to match the new type
       refreshAircraftDropdown();
@@ -3853,9 +3934,11 @@
         avoid_airspace: [...document.querySelectorAll('#avoidChecks input:checked')].map(cb => cb.value),
         avoid_borders: document.getElementById('avoidBorders').checked,
         water_risk: Number(document.getElementById('waterRisk').value),
+        has_floats: !!document.getElementById('hasFloats')?.checked,
         glide_ratio: (helicopterData[document.getElementById('heliType').value] || {}).autorotation_glide_ratio || 4.0,
         slope_threshold_deg: Number(document.getElementById('slopeThreshold').value) || 15,
         enforce_slope: !!document.getElementById('enforceSlope')?.checked,
+        use_landcover: !!document.getElementById('useLandcover')?.checked,
         fuel_load_gal: Number(document.getElementById('fuelLoadGal').value) || 0,
         waypoints,
       };

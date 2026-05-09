@@ -84,6 +84,10 @@ class HelicopterModel:
     autorotation_glide_ratio: float = 4.0  # horizontal:vertical glide ratio in autorotation
     autorotation_speed_kt: float = 60.0      # best autorotation glide speed (KIAS)
     airframe_class: str = "helicopter"  # "helicopter" or "fixed_wing" — disables HOGE/HIGE checks for FW
+    # Ditching survivability flag: True if this airframe is commonly equipped
+    # with pop-out emergency floats (EFS) or is otherwise designed for water
+    # landings (amphib FW). Drives water-cost reduction in the planner.
+    has_floats: bool = False
     # Optional chart-derived envelope: [(gross_weight_lb, ceiling_da_ft), ...]
     # If present, this is preferred over proxy estimation.
     enroute_ceiling_curve: List[Tuple[float, float]] = field(default_factory=list)
@@ -319,6 +323,7 @@ class HelicopterModel:
             "engine_type": self.engine_type,
             "fuel_type": self.fuel_type,
             "airframe_class": self.airframe_class,
+            "has_floats": self.has_floats,
             "max_gross_weight_lb": self.max_gross_weight_lb,
             "empty_weight_lb": self.empty_weight_lb,
             "usable_fuel_gal": self.usable_fuel_gal,

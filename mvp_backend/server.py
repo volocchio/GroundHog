@@ -27,6 +27,7 @@ from mvp_backend import route_cache
 from mvp_backend import terrain_intel
 from mvp_backend import helicopter_db
 from mvp_backend import landing_areas as _landing_areas
+from mvp_backend import landcover as _landcover
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -102,6 +103,10 @@ class RouteRequest(BaseModel):
 
     water_risk: float = Field(default=100, ge=0, le=100,
                               description="Water crossing risk tolerance: 0=must glide to shore, 100=ignore water.")
+    has_floats: bool = Field(default=False,
+                             description="Pop-out emergency floats (EFS) installed. Reduces water-cost penalty in planner.")
+    use_landcover: bool = Field(default=False,
+                                description="Use OSM landcover (roads/forest/urban) as a planner cost layer. Slower planning, smarter routes.")
     slope_threshold_deg: float = Field(default=15, ge=5, le=45,
                                        description="Max acceptable landing slope in degrees.")
     enforce_slope: bool = Field(default=False,
@@ -361,6 +366,7 @@ def route(req: RouteRequest):
         descent_speed_kt=req.descent_speed_kt,
         glide_ratio=req.glide_ratio,
         water_risk=req.water_risk,
+        has_floats=req.has_floats,
         slope_threshold_deg=req.slope_threshold_deg,
         enforce_slope=req.enforce_slope,
     )
@@ -596,6 +602,23 @@ def route_stream(req: RouteRequest):
 
                         yield f"data: {json.dumps({'type': 'leg_start', 'from': from_ap.icao, 'to': to_ap.icao, 'leg_index': global_leg})}\n\n"
 
+                        # Pre-fetch landcover features for this leg's bbox if requested.
+                        # Use a generous margin so the planner can detour within the
+                        # landcover-cost area. Cached aggressively in landcover.sqlite.
+                        leg_lc_features = None
+                        if req.use_landcover:
+                            try:
+                                margin = 0.25  # ~15 nm padding
+                                lc_s = min(from_ap.lat, to_ap.lat) - margin
+                                lc_n = max(from_ap.lat, to_ap.lat) + margin
+                                lc_w = min(from_ap.lon, to_ap.lon) - margin
+                                lc_e = max(from_ap.lon, to_ap.lon) + margin
+                                lc_res = _landcover.query_bbox(lc_s, lc_n, lc_w, lc_e)
+                                if lc_res and not lc_res.get('error'):
+                                    leg_lc_features = lc_res.get('features') or []
+                            except Exception:
+                                leg_lc_features = None
+
                         for event in terrain_avoid_leg_streaming(
                             from_ap, to_ap,
                             max_msl_ft=req.max_msl_ft,
@@ -613,8 +636,11 @@ def route_stream(req: RouteRequest):
                             avoid_borders=req.avoid_borders,
                             glide_ratio=req.glide_ratio,
                             water_risk=req.water_risk,
+                            has_floats=req.has_floats,
                             slope_threshold_deg=req.slope_threshold_deg,
                             enforce_slope=req.enforce_slope,
+                            use_landcover=req.use_landcover,
+                            landcover_features=leg_lc_features,
                         ):
                             if event.get("type") == "path":
                                 event["leg_index"] = global_leg
@@ -1007,6 +1033,17 @@ def get_landing_areas(
     """
     return _landing_areas.query_bbox(south, north, west, east,
                                      max_slope_deg=max_slope_deg)
+
+
+@app.get("/landcover")
+def get_landcover(
+    south: float = Query(...), north: float = Query(...),
+    west: float = Query(...), east: float = Query(...),
+):
+    """Return categorised OSM landcover features in bbox: roads, forest,
+    urban, open. Used both as a map overlay and as a planner cost input
+    when use_landcover=True is sent on /route/stream."""
+    return _landcover.query_bbox(south, north, west, east)
 
 
 # ── airspace endpoint ────────────────────────────────────────────────
