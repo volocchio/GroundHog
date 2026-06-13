@@ -472,6 +472,10 @@
           <label style="margin:0">Fuel load (gal)</label>
           <input id="fuelLoadGal" type="number" value="30" min="0" step="0.1" style="width:90px; text-align:right" title="Fuel on board at departure (gal)" />
         </div>
+        <div style="margin-top:4px; display:flex; align-items:center; gap:6px; font-size:11px; color:#6b7280">
+          <input type="checkbox" id="linkFuelLoad" checked style="width:auto; margin:0" />
+          <label for="linkFuelLoad" style="margin:0; font-size:11px; cursor:pointer">Keep departure fuel load matched to usable fuel</label>
+        </div>
         <div id="towBar" style="margin-top:8px; font-size:0.82em"></div>
 
         <div style="margin-top:8px; border-top:1px dashed #d1d5db; padding-top:6px">
@@ -1649,6 +1653,25 @@
     // ── Weight Build-Up ──
     let _higeCheckTimer = null;
 
+    function syncFuelLoadToUsable(forceMirror = false) {
+      const usableEl = document.getElementById('usableFuel');
+      const fuelLoadEl = document.getElementById('fuelLoadGal');
+      const linkEl = document.getElementById('linkFuelLoad');
+      if (!usableEl || !fuelLoadEl || !linkEl) return;
+      const usableFuel = Math.max(0, Number(usableEl.value) || 0);
+      let fuelLoad = Math.max(0, Number(fuelLoadEl.value) || 0);
+
+      fuelLoadEl.disabled = !!linkEl.checked;
+      if (linkEl.checked || forceMirror) {
+        fuelLoadEl.value = usableFuel ? String(usableFuel) : '0';
+        return;
+      }
+      if (fuelLoad > usableFuel) {
+        fuelLoad = usableFuel;
+        fuelLoadEl.value = String(fuelLoad);
+      }
+    }
+
     function updateWeightBuildUp() {
       const code = document.getElementById('heliType').value;
       const h = (code && helicopterData[code]) ? helicopterData[code] : null;
@@ -1656,7 +1679,10 @@
       const pilot = Number(document.getElementById('pilotLb').value) || 0;
       const pax = Number(document.getElementById('paxLb').value) || 0;
       const cargo = Number(document.getElementById('cargoLb').value) || 0;
+      const usableFuel = Math.max(0, Number(document.getElementById('usableFuel').value) || 0);
       let fuelGal = Number(document.getElementById('fuelLoadGal').value) || 0;
+      fuelGal = Math.min(Math.max(0, fuelGal), usableFuel);
+      document.getElementById('fuelLoadGal').value = String(fuelGal);
       const fwPG = (h && h.fuel_weight_lb_per_gal) ? h.fuel_weight_lb_per_gal : 6.0;
       const fuelLb = fuelGal * fwPG;
       const tow = bew + pilot + pax + cargo + fuelLb;
@@ -1819,9 +1845,19 @@
     }
 
     // Wire weight inputs to live-update
-    ['bewLb', 'pilotLb', 'paxLb', 'cargoLb', 'fuelLoadGal', 'usableFuel'].forEach(id => {
+    ['bewLb', 'pilotLb', 'paxLb', 'cargoLb'].forEach(id => {
       document.getElementById(id).addEventListener('input', updateWeightBuildUp);
     });
+    document.getElementById('usableFuel').addEventListener('input', () => {
+      syncFuelLoadToUsable(false);
+      updateWeightBuildUp();
+    });
+    document.getElementById('fuelLoadGal').addEventListener('input', updateWeightBuildUp);
+    document.getElementById('linkFuelLoad').addEventListener('change', () => {
+      syncFuelLoadToUsable(true);
+      updateWeightBuildUp();
+    });
+    syncFuelLoadToUsable(true);
     document.getElementById('dep').addEventListener('change', updateWeightBuildUp);
 
     document.getElementById('heliType').addEventListener('change', function() {
@@ -1836,10 +1872,8 @@
       document.getElementById('burnGph').value = d.fuel_burn_gph;
       document.getElementById('fuelType').value = h.fuel_type;
       document.getElementById('bewLb').value = h.empty_weight_lb;
-      // Default fuel load = full usable for this aircraft. The pilot can
-      // dial it down for weight reasons; previously we capped at 30 gal,
-      // which was nonsense for anything bigger than an R22.
-      document.getElementById('fuelLoadGal').value = Number(d.usable_fuel_gal) || 0;
+      document.getElementById('linkFuelLoad').checked = true;
+      syncFuelLoadToUsable(true);
       document.getElementById('autorotSpeedKt').value = h.autorotation_speed_kt || 60;
       document.getElementById('grossWeightLb').value = 0;
       // Default the floats checkbox from the model's standard equipment list.
@@ -1954,7 +1988,8 @@
           document.getElementById('usableFuel').value = h.defaults.usable_fuel_gal;
           document.getElementById('burnGph').value = h.defaults.fuel_burn_gph;
           document.getElementById('fuelType').value = h.fuel_type;
-          document.getElementById('fuelLoadGal').value = Number(h.defaults.usable_fuel_gal) || 0;
+          document.getElementById('linkFuelLoad').checked = true;
+          syncFuelLoadToUsable(true);
           document.getElementById('autorotSpeedKt').value = h.autorotation_speed_kt || 60;
         }
       }
@@ -4848,6 +4883,8 @@
       } else {
         document.getElementById('fuelLoadGal').value = r.usable_fuel_gal || document.getElementById('usableFuel').value || 48;
       }
+      document.getElementById('linkFuelLoad').checked = !(r.fuel_load_gal != null && r.usable_fuel_gal != null && r.fuel_load_gal < r.usable_fuel_gal);
+      syncFuelLoadToUsable(false);
       document.getElementById('burnGph').value = r.fuel_burn_gph || 13;
       document.getElementById('reserveMin').value = r.reserve_min || 30;
       document.getElementById('maxLegMin').value = r.max_leg_min || 0;
