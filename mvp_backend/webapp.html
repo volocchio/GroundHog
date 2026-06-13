@@ -106,7 +106,7 @@
       label { margin-top: 6px; }
       input, select { padding: 7px; font-size: 14px; }
       button { margin-top: 8px; }
-      #map { height: 54vh; min-height: 280px; }
+      #map { height: 72vh; min-height: 420px; }
       #mobileViewTabs {
         display: flex;
         gap: 8px;
@@ -764,6 +764,13 @@
       planBtn.classList.toggle('active', !showMap);
       mapBtn.classList.toggle('active', showMap);
       if (advancedPlan && !showMap) advancedPlan.open = false;
+      if (showMap) {
+        setTimeout(() => {
+          if (typeof map !== 'undefined' && map && map.invalidateSize) {
+            map.invalidateSize();
+          }
+        }, 80);
+      }
     }
 
     document.getElementById('mobilePlanTab').addEventListener('click', () => setMobilePane('plan'));
