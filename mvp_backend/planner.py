@@ -358,6 +358,7 @@ def plan_stop_sequences(
     usable_fuel_gal: float,
     burn_gph: float,
     reserve_min: float,
+    max_leg_min: float,
     required_fuel: str,
     max_detour_factor: float,
     max_expansions: int = 2000,
@@ -420,11 +421,15 @@ def plan_stop_sequences(
     want_100ll = required_fuel.upper() == "100LL"
 
     max_leg_time = (usable_fuel_gal / burn_gph) - (reserve_min / 60.0)
+    if max_leg_min > 0:
+        max_leg_time = min(max_leg_time, max_leg_min / 60.0)
     if max_leg_time <= 0:
         return []
     max_leg_nm = max_leg_time * cruise_speed_kt
 
     start_leg_time = (_start_fuel / burn_gph) - (reserve_min / 60.0)
+    if max_leg_min > 0:
+        start_leg_time = min(start_leg_time, max_leg_min / 60.0)
     start_max_leg_nm = start_leg_time * cruise_speed_kt if start_leg_time > 0 else 0
 
     # Elevation ceiling for candidate filtering
@@ -621,6 +626,7 @@ def plan_stop_sequence(
     usable_fuel_gal: float,
     burn_gph: float,
     reserve_min: float,
+    max_leg_min: float,
     required_fuel: str,
     max_detour_factor: float,
     max_expansions: int = 2000,
@@ -637,7 +643,7 @@ def plan_stop_sequence(
     """Convenience wrapper: returns the single best stop sequence or None."""
     seqs = plan_stop_sequences(
         dep, arr, airports, cruise_speed_kt, usable_fuel_gal, burn_gph,
-        reserve_min, required_fuel, max_detour_factor, max_expansions,
+        reserve_min, max_leg_min, required_fuel, max_detour_factor, max_expansions,
         max_neighbors, blocked_pairs, max_msl_ft, min_agl_ft,
         max_climb_fpm, max_descent_fpm, climb_speed_kt, descent_speed_kt,
         start_fuel_gal, k=1,
@@ -653,6 +659,7 @@ def plan_route_multi_stop(
     usable_fuel_gal: float,
     burn_gph: float,
     reserve_min: float,
+    max_leg_min: float,
     max_msl_ft: float,
     min_agl_ft: float,
     required_fuel: str,
@@ -683,11 +690,13 @@ def plan_route_multi_stop(
 
     # Max leg range based on fuel after reserve
     max_leg_time = (usable_fuel_gal / burn_gph) - (reserve_min / 60.0)
+    if max_leg_min > 0:
+        max_leg_time = min(max_leg_time, max_leg_min / 60.0)
     if max_leg_time <= 0:
         return {
             "type": "no_route",
-            "message": "No route found: reserve exceeds usable fuel.",
-            "suggestions": ["Decrease reserve", "Increase usable fuel"],
+            "message": "No route found: max leg time and reserve leave no usable leg length.",
+            "suggestions": ["Increase max leg minutes", "Decrease reserve", "Increase usable fuel"],
         }
     max_leg_nm = max_leg_time * cruise_speed_kt
 

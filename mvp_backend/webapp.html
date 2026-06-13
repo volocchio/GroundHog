@@ -60,7 +60,70 @@
     .muted { color:#6b7280; font-size: 12px; }
     .err { color:#b91c1c; white-space: pre-wrap; }
     details { margin-top: 10px; }
-    @media (max-width: 980px) { .wrap { grid-template-columns: 1fr; } #map { height: 50vh; } }
+    #mobileViewTabs { display: none; }
+    .mobile-view-btn {
+      flex: 1;
+      border: 1px solid #cbd5e1;
+      background: #f8fafc;
+      color: #334155;
+      border-radius: 999px;
+      padding: 8px 10px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .mobile-view-btn.active {
+      background: #1d4ed8;
+      border-color: #1d4ed8;
+      color: #fff;
+    }
+    #advancedPlan {
+      margin-top: 10px;
+      border: 1px solid #dbe3ef;
+      border-radius: 8px;
+      padding: 6px 8px;
+      background: #f8fafc;
+    }
+    #advancedPlan > summary {
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 13px;
+      color: #1e3a8a;
+      list-style: none;
+    }
+    #advancedPlan > summary::-webkit-details-marker { display: none; }
+    #advancedPlan > summary::after {
+      content: 'Show';
+      float: right;
+      color: #64748b;
+      font-weight: 500;
+      font-size: 12px;
+    }
+    #advancedPlan[open] > summary::after { content: 'Hide'; }
+    @media (max-width: 980px) {
+      .wrap { grid-template-columns: 1fr; gap: 10px; padding: 10px; }
+      .card { padding: 10px; }
+      label { margin-top: 6px; }
+      input, select { padding: 7px; font-size: 14px; }
+      button { margin-top: 8px; }
+      #map { height: 54vh; min-height: 280px; }
+      #mobileViewTabs {
+        display: flex;
+        gap: 8px;
+        position: sticky;
+        top: 0;
+        z-index: 5000;
+        padding: 8px 10px;
+        background: #ffffffee;
+        backdrop-filter: blur(3px);
+        border-bottom: 1px solid #e2e8f0;
+      }
+      .mobile-pane-hidden { display: none !important; }
+      #advResults { max-height: 42vh; }
+      #results table { font-size: 12px; }
+      .profile-controls { display: flex; flex-wrap: wrap; row-gap: 4px; }
+      #advancedPlan { margin-top: 8px; }
+    }
     /* Leaflet layer control styling */
     .leaflet-control-layers {
       border-radius: 10px !important;
@@ -273,8 +336,13 @@
     <div class="muted">S300C defaults prefilled • Select helicopter type for AFM-based performance • Fuel stops: public-use only</div>
   </header>
 
+  <div id="mobileViewTabs">
+    <button id="mobilePlanTab" class="mobile-view-btn active" type="button">Planner</button>
+    <button id="mobileMapTab" class="mobile-view-btn" type="button">Map &amp; Results</button>
+  </div>
+
   <div class="wrap">
-    <div class="card">
+    <div id="controlCard" class="card">
       <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px">
         <button type="button" id="modePlanBtn" class="mode-tab mode-tab-active">Route Planning</button>
         <button type="button" id="modeAdvBtn" class="mode-tab">🏔 Find Adventure</button>
@@ -442,6 +510,9 @@
       <label>Reserve (minutes)</label>
       <input id="reserveMin" type="number" value="30" min="0" step="1" />
 
+      <label>Max leg length (minutes) — 0 = fuel-limited only</label>
+      <input id="maxLegMin" type="number" value="0" min="0" step="5" placeholder="e.g. 90" />
+
       <label>Cruise speed (kt)</label>
       <input id="speedKt" type="number" value="75" min="1" step="1" />
 
@@ -450,6 +521,9 @@
 
       <label>Fuel burn (gph)</label>
       <input id="burnGph" type="number" value="13" min="0" step="0.1" />
+
+      <details id="advancedPlan" open>
+      <summary>Advanced route constraints</summary>
 
       <label>Max target altitude (ft MSL)</label>
       <input id="maxMsl" type="number" value="5000" min="0" step="50" />
@@ -585,6 +659,8 @@
         <label for="avoidBorders" style="margin:0; display:inline; font-size:13px">Avoid international border crossings</label>
       </div>
 
+      </details>
+
       <div style="position:relative; margin-top:12px">
         <button id="goBtn" style="margin:0">Plan route</button>
         <button id="abortBtn">Abort Planning</button>
@@ -611,7 +687,7 @@
       </div><!-- /#planPanel -->
     </div>
 
-    <div class="card">
+    <div id="mapCard" class="card">
       <div id="map"></div>
       <div id="profileWrap">
         <div class="profile-title">Elevation Profile (side view)
@@ -662,6 +738,38 @@
     const detour = document.getElementById('detour');
     const detourVal = document.getElementById('detourVal');
     detour.addEventListener('input', () => detourVal.textContent = detour.value);
+
+    // Mobile view tabs: avoid one long mashed-up page on phones.
+    function setMobilePane(pane) {
+      const isMobile = window.matchMedia('(max-width: 980px)').matches;
+      const controlCard = document.getElementById('controlCard');
+      const mapCard = document.getElementById('mapCard');
+      const planBtn = document.getElementById('mobilePlanTab');
+      const mapBtn = document.getElementById('mobileMapTab');
+      const advancedPlan = document.getElementById('advancedPlan');
+      if (!controlCard || !mapCard || !planBtn || !mapBtn) return;
+
+      if (!isMobile) {
+        controlCard.classList.remove('mobile-pane-hidden');
+        mapCard.classList.remove('mobile-pane-hidden');
+        planBtn.classList.remove('active');
+        mapBtn.classList.remove('active');
+        if (advancedPlan) advancedPlan.open = true;
+        return;
+      }
+
+      const showMap = pane === 'map';
+      controlCard.classList.toggle('mobile-pane-hidden', showMap);
+      mapCard.classList.toggle('mobile-pane-hidden', !showMap);
+      planBtn.classList.toggle('active', !showMap);
+      mapBtn.classList.toggle('active', showMap);
+      if (advancedPlan && !showMap) advancedPlan.open = false;
+    }
+
+    document.getElementById('mobilePlanTab').addEventListener('click', () => setMobilePane('plan'));
+    document.getElementById('mobileMapTab').addEventListener('click', () => setMobilePane('map'));
+    window.addEventListener('resize', () => setMobilePane('plan'));
+    setMobilePane('plan');
 
     // Water risk label update
     const waterRiskSel = document.getElementById('waterRisk');
@@ -4016,6 +4124,7 @@
         usable_fuel_gal: Number(document.getElementById('usableFuel').value),
         fuel_burn_gph: Number(document.getElementById('burnGph').value),
         reserve_min: Number(document.getElementById('reserveMin').value),
+        max_leg_min: Number(document.getElementById('maxLegMin').value) || 0,
         min_agl_ft: Number(document.getElementById('minAgl').value),
         max_msl_ft: Number(document.getElementById('maxMsl').value),
         max_agl_ft: Number(document.getElementById('maxAgl').value) || 0,
@@ -4527,6 +4636,7 @@
       }
 
       // Scroll so the map is visible
+      setMobilePane('map');
       document.getElementById('map').scrollIntoView({ behavior: 'smooth', block: 'start' });
 
       const watch = document.getElementById('watchSearch').checked;
@@ -4602,6 +4712,7 @@
         usable_fuel_gal: payload.usable_fuel_gal,
         fuel_burn_gph: payload.fuel_burn_gph,
         reserve_min: payload.reserve_min,
+        max_leg_min: payload.max_leg_min,
         max_msl_ft: payload.max_msl_ft,
         min_agl_ft: payload.min_agl_ft,
         max_agl_ft: payload.max_agl_ft,
@@ -4673,6 +4784,7 @@
       }
       document.getElementById('burnGph').value = r.fuel_burn_gph || 13;
       document.getElementById('reserveMin').value = r.reserve_min || 30;
+      document.getElementById('maxLegMin').value = r.max_leg_min || 0;
       document.getElementById('maxMsl').value = r.max_msl_ft || 7000;
       document.getElementById('minAgl').value = r.min_agl_ft || 200;
       document.getElementById('maxAgl').value = r.max_agl_ft || '';

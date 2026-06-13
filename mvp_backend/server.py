@@ -246,6 +246,8 @@ class RouteRequest(BaseModel):
     usable_fuel_gal: float = Field(gt=0)
     fuel_burn_gph: float = Field(gt=0)
     reserve_min: float = Field(ge=0)
+    max_leg_min: float = Field(default=0, ge=0,
+                               description="Optional per-leg time cap in minutes. 0 = fuel-limited only.")
 
     min_agl_ft: float = Field(ge=0)
     max_msl_ft: float = Field(gt=0)
@@ -534,6 +536,7 @@ def route(req: RouteRequest):
         usable_fuel_gal=req.usable_fuel_gal,
         burn_gph=req.fuel_burn_gph,
         reserve_min=req.reserve_min,
+        max_leg_min=req.max_leg_min,
         max_msl_ft=req.max_msl_ft,
         min_agl_ft=req.min_agl_ft,
         required_fuel=req.required_fuel,
@@ -713,6 +716,7 @@ def route_stream(req: RouteRequest):
                     start_fuel_gal=start_fuel,
                     burn_gph=req.fuel_burn_gph,
                     reserve_min=req.reserve_min,
+                    max_leg_min=req.max_leg_min,
                     required_fuel=req.required_fuel,
                     max_detour_factor=eff_detour,
                     blocked_pairs=blocked_pairs,
@@ -1494,6 +1498,7 @@ def _background_precompute():
                     usable_fuel_gal=entry.get("fuel_gal", 48),
                     burn_gph=entry.get("burn_gph", 13),
                     reserve_min=entry.get("reserve_min", 30),
+                    max_leg_min=entry.get("max_leg_min", 0),
                     required_fuel=entry.get("fuel_type", "100LL"),
                     max_detour_factor=entry["detour_fac"],
                     max_msl_ft=entry["max_msl_ft"],
