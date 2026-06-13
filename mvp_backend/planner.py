@@ -672,6 +672,7 @@ def plan_route_multi_stop(
     descent_speed_kt: float = 0,
     glide_ratio: float = 0,
     water_risk: float = 100,
+    has_floats: bool = False,
     slope_threshold_deg: float = 15,
     enforce_slope: bool = False,
 ) -> dict:
@@ -784,6 +785,7 @@ def plan_route_multi_stop(
                                         descent_speed_kt=descent_speed_kt,
                                         glide_ratio=glide_ratio,
                                         water_risk=water_risk,
+                                        has_floats=has_floats,
                                         slope_threshold_deg=slope_threshold_deg,
                                         enforce_slope=enforce_slope)
                 if not leg:
