@@ -77,6 +77,18 @@
       border-color: #1d4ed8;
       color: #fff;
     }
+    #mapTouchToggle {
+      display: none;
+      margin: 0 0 8px 0;
+      width: auto;
+      background: #0f766e;
+      border: 1px solid #0f766e;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 6px 10px;
+      border-radius: 999px;
+    }
     #advancedPlan {
       margin-top: 10px;
       border: 1px solid #dbe3ef;
@@ -123,6 +135,7 @@
       #results table { font-size: 12px; }
       .profile-controls { display: flex; flex-wrap: wrap; row-gap: 4px; }
       #advancedPlan { margin-top: 8px; }
+      #mapTouchToggle { display: inline-block; }
     }
     /* Leaflet layer control styling */
     .leaflet-control-layers {
@@ -688,6 +701,7 @@
     </div>
 
     <div id="mapCard" class="card">
+      <button id="mapTouchToggle" type="button">Map gestures: OFF (scroll page)</button>
       <div id="map"></div>
       <div id="profileWrap">
         <div class="profile-title">Elevation Profile (side view)
@@ -831,6 +845,47 @@
     adsbOut.dispatchEvent(new Event('change'));  // apply initial state
 
     const map = L.map('map', { preferCanvas: true }).setView([39.0, -105.5], 5);
+    const mobileMedia = window.matchMedia('(max-width: 980px)');
+    let mobileMapGesturesOn = false;
+
+    function applyMobileMapGestureMode() {
+      const btn = document.getElementById('mapTouchToggle');
+      if (!btn) return;
+      const isMobile = mobileMedia.matches;
+
+      if (!isMobile) {
+        btn.style.display = 'none';
+        if (map.dragging) map.dragging.enable();
+        if (map.touchZoom) map.touchZoom.enable();
+        if (map.doubleClickZoom) map.doubleClickZoom.enable();
+        return;
+      }
+
+      btn.style.display = 'inline-block';
+      if (mobileMapGesturesOn) {
+        if (map.dragging) map.dragging.enable();
+        if (map.touchZoom) map.touchZoom.enable();
+        if (map.doubleClickZoom) map.doubleClickZoom.enable();
+        btn.textContent = 'Map gestures: ON (tap to lock scroll)';
+        btn.style.background = '#2563eb';
+        btn.style.borderColor = '#2563eb';
+      } else {
+        if (map.dragging) map.dragging.disable();
+        if (map.touchZoom) map.touchZoom.disable();
+        if (map.doubleClickZoom) map.doubleClickZoom.disable();
+        btn.textContent = 'Map gestures: OFF (scroll page)';
+        btn.style.background = '#0f766e';
+        btn.style.borderColor = '#0f766e';
+      }
+      setTimeout(() => map.invalidateSize(), 20);
+    }
+
+    document.getElementById('mapTouchToggle').addEventListener('click', () => {
+      mobileMapGesturesOn = !mobileMapGesturesOn;
+      applyMobileMapGestureMode();
+    });
+    applyMobileMapGestureMode();
+    window.addEventListener('resize', applyMobileMapGestureMode);
 
     // Custom pane for airspace polygons — below markers so airports are clickable through airspace
     map.createPane('airspacePane');
