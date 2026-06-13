@@ -740,7 +740,10 @@
     detour.addEventListener('input', () => detourVal.textContent = detour.value);
 
     // Mobile view tabs: avoid one long mashed-up page on phones.
+    let currentMobilePane = 'plan';
+
     function setMobilePane(pane) {
+      const targetPane = pane || currentMobilePane;
       const isMobile = window.matchMedia('(max-width: 980px)').matches;
       const controlCard = document.getElementById('controlCard');
       const mapCard = document.getElementById('mapCard');
@@ -758,7 +761,8 @@
         return;
       }
 
-      const showMap = pane === 'map';
+      const showMap = targetPane === 'map';
+      currentMobilePane = showMap ? 'map' : 'plan';
       controlCard.classList.toggle('mobile-pane-hidden', showMap);
       mapCard.classList.toggle('mobile-pane-hidden', !showMap);
       planBtn.classList.toggle('active', !showMap);
@@ -775,7 +779,7 @@
 
     document.getElementById('mobilePlanTab').addEventListener('click', () => setMobilePane('plan'));
     document.getElementById('mobileMapTab').addEventListener('click', () => setMobilePane('map'));
-    window.addEventListener('resize', () => setMobilePane('plan'));
+    window.addEventListener('resize', () => setMobilePane(currentMobilePane));
     setMobilePane('plan');
 
     // Water risk label update
