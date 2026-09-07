@@ -413,14 +413,15 @@ def plan_stop_sequences(
     # Realistic planning cushion for terrain detours.  At low ceilings
     # (< 8000 ft) mountain terrain forces much larger detours, so scale up
     # the cushion to keep the fuel-stop planner from promising legs that
-    # the terrain A* can't deliver. Fatter cushion at low ceilings —
-    # 4000 ft with Great Lakes water avoidance can easily need 1.7×+.
+    # the terrain A* can't deliver. Balanced: too small and low-ceiling
+    # routes strand out of fuel mid-leg; too large and the fuel A* over
+    # the airport graph fails to find any feasible sequence at all.
     if max_msl_ft > 0 and max_msl_ft < 8000:
-        # Linear ramp: 1.25 @ 8000 → 1.70 @ 4000 → 1.85 @ 3000
-        terrain_extra = 0.11 * (8000 - max_msl_ft) / 1000.0
-        planning_detour = min(max_detour_factor, 1.25 + terrain_extra)
+        # Linear ramp: 1.20 @ 8000 → 1.55 @ 4000 → 1.65 @ 3000
+        terrain_extra = 0.0875 * (8000 - max_msl_ft) / 1000.0
+        planning_detour = min(max_detour_factor, 1.20 + terrain_extra)
     else:
-        planning_detour = min(max_detour_factor, 1.25)
+        planning_detour = min(max_detour_factor, 1.20)
 
     stop_penalty_hr = 0.5
 
@@ -1879,7 +1880,7 @@ def terrain_avoid_leg_streaming(
     # Build avoidance tag for cache key differentiation.
     # cm=N marks the cost-model version. Bump when water/slope/landcover
     # cost math changes so old cached paths are invalidated automatically.
-    _atag = "cm=4"
+    _atag = "cm=5"
     if avoid_airspace:
         _atag += "|" + ",".join(sorted(avoid_airspace))
     if obstacle_radius_nm > 0:

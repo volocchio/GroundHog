@@ -800,11 +800,40 @@ def route_stream(req: RouteRequest):
                 )
 
                 if not sequences_pool:
+                    # Fall-back: retry the fuel graph with a smaller
+                    # planning-detour cushion so we return SOME sequence
+                    # even if the tighter cushion couldn't find one. The
+                    # per-leg A* still enforces the real max_detour_factor.
+                    for _fallback_msl in (7000, 9000, 12000):
+                        sequences_pool = plan_stop_sequences(
+                            dep=seg_dep, arr=seg_arr, airports=airports,
+                            cruise_speed_kt=req.cruise_speed_kt,
+                            usable_fuel_gal=req.usable_fuel_gal,
+                            start_fuel_gal=start_fuel,
+                            burn_gph=req.fuel_burn_gph,
+                            reserve_min=req.reserve_min,
+                            max_leg_min=req.max_leg_min,
+                            required_fuel=req.required_fuel,
+                            max_detour_factor=eff_detour,
+                            blocked_pairs=blocked_pairs,
+                            max_msl_ft=_fallback_msl,
+                            min_agl_ft=req.min_agl_ft,
+                            max_climb_fpm=req.max_climb_fpm,
+                            max_descent_fpm=req.max_descent_fpm,
+                            climb_speed_kt=req.climb_speed_kt,
+                            descent_speed_kt=req.descent_speed_kt,
+                            k=3,
+                            max_expansions=eff_expansions,
+                        )
+                        if sequences_pool:
+                            break
+
+                if not sequences_pool:
                     if attempt < max_retries:
                         yield f"data: {json.dumps({'type': 'reroute', 'message': f'No fuel-feasible route for {seg_dep.icao} → {seg_arr.icao} (detour {eff_detour:.1f}x, attempt {attempt+1}/{max_retries+1}) — widening search...', 'blocked': [list(p) for p in blocked_pairs], 'keep_legs': sum(len(s) - 1 for s in all_sequences)})}\n\n"
                         continue
                     # All retries exhausted
-                    yield f"data: {json.dumps({'type': 'no_path', 'message': f'No fuel-feasible route found for segment {seg_dep.icao} → {seg_arr.icao} after {max_retries+1} attempts (max detour {eff_detour:.1f}x).'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'no_path', 'message': f'No fuel-feasible route found for segment {seg_dep.icao} → {seg_arr.icao}. Try raising Max target MSL or Max detour.'})}\n\n"
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
                     return
 
