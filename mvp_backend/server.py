@@ -686,9 +686,20 @@ def route_stream(req: RouteRequest):
             heli.max_gross_weight_lb if heli else 0)
         current_weight = initial_weight
         fw_per_gal = heli.fuel_weight_lb_per_gal if heli else 6.0
-        # Hard wall-clock budget so a pathological request can't spin forever.
+        # Hard wall-clock budget so a pathological request can't spin
+        # forever. Starts modest (fast fail for tiny routes) and grows
+        # once we know how many fuel-stop legs this route actually needs
+        # — see _grow_budget_for below.
         _plan_start_wall = time.monotonic()
-        _PLAN_BUDGET_SEC = 90.0
+        _PLAN_BUDGET_SEC = 120.0
+        _PER_LEG_BUDGET_SEC = 30.0
+
+        def _grow_budget_for(expected_legs: int) -> None:
+            """Bump the total budget to cover expected leg count. Idempotent."""
+            nonlocal _PLAN_BUDGET_SEC
+            needed = float(expected_legs) * _PER_LEG_BUDGET_SEC + 30.0
+            if needed > _PLAN_BUDGET_SEC:
+                _PLAN_BUDGET_SEC = needed
         for si in range(len(segment_endpoints) - 1):
             seg_dep = segment_endpoints[si]
             seg_arr = segment_endpoints[si + 1]
@@ -769,6 +780,15 @@ def route_stream(req: RouteRequest):
                     yield f"data: {json.dumps({'type': 'no_path', 'message': f'No fuel-feasible route found for segment {seg_dep.icao} → {seg_arr.icao} after {max_retries+1} attempts (max detour {eff_detour:.1f}x).'})}\n\n"
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
                     return
+
+                # Now we know how many legs this segment needs; grow the
+                # global time budget so long routes don't get killed
+                # mid-route just because they have many fuel stops.
+                _grow_budget_for(
+                    sum(len(s) - 1 for s in all_sequences)
+                    + (len(sequences_pool[0]) - 1)
+                    + max(0, len(segment_endpoints) - 2 - si) * (len(sequences_pool[0]) - 1)
+                )
 
                 # Try each candidate sequence until one succeeds all legs
                 seq_succeeded = False
