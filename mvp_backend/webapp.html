@@ -138,6 +138,57 @@
       #advancedPlan { margin-top: 8px; }
       #mapTouchToggle { display: inline-block; }
     }
+    /* Planning progress meter */
+    #planProgress {
+      display: none;
+      margin-top: 8px;
+      padding: 8px 10px;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 8px;
+      font-size: 12px;
+      color: #1e3a8a;
+    }
+    #planProgress.active { display: block; }
+    #planProgressTitle {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    #planProgressTitle .planElapsed {
+      font-weight: 500;
+      color: #475569;
+      font-variant-numeric: tabular-nums;
+      font-size: 11px;
+    }
+    #planProgressBar {
+      position: relative;
+      height: 6px;
+      background: #dbeafe;
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    #planProgressBar::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: -30%;
+      width: 30%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, #2563eb 40%, #2563eb 60%, transparent);
+      animation: planPulse 1.1s linear infinite;
+    }
+    @keyframes planPulse {
+      0%   { left: -30%; }
+      100% { left: 100%; }
+    }
+    #planProgressDetail {
+      margin-top: 4px;
+      color: #334155;
+      font-variant-numeric: tabular-nums;
+    }
     /* Leaflet layer control styling */
     .leaflet-control-layers {
       border-radius: 10px !important;
@@ -700,6 +751,14 @@
       <div id="liveStatus"></div>
 
       <div id="status" class="muted" style="margin-top:10px"></div>
+      <div id="planProgress" role="status" aria-live="polite">
+        <div id="planProgressTitle">
+          <span id="planProgressLabel">Planning route\u2026</span>
+          <span class="planElapsed" id="planProgressElapsed">0.0s</span>
+        </div>
+        <div id="planProgressBar"></div>
+        <div id="planProgressDetail">Preparing search\u2026</div>
+      </div>
       <div id="error" class="err" style="margin-top:8px"></div>
       <div id="cacheStats" class="muted" style="margin-top:12px; font-size:0.8em; border-top:1px solid #ddd; padding-top:6px"></div>
       </div><!-- /#planPanel -->
@@ -4174,7 +4233,87 @@
     function setPlanning(active) {
       document.getElementById('goBtn').disabled = active;
       document.getElementById('abortBtn').style.display = active ? 'block' : 'none';
+      if (active) planProgress.start();
+      else planProgress.stop();
     }
+
+    // ── Running progress meter ─────────────────────────────────────────
+    // Kicks off on setPlanning(true); ticks every 250 ms updating elapsed
+    // time so the user has visible confirmation the planner is alive.
+    const planProgress = (() => {
+      const box = document.getElementById('planProgress');
+      const label = document.getElementById('planProgressLabel');
+      const elapsedEl = document.getElementById('planProgressElapsed');
+      const detailEl = document.getElementById('planProgressDetail');
+      let startAt = 0;
+      let tickTimer = null;
+      let currentLegLabel = '';
+      let cellsExplored = 0;
+      let currentLegIdx = 0;
+      let totalLegs = 1;
+
+      function fmtElapsed(sec) {
+        if (sec < 60) return sec.toFixed(1) + 's';
+        const m = Math.floor(sec / 60);
+        const s = Math.floor(sec % 60);
+        return m + 'm ' + s + 's';
+      }
+
+      function tick() {
+        if (!startAt) return;
+        elapsedEl.textContent = fmtElapsed((performance.now() - startAt) / 1000);
+      }
+
+      function repaintDetail() {
+        const parts = [];
+        if (totalLegs > 1) parts.push('Leg ' + (currentLegIdx + 1) + ' of ' + totalLegs);
+        if (currentLegLabel) parts.push(currentLegLabel);
+        if (cellsExplored > 0) parts.push(cellsExplored.toLocaleString() + ' cells');
+        detailEl.textContent = parts.join(' \u2022 ') || 'Preparing search\u2026';
+      }
+
+      return {
+        start() {
+          startAt = performance.now();
+          cellsExplored = 0;
+          currentLegIdx = 0;
+          totalLegs = 1;
+          currentLegLabel = '';
+          label.textContent = 'Planning route\u2026';
+          detailEl.textContent = 'Preparing search\u2026';
+          elapsedEl.textContent = '0.0s';
+          box.classList.add('active');
+          if (tickTimer) clearInterval(tickTimer);
+          tickTimer = setInterval(tick, 250);
+        },
+        stop() {
+          if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
+          box.classList.remove('active');
+          startAt = 0;
+        },
+        setRoutePlan(numLegs) {
+          totalLegs = Math.max(1, numLegs || 1);
+          cellsExplored = 0;
+          repaintDetail();
+        },
+        setLeg(legIdx, fromIcao, toIcao) {
+          currentLegIdx = legIdx || 0;
+          cellsExplored = 0;
+          if (fromIcao && toIcao) currentLegLabel = fromIcao + ' \u2192 ' + toIcao;
+          label.textContent = totalLegs > 1
+            ? 'Leg ' + (currentLegIdx + 1) + ' / ' + totalLegs
+            : 'Planning route\u2026';
+          repaintDetail();
+        },
+        addExplored(n) {
+          cellsExplored += n;
+          repaintDetail();
+        },
+        setMessage(msg) {
+          label.textContent = msg;
+        },
+      };
+    })();
 
     function abortPlanning() {
       if (abortController) {
@@ -4396,6 +4535,8 @@
               exploredCount = 0;
               currentLeg = keep;
               document.getElementById('status').textContent = event.message || 'Replanning segment\u2026';
+              planProgress.setMessage(event.message || 'Replanning segment…');
+              planProgress.setLeg(keep, null, null);
             }
 
             if (event.type === 'route_plan') {
@@ -4405,6 +4546,7 @@
                 numLegs > 1
                   ? `Route requires ${numLegs} legs (${stops.length} fuel stop${stops.length !== 1 ? 's' : ''}). Streaming leg 1...`
                   : 'Downloading elevation tiles & searching...';
+              planProgress.setRoutePlan(numLegs);
             }
 
             if (event.type === 'leg_start') {
@@ -4413,6 +4555,7 @@
                 document.getElementById('status').textContent =
                   `Streaming leg ${currentLeg + 1} of ${numLegs}: ${event.from} → ${event.to}...`;
               }
+              planProgress.setLeg(currentLeg, event.from, event.to);
             }
 
             if (event.type === 'grid') {
@@ -4428,6 +4571,7 @@
                 numLegs > 1
                   ? `Leg ${currentLeg + 1}/${numLegs} — ${exploredCount.toLocaleString()} cells explored`
                   : `Searching... ${exploredCount.toLocaleString()} cells explored`;
+              planProgress.addExplored(event.cells.length);
               for (const [lat, lon] of event.cells) {
                 L.circleMarker([lat, lon], {
                   radius: 1, color: '#f59e0b', fillColor: '#f59e0b',
