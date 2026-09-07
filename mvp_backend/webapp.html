@@ -540,9 +540,6 @@
       <label>Fuel burn (gph)</label>
       <input id="burnGph" type="number" value="13" min="0" step="0.1" />
 
-      <details id="advancedPlan" open>
-      <summary>Advanced route constraints</summary>
-
       <label>Max target altitude (ft MSL)</label>
       <input id="maxMsl" type="number" value="5000" min="0" step="50" />
 
@@ -557,6 +554,9 @@
         <label><input type="radio" name="flightMode" value="maxmsl" checked /> Fly at max MSL</label>
         <label><input type="radio" name="flightMode" value="terrain" /> Terrain following</label>
       </div>
+
+      <details id="advancedPlan" open>
+      <summary>Advanced route constraints</summary>
 
       <div id="terrainFollowOpts">
       <label>Max climb rate (fpm) — 0 = unlimited</label>
@@ -760,6 +760,22 @@
 
     // Mobile view tabs: avoid one long mashed-up page on phones.
     let currentMobilePane = 'plan';
+    // Once the user opens/closes Advanced themselves, never override it again.
+    let advancedPlanUserSet = false;
+    let advancedPlanProgrammatic = 0;
+    (function () {
+      const adv = document.getElementById('advancedPlan');
+      if (adv) adv.addEventListener('toggle', () => {
+        if (advancedPlanProgrammatic > 0) { advancedPlanProgrammatic--; return; }
+        advancedPlanUserSet = true;
+      });
+    })();
+
+    function setAdvancedOpen(el, open) {
+      if (!el || el.open === open || advancedPlanUserSet) return;
+      advancedPlanProgrammatic++;
+      el.open = open;
+    }
 
     function setMobilePane(pane) {
       const targetPane = pane || currentMobilePane;
@@ -776,7 +792,7 @@
         mapCard.classList.remove('mobile-pane-hidden');
         planBtn.classList.remove('active');
         mapBtn.classList.remove('active');
-        if (advancedPlan) advancedPlan.open = true;
+        if (advancedPlan && !advancedPlanUserSet) setAdvancedOpen(advancedPlan, true);
         return;
       }
 
@@ -786,7 +802,7 @@
       mapCard.classList.toggle('mobile-pane-hidden', !showMap);
       planBtn.classList.toggle('active', !showMap);
       mapBtn.classList.toggle('active', showMap);
-      if (advancedPlan && !showMap) advancedPlan.open = false;
+      if (advancedPlan && !showMap && !advancedPlanUserSet) setAdvancedOpen(advancedPlan, false);
       if (showMap) {
         setTimeout(() => {
           if (typeof map !== 'undefined' && map && map.invalidateSize) {
@@ -798,7 +814,15 @@
 
     document.getElementById('mobilePlanTab').addEventListener('click', () => setMobilePane('plan'));
     document.getElementById('mobileMapTab').addEventListener('click', () => setMobilePane('map'));
-    window.addEventListener('resize', () => setMobilePane(currentMobilePane));
+    // Only react to real breakpoint changes — a mobile keyboard opening fires
+    // resize constantly and would otherwise re-collapse the Advanced panel.
+    let lastIsMobile = window.matchMedia('(max-width: 980px)').matches;
+    window.addEventListener('resize', () => {
+      const isMobile = window.matchMedia('(max-width: 980px)').matches;
+      if (isMobile === lastIsMobile) return;
+      lastIsMobile = isMobile;
+      setMobilePane(currentMobilePane);
+    });
     setMobilePane('plan');
 
     // Water risk label update
