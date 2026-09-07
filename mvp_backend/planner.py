@@ -413,13 +413,14 @@ def plan_stop_sequences(
     # Realistic planning cushion for terrain detours.  At low ceilings
     # (< 8000 ft) mountain terrain forces much larger detours, so scale up
     # the cushion to keep the fuel-stop planner from promising legs that
-    # the terrain A* can't deliver.
+    # the terrain A* can't deliver. Fatter cushion at low ceilings —
+    # 4000 ft with Great Lakes water avoidance can easily need 1.7×+.
     if max_msl_ft > 0 and max_msl_ft < 8000:
-        # Linear ramp: 1.15 @ 8000 → 1.45 @ 4000 → 1.60 @ 3000
-        terrain_extra = 0.075 * (8000 - max_msl_ft) / 1000.0
-        planning_detour = min(max_detour_factor, 1.15 + terrain_extra)
+        # Linear ramp: 1.25 @ 8000 → 1.70 @ 4000 → 1.85 @ 3000
+        terrain_extra = 0.11 * (8000 - max_msl_ft) / 1000.0
+        planning_detour = min(max_detour_factor, 1.25 + terrain_extra)
     else:
-        planning_detour = min(max_detour_factor, 1.15)
+        planning_detour = min(max_detour_factor, 1.25)
 
     stop_penalty_hr = 0.5
 
@@ -1123,7 +1124,14 @@ def _detect_water_grid(n_lat: int, n_lon: int, elev_ft: list) -> list[list[bool]
             if e <= 0 or e == float("inf"):
                 is_water[i][j] = True
 
-    # Pass 2: inland water — cells matching ALL cardinal neighbors exactly
+    # Pass 2: inland water — cells matching ALL cardinal neighbors exactly.
+    # SRTM fills water bodies with a single constant value (or ±sub-metre
+    # noise). Anything wider than that is farmland/plain, not water.
+    # Tolerance was ±5 m (16.4 ft) which false-positive-flagged flat Ohio
+    # farmland as Lake Erie, blocking huge swaths of NE Ohio and forcing
+    # the planner to detour 200 NM south. Tightened 2026-09-06.
+    _FLAT_MATCH_FT = 5.0    # ~1.5 m — tighter than real farmland variation
+    _FLAT_MIN_CLUSTER = 25  # ~25 km² at 1 km grid — rejects farm patches
     flat = [[False] * n_lon for _ in range(n_lat)]
     for i in range(n_lat):
         for j in range(n_lon):
@@ -1136,12 +1144,10 @@ def _detect_water_grid(n_lat: int, n_lon: int, elev_ft: list) -> list[list[bool]
                 ni, nj = i + di, j + dj
                 if 0 <= ni < n_lat and 0 <= nj < n_lon:
                     neighbour_count += 1
-                    # Tolerate ±5m SRTM noise/variation common over inland lake surfaces
-                    if abs(e2d[ni][nj] - e) <= 16.4:  # 16.4 ft ≈ 5 m
+                    if abs(e2d[ni][nj] - e) <= _FLAT_MATCH_FT:
                         match_count += 1
-            # Must match all available cardinal neighbors (at least 2)
             if neighbour_count >= 2 and match_count == neighbour_count:
-                flat[i][j] = True  # kept for edge-cell compatibility
+                flat[i][j] = True
 
     # Flood-fill from flat seeds: only keep connected clusters ≥ 10 cells
     # (larger minimum reduces false positives from small flat terrain patches)
@@ -1192,7 +1198,7 @@ def _detect_water_grid(n_lat: int, n_lon: int, elev_ft: list) -> list[list[bool]
             if len(all_elevs) >= 3 and (max(all_elevs) - min(all_elevs)) < 12.0:
                 flat[i][j] = True
 
-    # Flood-fill from flat seeds: only keep connected clusters ≥ 10 cells
+    # Flood-fill from flat seeds: only keep large connected clusters
     from collections import deque
     visited = [[False] * n_lon for _ in range(n_lat)]
     for i in range(n_lat):
@@ -1210,20 +1216,21 @@ def _detect_water_grid(n_lat: int, n_lon: int, elev_ft: list) -> list[list[bool]
                 for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
                     ni, nj = ci + di, cj + dj
                     if 0 <= ni < n_lat and 0 <= nj < n_lon and not visited[ni][nj]:
-                        if flat[ni][nj] and abs(e2d[ni][nj] - ref_e) <= 16.4:
+                        if flat[ni][nj] and abs(e2d[ni][nj] - ref_e) <= _FLAT_MATCH_FT:
                             visited[ni][nj] = True
                             q.append((ni, nj))
-            if len(cluster) >= 10:
+            if len(cluster) >= _FLAT_MIN_CLUSTER:
                 for ci, cj in cluster:
                     is_water[ci][cj] = True
 
     # Pass 2b: range-based flat detection — catches SRTM lake cells where
     # one cardinal neighbor is a shore cell slightly above lake surface.
-    # Real water reflects radar uniformly; SRTM noise on a true lake surface
-    # is sub-metre. We use 12 ft (~3.5 m) as the absolute ceiling for
-    # "this can only be water" — at 50 ft we were flagging the entire
-    # Columbia Basin / Great Plains as inland seas because farmland is
-    # genuinely that flat at 1km grid resolution.
+    # Was 12 ft range; Ohio Erie-plain farmland routinely varies 8–15 ft
+    # over 5 km, false-flagging the plain as inland water. 5 ft range +
+    # ≥ 40-cell cluster keeps real lakes and rejects flat plains.
+    _RANGE_FT = 5.0
+    _RANGE_MATCH_FT = 3.0
+    _RANGE_MIN_CLUSTER = 40
     flat2b = [[False] * n_lon for _ in range(n_lat)]
     for i in range(n_lat):
         for j in range(n_lon):
@@ -1239,7 +1246,7 @@ def _detect_water_grid(n_lat: int, n_lon: int, elev_ft: list) -> list[list[bool]
                     ne = e2d[ni][nj]
                     if ne != float("inf"):
                         all_elevs.append(ne)
-            if len(all_elevs) >= 3 and (max(all_elevs) - min(all_elevs)) < 12.0:
+            if len(all_elevs) >= 3 and (max(all_elevs) - min(all_elevs)) < _RANGE_FT:
                 flat2b[i][j] = True
     # BFS flood-fill on flat2b seeds, clusters ≥ 25 cells (≈25 km² at 1km
     # grid — covers Lake CdA, Roosevelt, Moses Lake; rejects flat farmland
@@ -1260,10 +1267,10 @@ def _detect_water_grid(n_lat: int, n_lon: int, elev_ft: list) -> list[list[bool]
                 for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
                     ni, nj = ci + di, cj + dj
                     if 0 <= ni < n_lat and 0 <= nj < n_lon and not visited2b[ni][nj]:
-                        if flat2b[ni][nj] and abs(e2d[ni][nj] - ref_e) <= 8.0:
+                        if flat2b[ni][nj] and abs(e2d[ni][nj] - ref_e) <= _RANGE_MATCH_FT:
                             visited2b[ni][nj] = True
                             q.append((ni, nj))
-            if len(cluster2b) >= 25:
+            if len(cluster2b) >= _RANGE_MIN_CLUSTER:
                 for ci, cj in cluster2b:
                     is_water[ci][cj] = True
 
@@ -1872,7 +1879,7 @@ def terrain_avoid_leg_streaming(
     # Build avoidance tag for cache key differentiation.
     # cm=N marks the cost-model version. Bump when water/slope/landcover
     # cost math changes so old cached paths are invalidated automatically.
-    _atag = "cm=3"
+    _atag = "cm=4"
     if avoid_airspace:
         _atag += "|" + ",".join(sorted(avoid_airspace))
     if obstacle_radius_nm > 0:
