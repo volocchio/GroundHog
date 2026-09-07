@@ -4517,18 +4517,40 @@
                 banner.id = 'routeIncompleteBanner';
                 banner.style.cssText =
                   'position:absolute; top:10px; left:50%; transform:translateX(-50%); '
-                  + 'z-index:9999; background:#fee2e2; border:2px solid #dc2626; '
-                  + 'color:#991b1b; padding:10px 16px; border-radius:8px; '
+                  + 'z-index:9999; background:#fef3c7; border:2px solid #d97706; '
+                  + 'color:#78350f; padding:10px 16px; border-radius:8px; '
                   + 'font-weight:600; font-size:13px; max-width:560px; text-align:center; '
                   + 'box-shadow:0 4px 12px rgba(0,0,0,0.15)';
-                banner.innerHTML =
-                  '⚠ <b>Route INCOMPLETE.</b> Reached only ' + escapeHtml(lastReachedAp || '?')
-                  + '. Could not find a fuel-feasible, terrain-avoiding path '
-                  + escapeHtml(event.from || '?') + ' → ' + escapeHtml(event.to || '?')
-                  + ' → ' + escapeHtml(payload.arr_icao) + '.<br>'
-                  + '<span style="font-weight:400; font-size:12px">'
-                  + 'Try: raise <i>Max MSL</i>, lower <i>Min AGL</i>, increase <i>Max detour</i>, '
-                  + 'or add a manual waypoint near a workable corridor.</span>';
+                const completed = legsList.length;
+                const expected = Math.max(numLegs, completed + 1);
+                const pctDone = expected > 0 ? Math.round(100 * completed / expected) : 0;
+                const reason = event.detail || event.message
+                  || 'The constraints you set (ceiling, min AGL, detour, or airspace/water avoidance) blocked the next leg.';
+                const failFrom = event.from || '?';
+                const failTo = event.to || '?';
+                if (completed > 0) {
+                  banner.innerHTML =
+                    '\u26A0 <b>Got you ' + completed + ' of ' + expected + ' legs (' + pctDone + '%)</b> \u2014 reached '
+                    + escapeHtml(lastReachedAp || '?') + '.<br>'
+                    + '<span style="font-weight:500">Constraints prevented finishing at leg '
+                    + (completed + 1) + ': ' + escapeHtml(failFrom) + ' \u2192 ' + escapeHtml(failTo) + '.</span><br>'
+                    + '<span style="font-weight:400; font-size:12px; color:#7c2d12">'
+                    + escapeHtml(reason) + '<br>'
+                    + 'Try: raise <i>Max target MSL</i>, lower <i>Min AGL</i>, raise <i>Max detour</i>, '
+                    + 'or drop a <code>@lat,lon</code> waypoint through a viable corridor.</span>';
+                } else {
+                  banner.style.background = '#fee2e2';
+                  banner.style.borderColor = '#dc2626';
+                  banner.style.color = '#991b1b';
+                  banner.innerHTML =
+                    '\u26A0 <b>Route INCOMPLETE.</b> Could not find a fuel-feasible, terrain-avoiding path '
+                    + escapeHtml(failFrom) + ' \u2192 ' + escapeHtml(failTo) + ' \u2192 '
+                    + escapeHtml(payload.arr_icao) + '.<br>'
+                    + '<span style="font-weight:400; font-size:12px">'
+                    + escapeHtml(reason) + '<br>'
+                    + 'Try: raise <i>Max target MSL</i>, lower <i>Min AGL</i>, raise <i>Max detour</i>, '
+                    + 'or add a manual waypoint near a workable corridor.</span>';
+                }
                 const mapEl = document.getElementById('map');
                 if (mapEl) mapEl.appendChild(banner);
               } catch (e) { /* visual-only; never block the error flow */ }
@@ -4556,8 +4578,17 @@
                 }
               }
               document.getElementById('status').textContent = '';
-              document.getElementById('error').textContent =
-                event.message || 'No terrain-avoiding path found.';
+              const _completedLegs = legsList.length;
+              const _expectedLegs = Math.max(numLegs, _completedLegs + 1);
+              const _pct = _expectedLegs > 0 ? Math.round(100 * _completedLegs / _expectedLegs) : 0;
+              if (_completedLegs > 0) {
+                document.getElementById('error').textContent =
+                  `Got you ${_completedLegs} of ${_expectedLegs} legs (${_pct}%) — constraints blocked leg ${_completedLegs + 1}: ${event.from || '?'} → ${event.to || '?'}. `
+                  + (event.detail || event.message || 'Raise Max MSL, lower Min AGL, raise Max detour, or add a via-waypoint.');
+              } else {
+                document.getElementById('error').textContent =
+                  event.message || 'No terrain-avoiding path found.';
+              }
             }
 
             if (event.type === 'done') {
