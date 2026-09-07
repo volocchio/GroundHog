@@ -714,11 +714,12 @@ def route_stream(req: RouteRequest):
                 fuel_used = last_leg_time * req.fuel_burn_gph
                 start_fuel = max(0.0, req.usable_fuel_gal - fuel_used)
 
-            # Segment-level retry loop. Kept small on purpose: within a single
-            # segment, restarting from leg 0 with a wider detour usually just
-            # re-runs the same A* on the same terrain and burns wall-clock.
-            # We cap total planning time separately (_PLAN_BUDGET_SEC).
-            max_retries = 1
+            # Segment-level retry: intentionally 0.
+            # A reroute event WIPES completed legs on the client, and the
+            # wider-detour retry rarely fixes real constraint failures. If
+            # a leg fails, we freeze completed legs and tell the user
+            # exactly what stopped it. They can adjust and re-run.
+            max_retries = 0
             segment_ok = False
             for attempt in range(max_retries + 1):
                 # Wall-clock guard: if we're out of budget, bail with a
@@ -789,6 +790,12 @@ def route_stream(req: RouteRequest):
                     + (len(sequences_pool[0]) - 1)
                     + max(0, len(segment_endpoints) - 2 - si) * (len(sequences_pool[0]) - 1)
                 )
+
+                # Only try the primary sequence. Alt sequences would force
+                # a reroute event that wipes the user's already-drawn
+                # legs, and the alt is almost never significantly better
+                # when the primary failed on a terrain/water constraint.
+                sequences_pool = sequences_pool[:1]
 
                 # Try each candidate sequence until one succeeds all legs
                 seq_succeeded = False
