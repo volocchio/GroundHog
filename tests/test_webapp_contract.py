@@ -14,6 +14,9 @@ def main() -> None:
     assert "document.getElementById('watchSearch').checked" not in plan_body
     assert 'id="maxMsl" type="number" value="6000"' in html
     assert "r.water_risk != null ? r.water_risk : 100" in html
+    assert "const terrainFollow = document.querySelector" in html
+    assert "max_climb_fpm: maxClimbFpm" in html
+    assert "terrain_follow: terrainFollow" in html
 
 
 if __name__ == "__main__":
