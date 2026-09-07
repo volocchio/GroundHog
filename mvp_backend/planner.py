@@ -1869,9 +1869,12 @@ def terrain_avoid_leg_streaming(
       {"type": "path", "coords": [[lat, lon], ...], "dist_nm": float}
       {"type": "no_path"}
     """
-    # Build avoidance tag for cache key differentiation
-    _avoid_sorted = sorted(avoid_airspace) if avoid_airspace else []
-    _atag = ",".join(_avoid_sorted)
+    # Build avoidance tag for cache key differentiation.
+    # cm=N marks the cost-model version. Bump when water/slope/landcover
+    # cost math changes so old cached paths are invalidated automatically.
+    _atag = "cm=3"
+    if avoid_airspace:
+        _atag += "|" + ",".join(sorted(avoid_airspace))
     if obstacle_radius_nm > 0:
         _atag += f"|O{obstacle_radius_nm:.1f}_{obstacle_clearance_ft:.0f}"
     if prev_point is not None:
