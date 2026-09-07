@@ -87,7 +87,7 @@ class SRTMProvider:
         base = f"{ns}{abs(ilat):02d}{ew}{abs(ilon):03d}.hgt"
         path = os.path.join(self.cache_dir, base)
 
-        if not os.path.exists(path):
+        def download_tile() -> None:
             url = _tile_url(ilat, ilon)
             gz_path = path + ".gz"
             tmp_gz = gz_path + ".tmp"
@@ -102,11 +102,26 @@ class SRTMProvider:
                 out.write(gz.read())
             os.replace(tmp_hgt, path)  # atomic rename
 
+        if not os.path.exists(path):
+            download_tile()
+
         size = os.path.getsize(path)
         # each sample is 2 bytes
         n = int(round(math.sqrt(size / 2)))
         if n * n * 2 != size:
-            raise RuntimeError(f"Unexpected HGT size for {path}: {size}")
+            # Cached tile is corrupt/truncated. Delete both expanded and
+            # compressed copies and try once before failing the route.
+            for bad_path in (path, path + ".gz"):
+                try:
+                    if os.path.exists(bad_path):
+                        os.remove(bad_path)
+                except OSError:
+                    pass
+            download_tile()
+            size = os.path.getsize(path)
+            n = int(round(math.sqrt(size / 2)))
+            if n * n * 2 != size:
+                raise RuntimeError(f"Unexpected HGT size for {path}: {size}")
 
         with open(path, "rb") as f:
             data = memoryview(f.read())

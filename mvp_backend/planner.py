@@ -360,8 +360,13 @@ def terrain_avoid_leg(
 def leg_fuel_ok(dist_nm: float, cruise_speed_kt: float, usable_fuel_gal: float, burn_gph: float, reserve_min: float) -> tuple[bool, float, float]:
     time_hr = dist_nm / max(1e-6, cruise_speed_kt)
     reserve_gal = (reserve_min / 60.0) * burn_gph
-    needed_gal = time_hr * burn_gph + reserve_gal
-    return (needed_gal <= usable_fuel_gal, time_hr, needed_gal)
+    burn_gal = time_hr * burn_gph
+    needed_gal = burn_gal + reserve_gal
+    # Return actual fuel burned, not burn+reserve. Reserve is a minimum
+    # remaining fuel constraint, not fuel consumed by the leg. Counting it as
+    # burn made nav logs drift negative and overstate trip fuel on multi-leg
+    # routes.
+    return (needed_gal <= usable_fuel_gal, time_hr, burn_gal)
 
 
 def plan_stop_sequences(
@@ -915,6 +920,21 @@ def _point_in_polygon(px: float, py: float, ring: list) -> bool:
             inside = not inside
         j = i
     return inside
+
+
+def _outside_conus_for_vfr_planning(lat: float, lon: float) -> bool:
+    if lat < 24.5 or lat > 49.05:
+        return True
+    if lon < -125.0 or lon > -66.5:
+        return True
+    if -83.25 <= lon <= -78.85:
+        west_lon, west_lat = -83.25, 41.72
+        east_lon, east_lat = -78.85, 42.90
+        t = (lon - west_lon) / (east_lon - west_lon)
+        border_lat = west_lat + t * (east_lat - west_lat)
+        if lat > border_lat:
+            return True
+    return False
 
 
 # Vertical clearance buffer for flying under/over airspace (feet)
@@ -1888,7 +1908,7 @@ def terrain_avoid_leg_streaming(
     if prev_point is not None:
         _atag += f"|PP{prev_point[0]:.2f},{prev_point[1]:.2f}"
     if avoid_borders:
-        _atag += "|BORDERS"
+        _atag += "|BORDERSv2"
     if water_risk < 100 and glide_ratio > 0:
         _atag += f"|W{water_risk:.0f}G{glide_ratio:.1f}S{slope_threshold_deg:.0f}"
         if has_floats:
@@ -2021,7 +2041,7 @@ def terrain_avoid_leg_streaming(
             for i in range(n_lat):
                 for j in range(n_lon):
                     clat, clon = grid.idx_to_latlon(i, j)
-                    if clat > 49.0 or clat < 25.0:
+                    if _outside_conus_for_vfr_planning(clat, clon):
                         passable[i][j] = False
 
         start = grid.latlon_to_idx(a.lat, a.lon)

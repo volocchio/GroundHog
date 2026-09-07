@@ -481,11 +481,11 @@
     <div id="controlCard" class="card">
       <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px">
         <button type="button" id="modePlanBtn" class="mode-tab mode-tab-active">Route Planning</button>
-        <button type="button" id="modeAdvBtn" class="mode-tab">🏔 Find Adventure</button>
+        <button type="button" id="modeAdvBtn" class="mode-tab" style="display:none" disabled title="Sidelined while route planning is stabilized">🏔 Find Adventure</button>
       </div>
 
       <!-- ── Adventure Mode panel ────────────────────────────────────── -->
-      <div id="advPanel" style="display:none">
+      <div id="advPanel" style="display:none" data-sidelined="true">
         <div style="font-weight:600">Adventure Mode</div>
         <div class="muted" style="font-size:11px; margin-bottom:6px">
           Find cool places to land within reach &mdash; range is computed from your real performance.
@@ -663,7 +663,7 @@
       <input id="burnGph" type="number" value="13" min="0" step="0.1" />
 
       <label>Max target altitude (ft MSL)</label>
-      <input id="maxMsl" type="number" value="4000" min="0" step="50" />
+      <input id="maxMsl" type="number" value="6000" min="0" step="50" />
 
       <label>Min altitude (ft AGL)</label>
       <input id="minAgl" type="number" value="200" min="0" step="50" />
@@ -813,8 +813,8 @@
         <button id="deleteBtn" type="button" style="background:transparent; border:1px solid #d1d5db; color:#6b7280; margin:0; padding:5px 8px; width:auto; font-size:13px; border-radius:6px; cursor:pointer" title="Delete selected saved route">&times;</button>
       </div>
       <div class="watch-row">
-        <input type="checkbox" id="watchSearch" checked />
-        <label for="watchSearch" style="margin:0; display:inline">Watch A* search on map</label>
+        <input type="checkbox" id="watchSearch" checked disabled />
+        <label for="watchSearch" style="margin:0; display:inline">Live planner</label>
       </div>
 
       <button id="liveBtn" type="button" title="Use phone GPS to track flight in real time">🛰 Start Live Flight</button>
@@ -5084,12 +5084,10 @@
       setMobilePane('map');
       document.getElementById('map').scrollIntoView({ behavior: 'smooth', block: 'start' });
 
-      const watch = document.getElementById('watchSearch').checked;
-      if (watch) {
-        await planStreaming(planningPayload);
-      } else {
-        await planNormal(planningPayload);
-      }
+      // Use one canonical UI route path. The legacy /route endpoint does not
+      // understand the full route semantics, so letting users switch to it
+      // produced different answers for the same inputs.
+      await planStreaming(planningPayload);
     }
 
     document.getElementById('goBtn').addEventListener('click', plan);
@@ -5232,7 +5230,7 @@
       document.getElementById('burnGph').value = r.fuel_burn_gph || 13;
       document.getElementById('reserveMin').value = r.reserve_min || 30;
       document.getElementById('maxLegMin').value = r.max_leg_min || 0;
-      document.getElementById('maxMsl').value = r.max_msl_ft || 7000;
+      document.getElementById('maxMsl').value = r.max_msl_ft || 6000;
       document.getElementById('minAgl').value = r.min_agl_ft || 200;
       document.getElementById('maxAgl').value = r.max_agl_ft || '';
       document.getElementById('fuelType').value = r.required_fuel || '100LL';

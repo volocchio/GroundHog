@@ -532,6 +532,12 @@ def helicopter_performance(
 
 @app.post("/route")
 def route(req: RouteRequest):
+    """Legacy non-streaming planner.
+
+    Kept for API/debug compatibility only. The web UI uses /route/stream as
+    the canonical planner because this endpoint does not yet apply waypoint,
+    airspace, obstacle, max-AGL, or border-avoidance semantics.
+    """
     airports = load_airports_solver()
     dep = _resolve_airport(req.dep_icao, airports)
     arr = _resolve_airport(req.arr_icao, airports)
