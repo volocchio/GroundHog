@@ -20,7 +20,7 @@ from typing import List
 
 logger = logging.getLogger("groundhog")
 
-from mvp_backend.planner import load_airports_solver, plan_route_multi_stop, terrain_avoid_leg, terrain_avoid_leg_streaming, leg_fuel_ok, plan_stop_sequence, plan_stop_sequences, Airport
+from mvp_backend.planner import load_airports_solver, plan_route_multi_stop, terrain_avoid_leg, terrain_avoid_leg_streaming, leg_fuel_ok, plan_stop_sequence, plan_stop_sequences, Airport, _srtm_provider
 from mvp_backend.srtm_local import SRTMProvider
 from mvp_backend.grid_astar import _haversine_nm
 from mvp_backend import route_cache
@@ -82,6 +82,17 @@ def _point_in_ring(lat: float, lon: float, ring: list) -> bool:
     return inside
 
 
+# Approximate Great Lakes bboxes (south, north, west, east, surface_m).
+# Used by exposure sampling so Great Lakes crossings show non-zero water %.
+_GREAT_LAKES_BBOXES = (
+    (41.4, 42.9, -83.5, -78.8, 174.0),  # Erie
+    (43.2, 44.3, -79.9, -76.0, 74.0),   # Ontario
+    (41.6, 46.3, -87.7, -84.7, 176.0),  # Michigan
+    (43.0, 46.5, -84.7, -79.7, 176.0),  # Huron
+    (46.4, 49.0, -92.2, -84.3, 183.0),  # Superior
+)
+
+
 def _compute_leg_exposure(coords: list, landcover_features: list | None) -> dict:
     """Walk a leg's coords (plus SRTM) and return % distance over each
     landcover class plus % over water. Used by the UI risk-management panel.
@@ -114,9 +125,9 @@ def _compute_leg_exposure(coords: list, landcover_features: list | None) -> dict
             polys_by_kind[kind].append(ring)
 
     # Pre-build SRTM provider lazily (only if we are going to sample water).
-    provider = None
+    # Uses the process-wide singleton so we don't re-decode tiles per leg.
     try:
-        provider = SRTMProvider(cache_dir=os.path.join(ROOT, "mvp_backend", "srtm_cache"))
+        provider = _srtm_provider()
     except Exception:
         provider = None
 
@@ -171,11 +182,26 @@ def _compute_leg_exposure(coords: list, landcover_features: list | None) -> dict
         if on_road:
             totals["road_corridor"] += seg_nm
 
-        # Water sample (SRTM ocean voids only — see docstring caveat).
+        # Water sample. SRTM sea-level cells (<= 0) catch oceans. Great
+        # Lakes and other large inland water bodies read as flat plateau at
+        # the lake surface elevation; approximate by treating any SRTM cell
+        # whose midpoint falls inside one of the known Great Lakes bboxes
+        # AND matches its surface elevation (~570 ft \u00b1 60) as water too.
         if provider is not None:
             try:
                 e = provider.get_many_m([(mlat, mlon)])[0]
-                if e == e and e <= 0.0:   # not NaN AND at/below sea level
+                is_water = False
+                if e == e:
+                    if e <= 0.0:
+                        is_water = True
+                    else:
+                        # Approximate Great Lakes bboxes + surface elev (m).
+                        for (s_lat, n_lat_, w_lon, e_lon, surf_m) in _GREAT_LAKES_BBOXES:
+                            if s_lat <= mlat <= n_lat_ and w_lon <= mlon <= e_lon:
+                                if abs(e - surf_m) < 20.0:
+                                    is_water = True
+                                    break
+                if is_water:
                     totals["water"] += seg_nm
             except Exception:
                 pass
@@ -970,6 +996,36 @@ def route_stream(req: RouteRequest):
                                     )
                                 except Exception:
                                     event["exposure"] = {}
+                                # ── Per-leg diagnostic: direct vs actual ──
+                                # Gives the UI a "why is this leg so long?"
+                                # signal (detour ratio + likely driver).
+                                try:
+                                    _dnm = _haversine_nm(
+                                        from_ap.lat, from_ap.lon,
+                                        to_ap.lat, to_ap.lon,
+                                    )
+                                    _anm = event.get("dist_nm", 0.0)
+                                    _ratio = (_anm / _dnm) if _dnm > 0.01 else 1.0
+                                    _drivers = []
+                                    _w = (event.get("exposure") or {}).get("water_pct", 0.0)
+                                    if _w >= 15.0:
+                                        _drivers.append(f"water {_w:.0f}%")
+                                    if req.water_risk is not None and req.water_risk <= 25 and _w >= 5.0:
+                                        _drivers.append("shore-hug")
+                                    if req.avoid_airspace and any(
+                                        c in req.avoid_airspace for c in ("R", "P", "B", "C", "MOA")
+                                    ):
+                                        _drivers.append("airspace")
+                                    if _ratio >= 1.35 and not _drivers:
+                                        _drivers.append("terrain/detour")
+                                    event["route_reason"] = {
+                                        "direct_nm": round(_dnm, 1),
+                                        "actual_nm": round(_anm, 1),
+                                        "detour_ratio": round(_ratio, 2),
+                                        "drivers": _drivers,
+                                    }
+                                except Exception:
+                                    pass
                                 # ── Attach helicopter performance for this leg ──
                                 if heli:
                                     max_terr = event.get("max_terrain_ft", max(from_ap.elevation_ft, to_ap.elevation_ft))

@@ -1699,32 +1699,31 @@ def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
     # shoreline route of similar length exists.
     #
     # Cost layers per cell (additive):
-    #   - WATER_BASE: a flat "you're over water" tax \u2014 tiny, but enough so
-    #     equal-length land routes win. Doubles roughly with each risk tier.
+    #   - WATER_BASE: mild "you're over water" tax on shore cells. Kept small
+    #     so shore-hugging remains cheap (that's what strict "glide-to-shore"
+    #     MEANS — the ship can reach dry ground and land).
     #   - depth ramp: extra penalty proportional to distance-from-shore so
-    #     shoreline-hugging beats mid-lake even when both are within glide.
-    # NOTE: cost is applied as  step *= (1.0 + cost)  in A*. For non-floats
-    # piston ships (the current default), drowning is the dominant fatality
-    # mode in helicopter ditching (NATO/EASA HUE study: ~15% mortality, almost
-    # all from underwater escape failure). A controlled auto into timber on
-    # an unprepared shore beats ditching mid-lake on probability \u2014 the
-    # rotor system is destroyed but the pilot walks out. Therefore water
-    # should outrank moderate slope penalties by a large margin.
+    #     mid-lake within-glide is more expensive than shoreline within-glide.
+    #   - WATER_BEYOND (below): hard cliff for cells the ship cannot glide
+    #     out of. This is what stops open-water crossings.
     #
-    # TODO: when helicopter_db gains has_floats, multiply BASE/DEPTH by 0.2
-    # for float-equipped ships. For now, no-floats is the safe default.
+    # NOTE: cost is applied as  step *= (1.0 + cost)  in A*. Earlier tuning
+    # had WATER_BASE=8 in strict mode which made shore cells 9x land — the
+    # planner then detoured 100+ nm around Lake Erie's shoreline instead of
+    # hugging it. Corrected 2026-09-06.
     if water_risk <= 0:
-        WATER_BASE = 8.0       # strict: shoreline already 9\u00d7 land step
-        WATER_DEPTH = 8.0      # mid-lake ~17\u00d7 land
+        WATER_BASE = 0.3       # strict: shore ~1.3x land (light preference)
+        WATER_DEPTH = 4.0      # mid-lake within glide ~5x land
     elif water_risk <= 25:
-        WATER_BASE = 4.0       # conservative: shoreline 5\u00d7 land, mid-lake 9\u00d7
+        WATER_BASE = 0.2       # cautious: shore ~1.2x
+        WATER_DEPTH = 2.5      # mid-lake within glide ~3.5x
         WATER_DEPTH = 4.0
     elif water_risk <= 50:
-        WATER_BASE = 1.5
-        WATER_DEPTH = 1.5
+        WATER_BASE = 0.1       # moderate: shore barely more than land
+        WATER_DEPTH = 1.2      # mid-lake ~2x land
     else:
-        WATER_BASE = 0.3
-        WATER_DEPTH = 0.3
+        WATER_BASE = 0.05      # aggressive: shore ~= land
+        WATER_DEPTH = 0.4      # mid-lake ~1.5x land
     WATER_BEYOND = 200.0   # very heavy cost for cells beyond glide range
     # Pop-out emergency floats (EFS) materially change the math: a successful
     # float-equipped ditch is closer to a precautionary off-airport landing

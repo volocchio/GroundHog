@@ -4093,7 +4093,16 @@
         html += `<td style="text-align:right;padding:2px 6px">${depDA ? depDA + "'" : ''}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${arrElev ? arrElev + "'" : ''}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${arrDA ? arrDA + "'" : ''}</td>`;
-        html += `<td style="text-align:right;padding:2px 6px">${fmt(leg.distNm, 1)}</td>`;
+        const rr = leg.routeReason;
+        let distExtra = '';
+        let distTitle = '';
+        if (rr && rr.detour_ratio && rr.detour_ratio >= 1.15) {
+          const drivers = (rr.drivers && rr.drivers.length) ? rr.drivers.join(', ') : 'terrain/detour';
+          const color = rr.detour_ratio >= 1.5 ? '#b91c1c' : (rr.detour_ratio >= 1.3 ? '#b45309' : '#6b7280');
+          distExtra = ` <span style="color:${color}; font-size:10px; font-weight:600">${rr.detour_ratio.toFixed(2)}\u00d7</span>`;
+          distTitle = ` title="Direct ${rr.direct_nm} NM \u2192 actual ${rr.actual_nm} NM (${rr.detour_ratio.toFixed(2)}\u00d7)\nDriver: ${drivers}"`;
+        }
+        html += `<td style="text-align:right;padding:2px 6px"${distTitle}>${fmt(leg.distNm, 1)}${distExtra}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${legMin}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${fmt(leg.timeHr, 1)}</td>`;
         html += `<td style="text-align:right;padding:2px 6px">${fmt(leg.fuelGal, 1)} gal</td>`;
@@ -4616,6 +4625,7 @@
                 _coords: event.coords,  // stash for reroute recovery
                 heliPerf: event.helicopter_perf || null,
                 exposure: event.exposure || null,
+                routeReason: event.route_reason || null,
               });
 
               // fit to overall bounds
