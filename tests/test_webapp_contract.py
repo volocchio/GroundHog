@@ -17,6 +17,11 @@ def main() -> None:
     assert "const terrainFollow = document.querySelector" in html
     assert "max_climb_fpm: maxClimbFpm" in html
     assert "terrain_follow: terrainFollow" in html
+    assert 'id="mapPlanProgress"' in html
+    assert "const mapBox = document.getElementById('mapPlanProgress')" in html
+    assert "if (mapBox) mapBox.classList.add('active')" in html
+    assert "#mapPlanProgress.active" in html
+    assert "top: 46px" in html
 
 
 if __name__ == "__main__":
