@@ -406,14 +406,13 @@ def plan_stop_sequences(
     _blocked = blocked_pairs or set()
 
     def _is_blocked(from_code: str, to_code: str) -> bool:
-        if (from_code, to_code) in _blocked:
-            return True
-        if max_msl_ft > 0 and route_cache.is_known_failure(
-                from_code, to_code, max_msl_ft, min_agl_ft, max_detour_factor,
-                max_climb_fpm, max_descent_fpm,
-                climb_speed_kt, descent_speed_kt):
-            return True
-        return False
+        # Only trust failures discovered in this planning request. The
+        # persistent leg-cache key includes planner/cost-model tags that this
+        # fuel-stop graph deliberately does not know about, so consulting the
+        # global failure cache here can poison route selection with stale
+        # failures from legacy or older cost models. The actual terrain A*
+        # still uses the tagged cache when it evaluates a chosen leg.
+        return (from_code, to_code) in _blocked
 
     # Realistic planning cushion for terrain detours.  At low ceilings
     # (< 8000 ft) mountain terrain forces much larger detours, so scale up
