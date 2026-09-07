@@ -301,7 +301,7 @@ def astar_path_streaming(
     passable: List[List[bool]],
     start: tuple[int, int],
     goal: tuple[int, int],
-    yield_every: int = 20,
+    yield_every: int = 100,
     elev_ft: Optional[List[List[float]]] = None,
     max_climb_fpm: float = 0,
     max_descent_fpm: float = 0,
@@ -310,53 +310,120 @@ def astar_path_streaming(
     descent_speed_kt: float = 0,
     airspace_cost: Optional[List[List[float]]] = None,
     smooth_airspace_cost: Optional[List[List[float]]] = None,
+    time_budget_sec: float = 0.0,
 ) -> Generator[dict, None, None]:
     """A* that yields progress dicts as it explores.
 
-    When elev_ft + cruise_kt are provided, also enforces climb/descent rate
-    limits per edge (terrain-following model).
+    Fast path: precomputed uniform step lengths (no per-edge haversine),
+    flat 1D arrays for gscore/came_from, integer node IDs (no tuple
+    hashing), and equirectangular heuristic (admissible for a uniform
+    lat/lon grid at these scales).
+
+    When elev_ft + cruise_kt are provided, also enforces climb/descent
+    rate limits per edge (terrain-following model).
 
     airspace_cost: optional 2D grid of additive cost multipliers per cell.
+
+    time_budget_sec: if > 0, bail with no_path after this many seconds.
 
     Yields:
       {"type": "explore", "cells": [[lat, lon], ...]}   – batch of explored cells
       {"type": "path", "coords": [[lat, lon], ...], "dist_nm": float}  – final path
       {"type": "no_path"}  – search failed
     """
+    import time as _time
 
-    def h(a: tuple[int, int], b: tuple[int, int]) -> float:
-        lat1, lon1 = grid.idx_to_latlon(*a)
-        lat2, lon2 = grid.idx_to_latlon(*b)
-        return _haversine_nm(lat1, lon1, lat2, lon2)
+    n_lat = grid.n_lat
+    n_lon = grid.n_lon
+    lat0 = grid.lat0
+    lon0 = grid.lon0
+    dlat = grid.dlat
+    dlon = grid.dlon
 
-    open_heap: list[tuple[float, float, tuple[int, int]]] = []
-    heapq.heappush(open_heap, (h(start, goal), 0.0, start))
+    # ── Precomputed step lengths (NM) for the 8-connected uniform grid ──
+    # Grid is small enough that haversine at the midpoint is accurate.
+    mid_lat = lat0 + (n_lat * 0.5) * dlat
+    step_ns = _haversine_nm(mid_lat, 0.0, mid_lat + dlat, 0.0)
+    step_ew = _haversine_nm(mid_lat, 0.0, mid_lat, dlon)
+    step_diag = math.hypot(step_ns, step_ew)
 
-    came_from: Dict[tuple[int, int], tuple[int, int]] = {}
-    gscore: Dict[tuple[int, int], float] = {start: 0.0}
+    # ── Cheap admissible heuristic (equirectangular in NM) ──
+    _NM_PER_DEG = 60.0
+    goal_i, goal_j = goal
+    goal_lat = lat0 + goal_i * dlat
+    goal_lon = lon0 + goal_j * dlon
+    _cos_goal = math.cos(math.radians(goal_lat))
 
-    neighbors = [
-        (-1, -1), (-1, 0), (-1, 1),
-        (0, -1),           (0, 1),
-        (1, -1),  (1, 0),  (1, 1),
-    ]
+    def h_nm(node_i: int, node_j: int) -> float:
+        lat = lat0 + node_i * dlat
+        lon = lon0 + node_j * dlon
+        # Use the smaller of the two cosines so the heuristic underestimates
+        # (admissibility). At helicopter-mission latitudes both are close.
+        cos_lat = math.cos(math.radians(lat))
+        cos_scale = cos_lat if cos_lat < _cos_goal else _cos_goal
+        dphi = lat - goal_lat
+        dlam = (lon - goal_lon) * cos_scale
+        return math.sqrt(dphi * dphi + dlam * dlam) * _NM_PER_DEG
 
-    batch: list[list[float]] = []
+    # ── Flat state arrays (indexed by node = i * n_lon + j) ──
+    total_cells = n_lat * n_lon
+    INF = float("inf")
+    gscore = [INF] * total_cells
+    came_from = [-1] * total_cells
+
+    start_node = start[0] * n_lon + start[1]
+    goal_node = goal_i * n_lon + goal_j
+    gscore[start_node] = 0.0
+
+    open_heap: list[tuple[float, float, int]] = []
+    heapq.heappush(open_heap, (h_nm(start[0], start[1]), 0.0, start_node))
+
+    # Neighbor deltas: (di, dj, precomputed edge length in NM)
+    NEIGHBORS = (
+        (-1, -1, step_diag), (-1, 0, step_ns), (-1, 1, step_diag),
+        (0, -1, step_ew),                       (0, 1, step_ew),
+        (1, -1, step_diag),  (1, 0, step_ns),   (1, 1, step_diag),
+    )
+
+    batch_nodes: list[int] = []
     found = False
+    _t_start = _time.monotonic() if time_budget_sec > 0 else 0.0
+    _budget_check_every = 500  # cheap counter, don't call monotonic every pop
+    _pops = 0
+    # Bind hot names to locals for speed
+    _heappop = heapq.heappop
+    _heappush = heapq.heappush
+    _has_terrain = elev_ft is not None and cruise_kt > 0
+    _has_climb = _has_terrain and max_climb_fpm > 0
+    _has_descent = _has_terrain and max_descent_fpm > 0
+    _has_airspace = airspace_cost is not None
+    _climb_spd = climb_speed_kt if climb_speed_kt > 0 else cruise_kt
+    _desc_spd = descent_speed_kt if descent_speed_kt > 0 else cruise_kt
 
     while open_heap:
-        f, g, cur = heapq.heappop(open_heap)
-        if cur == goal:
-            # flush remaining batch
-            if batch:
-                yield {"type": "explore", "cells": batch}
-            # reconstruct path
-            path_idx = [cur]
+        f, g, cur = _heappop(open_heap)
+        # Stale entry from a superseded push
+        if g > gscore[cur]:
+            continue
+
+        if cur == goal_node:
+            # Flush any pending batch
+            if batch_nodes:
+                _step = max(1, len(batch_nodes) // 40)
+                cells_out = []
+                for k in range(0, len(batch_nodes), _step):
+                    node = batch_nodes[k]
+                    _i, _j = divmod(node, n_lon)
+                    cells_out.append([lat0 + _i * dlat, lon0 + _j * dlon])
+                yield {"type": "explore", "cells": cells_out}
+            # Reconstruct path (nodes) then convert to (i, j) tuples
+            path_nodes = [cur]
             c = cur
-            while c in came_from:
+            while came_from[c] >= 0:
                 c = came_from[c]
-                path_idx.append(c)
-            path_idx.reverse()
+                path_nodes.append(c)
+            path_nodes.reverse()
+            path_idx = [divmod(n, n_lon) for n in path_nodes]
             # Smooth out grid-aligned zig-zags via line-of-sight shortcutting
             path_idx = smooth_path(grid, passable, path_idx,
                                    elev_ft=elev_ft,
@@ -367,53 +434,73 @@ def astar_path_streaming(
                                    descent_speed_kt=descent_speed_kt,
                                    airspace_cost=airspace_cost,
                                    smooth_airspace_cost=smooth_airspace_cost)
-            # Re-densify so the path has enough points for profile rendering
             path_idx = densify_path(grid, path_idx)
             coords = [list(grid.idx_to_latlon(i, j)) for i, j in path_idx]
             yield {"type": "path", "coords": coords, "dist_nm": path_nm(grid, path_idx)}
             found = True
             return
 
-        lat, lon = grid.idx_to_latlon(*cur)
-        batch.append([lat, lon])
-        if len(batch) >= yield_every:
-            yield {"type": "explore", "cells": batch}
-            batch = []
+        ci, cj = divmod(cur, n_lon)
+        batch_nodes.append(cur)
+        if len(batch_nodes) >= yield_every:
+            # Downsample for the animation dot layer (visual only)
+            _step = max(1, len(batch_nodes) // 40)
+            cells_out = []
+            for k in range(0, len(batch_nodes), _step):
+                node = batch_nodes[k]
+                _i, _j = divmod(node, n_lon)
+                cells_out.append([lat0 + _i * dlat, lon0 + _j * dlon])
+            yield {"type": "explore", "cells": cells_out}
+            batch_nodes = []
 
-        ci, cj = cur
-        for di, dj in neighbors:
-            ni, nj = ci + di, cj + dj
-            if ni < 0 or nj < 0 or ni >= grid.n_lat or nj >= grid.n_lon:
+        _pops += 1
+        if time_budget_sec > 0 and _pops >= _budget_check_every:
+            _pops = 0
+            if _time.monotonic() - _t_start > time_budget_sec:
+                # Bail: emit no_path with a hint the caller can surface
+                yield {"type": "no_path", "reason": "time_budget",
+                       "detail": f"Leg exceeded {time_budget_sec:.0f}s search budget."}
+                return
+
+        # Row references let us index one dim instead of two
+        row_cur = ci
+        elev_cur = elev_ft[ci][cj] if _has_terrain else 0.0
+
+        for di, dj, edge_nm in NEIGHBORS:
+            ni = ci + di
+            nj = cj + dj
+            if ni < 0 or nj < 0 or ni >= n_lat or nj >= n_lon:
                 continue
             if not passable[ni][nj]:
                 continue
-            lat1, lon1 = grid.idx_to_latlon(ci, cj)
-            lat2, lon2 = grid.idx_to_latlon(ni, nj)
-            step = _haversine_nm(lat1, lon1, lat2, lon2)
-            # climb/descent rate check (terrain-following model)
-            if elev_ft is not None and cruise_kt > 0 and step > 0:
-                d_elev = elev_ft[ni][nj] - elev_ft[ci][cj]
-                if d_elev > 0 and max_climb_fpm > 0:
-                    spd = climb_speed_kt if climb_speed_kt > 0 else cruise_kt
-                    time_min = (step / spd) * 60.0
+            step = edge_nm
+            if _has_terrain:
+                d_elev = elev_ft[ni][nj] - elev_cur
+                if d_elev > 0.0 and _has_climb:
+                    time_min = (step / _climb_spd) * 60.0
                     if d_elev / time_min > max_climb_fpm:
                         continue
-                if d_elev < 0 and max_descent_fpm > 0:
-                    spd = descent_speed_kt if descent_speed_kt > 0 else cruise_kt
-                    time_min = (step / spd) * 60.0
+                elif d_elev < 0.0 and _has_descent:
+                    time_min = (step / _desc_spd) * 60.0
                     if (-d_elev) / time_min > max_descent_fpm:
                         continue
-            # airspace avoidance penalty
-            if airspace_cost is not None:
+            if _has_airspace:
                 step *= (1.0 + airspace_cost[ni][nj])
-            ng = gscore[cur] + step
-            nxt = (ni, nj)
-            if ng < gscore.get(nxt, float("inf")):
+            ng = g + step
+            nxt = ni * n_lon + nj
+            if ng < gscore[nxt]:
                 came_from[nxt] = cur
                 gscore[nxt] = ng
-                heapq.heappush(open_heap, (ng + h(nxt, goal), ng, nxt))
+                _heappush(open_heap, (ng + h_nm(ni, nj), ng, nxt))
 
-    if batch:
-        yield {"type": "explore", "cells": batch}
+    # Flush residual batch even on failure
+    if batch_nodes:
+        _step = max(1, len(batch_nodes) // 40)
+        cells_out = []
+        for k in range(0, len(batch_nodes), _step):
+            node = batch_nodes[k]
+            _i, _j = divmod(node, n_lon)
+            cells_out.append([lat0 + _i * dlat, lon0 + _j * dlon])
+        yield {"type": "explore", "cells": cells_out}
     if not found:
         yield {"type": "no_path"}

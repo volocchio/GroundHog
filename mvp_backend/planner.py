@@ -1412,6 +1412,11 @@ def _build_slope_cost(grid: GridSpec, elev_ft: list, n_lat: int, n_lon: int,
     soft_floor_deg = 0.5 * slope_threshold_deg
     hard_ceil_deg = 2.0 * slope_threshold_deg
     span = max(1e-6, hard_ceil_deg - soft_floor_deg)
+    # Precompute tan(threshold) so per-cell inner loop uses a scalar compare
+    # instead of math.atan2 + math.degrees ~9 times per cell.
+    tan_soft_floor = math.tan(math.radians(soft_floor_deg))
+    tan_span = math.tan(math.radians(hard_ceil_deg)) - tan_soft_floor
+    tan_span = tan_span if tan_span > 1e-9 else 1e-9
 
     cost = [[0.0] * n_lon for _ in range(n_lat)]
     any_cost = False
@@ -1420,7 +1425,7 @@ def _build_slope_cost(grid: GridSpec, elev_ft: list, n_lat: int, n_lon: int,
             e_ij = elev_ft[i * n_lon + j]
             if e_ij == INF:
                 continue
-            max_slope = 0.0
+            max_tan = 0.0
             for di in (-1, 0, 1):
                 ni = i + di
                 if ni < 0 or ni >= n_lat:
@@ -1440,12 +1445,16 @@ def _build_slope_cost(grid: GridSpec, elev_ft: list, n_lat: int, n_lon: int,
                         run_ft = ft_lat
                     else:
                         run_ft = ft_lon
-                    rise_ft = abs(ek - e_ij)
-                    slope_deg = math.degrees(math.atan2(rise_ft, run_ft))
-                    if slope_deg > max_slope:
-                        max_slope = slope_deg
-            if max_slope > soft_floor_deg:
-                ratio = min(1.0, (max_slope - soft_floor_deg) / span)
+                    rise_ft = ek - e_ij
+                    if rise_ft < 0.0:
+                        rise_ft = -rise_ft
+                    t = rise_ft / run_ft
+                    if t > max_tan:
+                        max_tan = t
+            if max_tan > tan_soft_floor:
+                ratio = (max_tan - tan_soft_floor) / tan_span
+                if ratio > 1.0:
+                    ratio = 1.0
                 cost[i][j] = ratio * max_penalty
                 any_cost = True
     return cost if any_cost else None
@@ -1745,72 +1754,64 @@ def _build_water_cost(grid: GridSpec, elev_ft: list, passable: list[list[bool]],
     # legitimate shoreline-hugging routes and the user can ditch ashore.
     if slope_threshold_deg > 0 and slope_threshold_deg < 90:
         import math
-        
-        # Helper: haversine distance in NM between two lat/lon points
-        def _haversine_nm(lat1, lon1, lat2, lon2):
-            from math import radians, cos, sin, asin, sqrt
-            R_nm = 3440.065  # Earth's radius in nautical miles
-            lat1, lon1, lat2, lon2 = map(radians, (lat1, lon1, lat2, lon2))
-            dlat = lat2 - lat1
-            dlon = lon2 - lon1
-            a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
-            c = 2 * asin(sqrt(a))
-            return R_nm * c
-        
+
+        # Neighbor step distances (feet) are constant for a uniform grid.
+        # Avoid per-cell haversine + atan2.
+        ft_lat_step = cell_nm_lat * 6076.12
+        ft_lon_step = cell_nm_lon * 6076.12
+        ft_diag_step = math.hypot(ft_lat_step, ft_lon_step)
+        tan_threshold = math.tan(math.radians(slope_threshold_deg))
+        deg_per_rad = 180.0 / math.pi
+
         for i in range(n_lat):
+            water_row = is_water[i]
+            dist_row = dist[i]
             for j in range(n_lon):
-                if not is_water[i][j]:
+                if not water_row[j]:
                     continue
-                # Skip within-glide water — shoreline routes are OK there.
-                if dist[i][j] <= glide_range_cells:
+                if dist_row[j] <= glide_range_cells:
                     continue
-                
-                # Check all 8 adjacent cells for shore
-                max_shore_slope = 0.0
+
+                elev_water_ft = elev_ft[i * n_lon + j]
+                if elev_water_ft == float("inf"):
+                    continue
+
+                max_shore_tan = 0.0
                 for di in (-1, 0, 1):
+                    ni = i + di
+                    if ni < 0 or ni >= n_lat:
+                        continue
+                    is_water_ni = is_water[ni]
                     for dj in (-1, 0, 1):
                         if di == 0 and dj == 0:
                             continue
-                        ni, nj = i + di, j + dj
-                        if ni < 0 or ni >= n_lat or nj < 0 or nj >= n_lon:
+                        nj = j + dj
+                        if nj < 0 or nj >= n_lon:
                             continue
-                        if is_water[ni][nj]:
-                            continue  # Looking for shore (land), not more water
-                        
-                        # Found a shore cell; calculate slope
-                        k_water = i * n_lon + j
-                        k_shore = ni * n_lon + nj
-                        elev_water_ft = elev_ft[k_water]
-                        elev_shore_ft = elev_ft[k_shore]
-                        
-                        if elev_water_ft == float("inf") or elev_shore_ft == float("inf"):
+                        if is_water_ni[nj]:
                             continue
-                        
-                        # Lat/lon of water and shore cells
-                        lat_water, lon_water = grid.idx_to_latlon(i, j)
-                        lat_shore, lon_shore = grid.idx_to_latlon(ni, nj)
-                        
-                        # Distance in NM
-                        dist_nm = _haversine_nm(lat_water, lon_water, lat_shore, lon_shore)
-                        if dist_nm < 0.001:  # Too close to measure
+                        elev_shore_ft = elev_ft[ni * n_lon + nj]
+                        if elev_shore_ft == float("inf"):
                             continue
-                        
-                        # Elevation difference (shore relative to water)
-                        dFt = abs(elev_shore_ft - elev_water_ft)
-                        
-                        # Slope in degrees: atan(rise / run)
-                        slope_rad = math.atan2(dFt, dist_nm * 6076.12)
-                        slope_deg = slope_rad * 180 / math.pi
-                        
-                        max_shore_slope = max(max_shore_slope, slope_deg)
-                
-                # If max shore slope exceeds threshold, apply additional penalty
-                if max_shore_slope > slope_threshold_deg:
-                    # Heavy penalty for steep shores: scales with excess slope
-                    slope_excess = max_shore_slope - slope_threshold_deg
-                    slope_penalty = 150.0 + (slope_excess * 5.0)  # Extra penalty proportional to steepness
-                    cost[i][j] = cost[i][j] + slope_penalty
-                    smooth_cost[i][j] = smooth_cost[i][j] + slope_penalty
+                        if di != 0 and dj != 0:
+                            run_ft = ft_diag_step
+                        elif di != 0:
+                            run_ft = ft_lat_step
+                        else:
+                            run_ft = ft_lon_step
+                        rise = elev_shore_ft - elev_water_ft
+                        if rise < 0.0:
+                            rise = -rise
+                        t = rise / run_ft
+                        if t > max_shore_tan:
+                            max_shore_tan = t
+
+                if max_shore_tan > tan_threshold:
+                    slope_deg = math.atan(max_shore_tan) * deg_per_rad
+                    slope_excess = slope_deg - slope_threshold_deg
+                    slope_penalty = 150.0 + (slope_excess * 5.0)
+                    cost[i][j] += slope_penalty
+                    smooth_cost[i][j] += slope_penalty
 
     return (cost, smooth_cost) if has_cost else (None, None)
 
@@ -2203,7 +2204,7 @@ def terrain_avoid_leg_streaming(
                     margin_km += margin_step_km
                     continue
 
-        for event in astar_path_streaming(grid, passable, start, goal, yield_every=30,
+        for event in astar_path_streaming(grid, passable, start, goal, yield_every=100,
                                            elev_ft=elev_ft_2d,
                                            max_climb_fpm=max_climb_fpm,
                                            max_descent_fpm=max_descent_fpm,
@@ -2211,7 +2212,8 @@ def terrain_avoid_leg_streaming(
                                            climb_speed_kt=climb_speed_kt,
                                            descent_speed_kt=descent_speed_kt,
                                            airspace_cost=airspace_cost_2d,
-                                           smooth_airspace_cost=airspace_only_cost_2d):
+                                           smooth_airspace_cost=airspace_only_cost_2d,
+                                           time_budget_sec=25.0):
             if event["type"] == "path" and event["dist_nm"] > detour_limit_nm:
                 break  # too long, try wider margin
             if event["type"] == "no_path":
