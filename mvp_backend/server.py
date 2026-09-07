@@ -686,6 +686,9 @@ def route_stream(req: RouteRequest):
             heli.max_gross_weight_lb if heli else 0)
         current_weight = initial_weight
         fw_per_gal = heli.fuel_weight_lb_per_gal if heli else 6.0
+        # Hard wall-clock budget so a pathological request can't spin forever.
+        _plan_start_wall = time.monotonic()
+        _PLAN_BUDGET_SEC = 90.0
         for si in range(len(segment_endpoints) - 1):
             seg_dep = segment_endpoints[si]
             seg_arr = segment_endpoints[si + 1]
@@ -700,11 +703,39 @@ def route_stream(req: RouteRequest):
                 fuel_used = last_leg_time * req.fuel_burn_gph
                 start_fuel = max(0.0, req.usable_fuel_gal - fuel_used)
 
-            max_retries = 5
+            # Segment-level retry loop. Kept small on purpose: within a single
+            # segment, restarting from leg 0 with a wider detour usually just
+            # re-runs the same A* on the same terrain and burns wall-clock.
+            # We cap total planning time separately (_PLAN_BUDGET_SEC).
+            max_retries = 1
             segment_ok = False
             for attempt in range(max_retries + 1):
-                # Escalate detour factor on retries (+0.15 per attempt)
-                eff_detour = req.max_detour_factor + attempt * 0.15
+                # Wall-clock guard: if we're out of budget, bail with a
+                # helpful "got you this far" message instead of restarting.
+                if time.monotonic() - _plan_start_wall > _PLAN_BUDGET_SEC:
+                    yield (
+                        "data: "
+                        + json.dumps({
+                            "type": "no_path",
+                            "from": seg_dep.icao,
+                            "to": seg_arr.icao,
+                            "message": (
+                                f"Planning time budget exceeded ({_PLAN_BUDGET_SEC:.0f}s) "
+                                f"while working on {seg_dep.icao} \u2192 {seg_arr.icao}."
+                            ),
+                            "detail": (
+                                "Your current constraints (ceiling, min AGL, detour cap, "
+                                "water/airspace avoidance) make this segment hard to solve. "
+                                "Try raising Max target MSL, raising Max detour, or dropping "
+                                "a via-waypoint through a viable corridor."
+                            ),
+                        })
+                        + "\n\n"
+                    )
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    return
+                # Escalate detour factor on retries (+0.3 per attempt)
+                eff_detour = req.max_detour_factor + attempt * 0.3
                 # Last-ditch: expand search budget
                 eff_expansions = 5000 if attempt >= max_retries else 2000
 
@@ -741,6 +772,11 @@ def route_stream(req: RouteRequest):
 
                 # Try each candidate sequence until one succeeds all legs
                 seq_succeeded = False
+                # Remember how many legs the PRIOR candidate actually streamed
+                # successfully so we can keep them on the client when the new
+                # sequence shares that prefix.
+                prev_candidate_sequence = None
+                prev_candidate_succeeded_legs = 0
                 for seq_idx, sequence in enumerate(sequences_pool):
                     seg_num_legs = len(sequence) - 1
                     leg_offset = sum(len(s) - 1 for s in all_sequences)
@@ -748,11 +784,23 @@ def route_stream(req: RouteRequest):
                     # If we already attempted (and partially streamed) a prior
                     # candidate sequence in this segment, tell the client to
                     # discard those stale legs before we stream the new one.
-                    # Without this the UI keeps the dead-end leg(s) appended
-                    # to the legsList and renders nonsense like
-                    # KSZT→KCOE  (orphan from failed seq #1)
-                    # KSZT→KHRF  (real first leg of seq #2)
+                    # But: preserve the leading legs that MATCH between the
+                    # prior candidate and this one so the user doesn't watch
+                    # the same first 2 legs redraw for the 3rd time.
                     if seq_idx > 0:
+                        shared_prefix = 0
+                        if prev_candidate_sequence is not None:
+                            max_share = min(
+                                prev_candidate_succeeded_legs,
+                                len(prev_candidate_sequence) - 1,
+                                len(sequence) - 1,
+                            )
+                            for k in range(max_share):
+                                if (prev_candidate_sequence[k].icao == sequence[k].icao
+                                        and prev_candidate_sequence[k + 1].icao == sequence[k + 1].icao):
+                                    shared_prefix += 1
+                                else:
+                                    break
                         yield (
                             "data: "
                             + json.dumps({
@@ -760,12 +808,14 @@ def route_stream(req: RouteRequest):
                                 "message": (
                                     f"Trying alternate fuel-stop sequence "
                                     f"({seq_idx + 1}/{len(sequences_pool)}) for "
-                                    f"{seg_dep.icao} → {seg_arr.icao}\u2026"
+                                    f"{seg_dep.icao} \u2192 {seg_arr.icao}\u2026"
                                 ),
-                                "keep_legs": leg_offset,
+                                "keep_legs": leg_offset + shared_prefix,
                             })
                             + "\n\n"
                         )
+                    else:
+                        shared_prefix = 0
 
                     # Build flattened stops list for route_plan event
                     # Only include actual fuel stops (exclude -NF waypoints)
@@ -784,7 +834,8 @@ def route_stream(req: RouteRequest):
 
                     leg_failed = False
                     last_fail_event = None
-                    for i in range(seg_num_legs):
+                    legs_completed_this_candidate = shared_prefix
+                    for i in range(shared_prefix, seg_num_legs):
                         from_ap = sequence[i]
                         to_ap = sequence[i + 1]
                         global_leg = leg_offset + i
@@ -927,6 +978,16 @@ def route_stream(req: RouteRequest):
 
                         if leg_failed:
                             break
+                        legs_completed_this_candidate = i + 1
+                        # Give the wall-clock guard a chance to bail between
+                        # legs so a huge multi-leg segment can't run forever.
+                        if time.monotonic() - _plan_start_wall > _PLAN_BUDGET_SEC:
+                            break
+
+                    # Remember this candidate for the next iteration so we can
+                    # keep the leading legs on the client if they match.
+                    prev_candidate_sequence = sequence
+                    prev_candidate_succeeded_legs = legs_completed_this_candidate
 
                     if not leg_failed:
                         all_sequences.append(sequence)
