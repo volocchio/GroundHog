@@ -31,11 +31,73 @@ from mvp_backend import landcover as _landcover
 from mvp_backend import tfrs as _tfrs
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+AIRCRAFT_STORE_PATH = os.path.join(ROOT, "mvp_backend", "saved_aircraft.json")
+_aircraft_store_lock = threading.Lock()
 
 
 route_cache.init_db()
 
 app = FastAPI(title="Terrain+Fuel Route Planner MVP")
+
+
+def _load_saved_aircraft() -> dict:
+    if not os.path.exists(AIRCRAFT_STORE_PATH):
+        return {}
+    try:
+        with open(AIRCRAFT_STORE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        logger.exception("Failed reading saved aircraft store")
+        return {}
+
+
+def _write_saved_aircraft(data: dict) -> None:
+    os.makedirs(os.path.dirname(AIRCRAFT_STORE_PATH), exist_ok=True)
+    tmp = AIRCRAFT_STORE_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+        f.write("\n")
+    os.replace(tmp, AIRCRAFT_STORE_PATH)
+
+
+@app.get("/aircraft")
+def list_saved_aircraft():
+    """Return saved aircraft profiles stored on the server/VPS.
+
+    This intentionally replaces browser-local aircraft storage so phone and
+    laptop see the same list.
+    """
+    with _aircraft_store_lock:
+        return _load_saved_aircraft()
+
+
+@app.put("/aircraft/{reg}")
+def save_aircraft(reg: str, payload: dict):
+    clean_reg = reg.strip().upper()
+    if not clean_reg:
+        raise HTTPException(400, "Aircraft registration is required")
+    if len(clean_reg) > 32:
+        raise HTTPException(400, "Aircraft registration is too long")
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Aircraft payload must be an object")
+    with _aircraft_store_lock:
+        aircraft = _load_saved_aircraft()
+        aircraft[clean_reg] = payload
+        _write_saved_aircraft(aircraft)
+        return {"ok": True, "reg": clean_reg, "aircraft": aircraft[clean_reg]}
+
+
+@app.delete("/aircraft/{reg}")
+def delete_aircraft(reg: str):
+    clean_reg = reg.strip().upper()
+    with _aircraft_store_lock:
+        aircraft = _load_saved_aircraft()
+        existed = clean_reg in aircraft
+        if existed:
+            del aircraft[clean_reg]
+            _write_saved_aircraft(aircraft)
+        return {"ok": True, "reg": clean_reg, "deleted": existed}
 
 
 @app.get("/health")

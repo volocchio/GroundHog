@@ -22,6 +22,10 @@ def main() -> None:
     assert "if (mapBox) mapBox.classList.add('active')" in html
     assert "#mapPlanProgress.active" in html
     assert "top: 46px" in html
+    assert "fetch('/aircraft')" in html
+    assert "fetch('/aircraft/' + encodeURIComponent(cleanReg)" in html
+    assert "fetch('/aircraft/' + encodeURIComponent(reg), { method: 'DELETE' })" in html
+    assert "localStorage.setItem(AIRCRAFT_KEY" not in html
 
 
 if __name__ == "__main__":

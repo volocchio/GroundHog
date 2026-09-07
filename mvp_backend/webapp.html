@@ -2103,12 +2103,57 @@
 
     loadHelicopters();
 
-    // ── My Aircraft (localStorage) ──
+    // ── My Aircraft (server/VPS-backed, with one-time localStorage migration) ──
     const AIRCRAFT_KEY = 'groundhog_my_aircraft';
+    const AIRCRAFT_MIGRATED_KEY = 'groundhog_my_aircraft_server_migrated';
+    let savedAircraftCache = {};
 
     function getSavedAircraft() {
+      return savedAircraftCache || {};
+    }
+
+    function setAircraftStatus(msg, isError=false) {
+      const detail = document.getElementById('aircraftDetail');
+      if (!detail || !msg) return;
+      detail.textContent = msg;
+      detail.style.color = isError ? '#b91c1c' : '#6b7280';
+    }
+
+    function getLocalAircraftForMigration() {
       try { return JSON.parse(localStorage.getItem(AIRCRAFT_KEY)) || {}; }
       catch { return {}; }
+    }
+
+    async function loadSavedAircraft() {
+      try {
+        const res = await fetch('/aircraft');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        savedAircraftCache = await res.json();
+
+        // One-time migration: first laptop/phone that has old local aircraft
+        // uploads them to the VPS so all devices see the same list.
+        const localAircraft = getLocalAircraftForMigration();
+        const localRegs = Object.keys(localAircraft || {});
+        if (localRegs.length && localStorage.getItem(AIRCRAFT_MIGRATED_KEY) !== '1') {
+          for (const reg of localRegs) {
+            if (!savedAircraftCache[reg]) {
+              const put = await fetch('/aircraft/' + encodeURIComponent(reg), {
+                method: 'PUT',
+                headers: {'content-type': 'application/json'},
+                body: JSON.stringify(localAircraft[reg]),
+              });
+              if (put.ok) savedAircraftCache[reg] = localAircraft[reg];
+            }
+          }
+          localStorage.setItem(AIRCRAFT_MIGRATED_KEY, '1');
+        }
+        refreshAircraftDropdown();
+      } catch (e) {
+        console.error('Failed loading saved aircraft', e);
+        savedAircraftCache = getLocalAircraftForMigration();
+        refreshAircraftDropdown();
+        setAircraftStatus('Saved aircraft server unavailable — using this device only for now.', true);
+      }
     }
 
     function refreshAircraftDropdown() {
@@ -2143,7 +2188,7 @@
       detail.textContent = parts.join(' • ');
     }
 
-    document.getElementById('saveAircraftBtn').addEventListener('click', () => {
+    document.getElementById('saveAircraftBtn').addEventListener('click', async () => {
       const heliType = document.getElementById('heliType').value;
       const defaultReg = heliType ? `N_____  (${heliType})` : 'N_____';
       const reg = prompt('Aircraft registration (tail number):', defaultReg);
@@ -2152,9 +2197,8 @@
       if (!cleanReg) return;
 
       // Capture current form state as this aircraft's profile
-      const aircraft = getSavedAircraft();
       const numOrNull = id => { const v = parseFloat(document.getElementById(id).value); return isNaN(v) ? null : v; };
-      aircraft[cleanReg] = {
+      const profile = {
         base_type: heliType,
         bew_lb: Number(document.getElementById('bewLb').value) || 0,
         pilot_lb: Number(document.getElementById('pilotLb').value) || 0,
@@ -2168,20 +2212,36 @@
           aft_limit: numOrNull('cgAftLimit'),
         },
       };
-      localStorage.setItem(AIRCRAFT_KEY, JSON.stringify(aircraft));
+      try {
+        const res = await fetch('/aircraft/' + encodeURIComponent(cleanReg), {
+          method: 'PUT',
+          headers: {'content-type': 'application/json'},
+          body: JSON.stringify(profile),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        savedAircraftCache[cleanReg] = profile;
+      } catch (e) {
+        setAircraftStatus('Could not save aircraft to VPS/server.', true);
+        return;
+      }
       refreshAircraftDropdown();
       document.getElementById('savedAircraft').value = cleanReg;
       updateAircraftDetail();
     });
 
-    document.getElementById('deleteAircraftBtn').addEventListener('click', () => {
+    document.getElementById('deleteAircraftBtn').addEventListener('click', async () => {
       const sel = document.getElementById('savedAircraft');
       const reg = sel.value;
       if (!reg) return;
       if (!confirm(`Delete saved aircraft "${reg}"?`)) return;
-      const aircraft = getSavedAircraft();
-      delete aircraft[reg];
-      localStorage.setItem(AIRCRAFT_KEY, JSON.stringify(aircraft));
+      try {
+        const res = await fetch('/aircraft/' + encodeURIComponent(reg), { method: 'DELETE' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        delete savedAircraftCache[reg];
+      } catch (e) {
+        setAircraftStatus('Could not delete aircraft from VPS/server.', true);
+        return;
+      }
       refreshAircraftDropdown();
       updateAircraftDetail();
     });
@@ -2233,7 +2293,7 @@
       updateWeightBuildUp();
     });
 
-    refreshAircraftDropdown();
+    loadSavedAircraft();
 
     // ── Map declutter: auto-show/hide layers by zoom ──
     let routeMarkers = [];  // track route markers for label management
