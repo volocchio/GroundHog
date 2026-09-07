@@ -728,7 +728,6 @@ def route_stream(req: RouteRequest):
         # First pass: plan all segments to get total leg count and stops
         all_sequences = []
         blocked_pairs = set()
-        seg_last_leg_dist = 0.0  # actual A* distance of last leg in prev segment
         # Track weight across legs for helicopter performance checks
         initial_weight = req.gross_weight_lb if req.gross_weight_lb > 0 else (
             heli.max_gross_weight_lb if heli else 0)
@@ -811,7 +810,7 @@ def route_stream(req: RouteRequest):
                     blocked_pairs=blocked_pairs,
                     max_msl_ft=req.max_msl_ft,
                     min_agl_ft=req.min_agl_ft,
-                    max_climb_fpm=req.max_climb_fpm,
+                    max_climb_fpm=eff_climb_fpm,
                     max_descent_fpm=req.max_descent_fpm,
                     climb_speed_kt=req.climb_speed_kt,
                     descent_speed_kt=req.descent_speed_kt,
@@ -838,7 +837,7 @@ def route_stream(req: RouteRequest):
                             blocked_pairs=blocked_pairs,
                             max_msl_ft=_fallback_msl,
                             min_agl_ft=req.min_agl_ft,
-                            max_climb_fpm=req.max_climb_fpm,
+                            max_climb_fpm=eff_climb_fpm,
                             max_descent_fpm=req.max_descent_fpm,
                             climb_speed_kt=req.climb_speed_kt,
                             descent_speed_kt=req.descent_speed_kt,
@@ -1034,7 +1033,6 @@ def route_stream(req: RouteRequest):
                                     event["from_via"] = True
                                 if to_ap.icao in waypoint_via:
                                     event["to_via"] = True
-                                seg_last_leg_dist = event.get("dist_nm", 0.0)
                                 # ── Per-leg exposure stats (risk panel) ──
                                 # Always emit; landcover-derived stats are
                                 # 0 when the user hasn't opted into landcover,
