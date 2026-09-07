@@ -31,7 +31,10 @@ from mvp_backend import landcover as _landcover
 from mvp_backend import tfrs as _tfrs
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-AIRCRAFT_STORE_PATH = os.path.join(ROOT, "mvp_backend", "saved_aircraft.json")
+AIRCRAFT_STORE_PATH = os.environ.get(
+    "GROUNDHOG_AIRCRAFT_STORE",
+    os.path.join(ROOT, "mvp_backend", "user_data", "saved_aircraft.json"),
+)
 _aircraft_store_lock = threading.Lock()
 
 

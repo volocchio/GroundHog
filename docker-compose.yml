@@ -12,6 +12,7 @@ services:
       - groundhog-obstacles:/app/mvp_backend/obstacle_data
       - groundhog-airspace:/app/mvp_backend/airspace_data
       - groundhog-faa:/app/faa_nasr
+      - groundhog-userdata:/app/mvp_backend/user_data
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 60s
@@ -33,3 +34,4 @@ volumes:
   groundhog-obstacles:
   groundhog-airspace:
   groundhog-faa:
+  groundhog-userdata:

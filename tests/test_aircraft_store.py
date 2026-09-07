@@ -6,6 +6,7 @@ import mvp_backend.server as server
 
 
 def main() -> None:
+    assert "user_data" in server.AIRCRAFT_STORE_PATH
     with tempfile.TemporaryDirectory() as td:
         server.AIRCRAFT_STORE_PATH = os.path.join(td, "saved_aircraft.json")
         c = TestClient(server.app)
