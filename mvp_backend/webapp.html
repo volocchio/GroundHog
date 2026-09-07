@@ -5251,7 +5251,7 @@
       document.getElementById('adsbOut').checked = r.adsb_out !== false;
       document.getElementById('adsbOut').dispatchEvent(new Event('change'));
       document.getElementById('avoidBorders').checked = r.avoid_borders !== false;
-      document.getElementById('waterRisk').value = r.water_risk != null ? r.water_risk : 0;
+      document.getElementById('waterRisk').value = r.water_risk != null ? r.water_risk : 100;
       document.getElementById('slopeThreshold').value = r.slope_threshold_deg != null ? r.slope_threshold_deg : 15;
       if (document.getElementById('enforceSlope')) document.getElementById('enforceSlope').checked = !!r.enforce_slope;
       if (r.autorotation_speed_kt) document.getElementById('autorotSpeedKt').value = r.autorotation_speed_kt;

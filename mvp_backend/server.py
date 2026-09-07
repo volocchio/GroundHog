@@ -451,11 +451,6 @@ def get_tile(provider: str, z: int, x: int, y: int):
     return Response(content=r.content, media_type=media_type, headers=cache_headers)
 
 
-@app.get("/health")
-def health():
-    return {"ok": True}
-
-
 # ── GitHub webhook auto-deploy ───────────────────────────────────
 DEPLOY_SCRIPT = os.path.join(ROOT, "deploy", "deploy.sh")
 WEBHOOK_SECRET_FILE = os.path.join(ROOT, ".webhook_secret")
@@ -535,9 +530,30 @@ def route(req: RouteRequest):
     """Legacy non-streaming planner.
 
     Kept for API/debug compatibility only. The web UI uses /route/stream as
-    the canonical planner because this endpoint does not yet apply waypoint,
-    airspace, obstacle, max-AGL, or border-avoidance semantics.
+    the canonical planner. Refuse requests that depend on streaming-only
+    semantics rather than returning a plausible but wrong route.
     """
+    unsupported = []
+    if req.waypoints:
+        unsupported.append("waypoints")
+    if req.avoid_airspace:
+        unsupported.append("avoid_airspace")
+    if req.avoid_borders:
+        unsupported.append("avoid_borders")
+    if req.max_agl_ft > 0:
+        unsupported.append("max_agl_ft")
+    if req.obstacle_radius_nm > 0:
+        unsupported.append("obstacle avoidance")
+    if req.use_landcover:
+        unsupported.append("landcover")
+    if req.avoid_tfrs:
+        unsupported.append("TFR avoidance")
+    if unsupported:
+        raise HTTPException(
+            400,
+            "Use /route/stream for: " + ", ".join(unsupported),
+        )
+
     airports = load_airports_solver()
     dep = _resolve_airport(req.dep_icao, airports)
     arr = _resolve_airport(req.arr_icao, airports)
@@ -718,6 +734,8 @@ def route_stream(req: RouteRequest):
             heli.max_gross_weight_lb if heli else 0)
         current_weight = initial_weight
         fw_per_gal = heli.fuel_weight_lb_per_gal if heli else 6.0
+        current_fuel_gal = (req.fuel_load_gal if req.fuel_load_gal > 0
+                            else req.usable_fuel_gal)
         # Hard wall-clock budget so a pathological request can't spin
         # forever. Starts modest (fast fail for tiny routes) and grows
         # once we know how many fuel-stop legs this route actually needs
@@ -736,15 +754,11 @@ def route_stream(req: RouteRequest):
             seg_dep = segment_endpoints[si]
             seg_arr = segment_endpoints[si + 1]
 
-            # Determine starting fuel: full if first segment or if we refuel here
-            if si == 0 or waypoint_fuel.get(seg_dep.icao, True):
-                start_fuel = (req.fuel_load_gal if si == 0 and req.fuel_load_gal > 0
-                              else req.usable_fuel_gal)
-            else:
-                # No fuel at this waypoint — estimate remaining from last leg
-                last_leg_time = seg_last_leg_dist / req.cruise_speed_kt if req.cruise_speed_kt > 0 else 0
-                fuel_used = last_leg_time * req.fuel_burn_gph
-                start_fuel = max(0.0, req.usable_fuel_gal - fuel_used)
+            # Determine starting fuel from actual carried state. Earlier code
+            # reconstructed this as "full minus last leg" at no-fuel waypoints,
+            # which is wrong for consecutive -NF/-VIA segments or partial-fuel
+            # departures. Track the tank instead.
+            start_fuel = current_fuel_gal
 
             # Segment-level retry: intentionally 0.
             # A reroute event WIPES completed legs on the client, and the
@@ -1061,12 +1075,14 @@ def route_stream(req: RouteRequest):
                                     }
                                 except Exception:
                                     pass
+                                # Update carried fuel for this completed leg.
+                                leg_dist = event.get("dist_nm", 0.0)
+                                leg_time_hr = leg_dist / req.cruise_speed_kt if req.cruise_speed_kt > 0 else 0
+                                leg_fuel_gal = leg_time_hr * req.fuel_burn_gph
+                                current_fuel_gal = max(0.0, current_fuel_gal - leg_fuel_gal)
                                 # ── Attach helicopter performance for this leg ──
                                 if heli:
                                     max_terr = event.get("max_terrain_ft", max(from_ap.elevation_ft, to_ap.elevation_ft))
-                                    leg_dist = event.get("dist_nm", 0.0)
-                                    leg_time_hr = leg_dist / req.cruise_speed_kt if req.cruise_speed_kt > 0 else 0
-                                    leg_fuel_gal = leg_time_hr * req.fuel_burn_gph
                                     leg_eval = helicopter_db.evaluate_leg(
                                         heli.type_code,
                                         dep_elev_ft=from_ap.elevation_ft,
@@ -1084,6 +1100,12 @@ def route_stream(req: RouteRequest):
                                     can_refuel = waypoint_fuel.get(to_ap.icao, True) and not is_final_dest
                                     if can_refuel:
                                         current_weight = initial_weight  # topped off → back to departure weight
+                                        current_fuel_gal = req.usable_fuel_gal
+                                else:
+                                    is_final_dest = (to_ap.icao == arr.icao and si == len(segment_endpoints) - 2 and i == seg_num_legs - 1)
+                                    can_refuel = waypoint_fuel.get(to_ap.icao, True) and not is_final_dest
+                                    if can_refuel:
+                                        current_fuel_gal = req.usable_fuel_gal
                             if event.get("type") == "no_path":
                                 blocked_pairs.add((from_ap.icao, to_ap.icao))
                                 leg_failed = True

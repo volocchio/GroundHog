@@ -13,6 +13,7 @@ def main() -> None:
     assert "await planNormal(payload);" not in plan_body
     assert "document.getElementById('watchSearch').checked" not in plan_body
     assert 'id="maxMsl" type="number" value="6000"' in html
+    assert "r.water_risk != null ? r.water_risk : 100" in html
 
 
 if __name__ == "__main__":
