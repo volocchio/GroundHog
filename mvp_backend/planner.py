@@ -23,6 +23,20 @@ CACHE_DB = os.path.join(ROOT, "mvp_backend", "elev_cache.sqlite")
 _AIRSPACE_DB = os.path.join(os.path.dirname(__file__), "airspace_data", "airspace.sqlite")
 _OBSTACLE_DB = os.path.join(os.path.dirname(__file__), "obstacle_data", "obstacles.sqlite")
 
+# Process-wide SRTM provider so decoded HGT tiles stay resident across
+# legs and requests. Re-reading a 25 MB tile per leg was the biggest
+# cross-leg cost after A*.
+_SRTM_PROVIDER: SRTMProvider | None = None
+
+
+def _srtm_provider() -> SRTMProvider:
+    global _SRTM_PROVIDER
+    if _SRTM_PROVIDER is None:
+        _SRTM_PROVIDER = SRTMProvider(
+            cache_dir=os.path.join(ROOT, "mvp_backend", "srtm_cache")
+        )
+    return _SRTM_PROVIDER
+
 
 @dataclass
 class Airport:
@@ -179,7 +193,7 @@ def terrain_avoid_leg(
             return None
         return LegResult(dist_nm=cached.dist_nm, path_latlon=cached.path)
 
-    provider = SRTMProvider(cache_dir=os.path.join(ROOT, "mvp_backend", "srtm_cache"))
+    provider = _srtm_provider()
 
     direct_nm = _direct_nm(a, b)
     direct_km = direct_nm * 1.852
@@ -1920,7 +1934,7 @@ def terrain_avoid_leg_streaming(
 
     from mvp_backend.grid_astar import astar_path_streaming
 
-    provider = SRTMProvider(cache_dir=os.path.join(ROOT, "mvp_backend", "srtm_cache"))
+    provider = _srtm_provider()
 
     direct_nm = _direct_nm(a, b)
     direct_km = direct_nm * 1.852

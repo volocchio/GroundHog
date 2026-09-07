@@ -4,6 +4,7 @@ import gzip
 import math
 import os
 import struct
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Tuple
 
@@ -65,15 +66,21 @@ class SRTMTile:
 @dataclass
 class SRTMProvider:
     cache_dir: str
+    # SRTM1 tiles are ~25 MB in memory; 16 tiles ≈ 400 MB and covers a
+    # continental-scale multi-leg route with room to spare. Overridable
+    # via env var for tighter/looser deployments.
+    max_tiles: int = int(os.environ.get("GROUNDHOG_SRTM_MAX_TILES", "16"))
 
     def __post_init__(self):
         os.makedirs(self.cache_dir, exist_ok=True)
-        self._tiles: Dict[tuple[int, int], SRTMTile] = {}
+        self._tiles: "OrderedDict[tuple[int, int], SRTMTile]" = OrderedDict()
 
     def _load_tile(self, ilat: int, ilon: int) -> SRTMTile:
         key = (ilat, ilon)
-        if key in self._tiles:
-            return self._tiles[key]
+        cached = self._tiles.get(key)
+        if cached is not None:
+            self._tiles.move_to_end(key)
+            return cached
 
         ns = "N" if ilat >= 0 else "S"
         ew = "E" if ilon >= 0 else "W"
@@ -106,15 +113,33 @@ class SRTMProvider:
 
         tile = SRTMTile(ilat=ilat, ilon=ilon, n=n, data=data)
         self._tiles[key] = tile
+        while len(self._tiles) > self.max_tiles:
+            self._tiles.popitem(last=False)
         return tile
 
     def get_many_m(self, points: Iterable[tuple[float, float]]) -> List[float]:
         pts = list(points)
         out: List[float] = []
+        # Fast path: adjacent grid rows almost always fall in the same tile,
+        # so cache the last-used tile and skip the tile-name / dict lookup.
+        last_ilat: int | None = None
+        last_ilon: int | None = None
+        last_tile: SRTMTile | None = None
+        floor = math.floor
         for lat, lon in pts:
-            _, ilat, ilon = _tile_name(lat, lon)
+            ilat = floor(lat)
+            ilon = floor(lon)
+            if ilat == last_ilat and ilon == last_ilon and last_tile is not None:
+                tile = last_tile
+            else:
+                try:
+                    tile = self._load_tile(ilat, ilon)
+                except Exception:
+                    last_ilat, last_ilon, last_tile = None, None, None
+                    out.append(float("nan"))
+                    continue
+                last_ilat, last_ilon, last_tile = ilat, ilon, tile
             try:
-                tile = self._load_tile(ilat, ilon)
                 out.append(tile.elev_m(lat, lon))
             except Exception:
                 out.append(float("nan"))
